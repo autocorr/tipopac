@@ -1,0 +1,28 @@
+[project]
+name = "tip-rewrite"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "amwrap",
+    "casatools>=6.7.5.18",
+    "numpy>=2.4.4",
+    "openmeteo-requests>=1.7.5",
+    "pandas>=3.0.3",
+    "requests-cache>=1.3.2",
+    "retry-requests>=2.0.0",
+    "sdmpy>=1.71.2",
+]
+
+[tool.uv.sources]
+amwrap = { git = "https://github.com/autocorr/amwrap" }
+
+[dependency-groups]
+dev = [
+    "ipdb>=0.13.13",
+    "ipython>=9.13.0",
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+    "ty>=0.0.35",
+]
