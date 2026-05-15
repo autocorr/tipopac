@@ -1418,6 +1418,7 @@ dependencies = [
     { name = "requests-cache" },
     { name = "retry-requests" },
     { name = "sdmpy" },
+    { name = "xarray" },
 ]
 
 [package.dev-dependencies]
@@ -1439,6 +1440,7 @@ requires-dist = [
     { name = "requests-cache", specifier = ">=1.3.2" },
     { name = "retry-requests", specifier = ">=2.0.0" },
     { name = "sdmpy", specifier = ">=1.71.2" },
+    { name = "xarray", specifier = ">=2024.10" },
 ]
 
 [package.metadata.requires-dev]
