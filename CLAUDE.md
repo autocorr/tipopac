@@ -20,6 +20,11 @@ flags → other modes → caltables → atmosphere → plot → SDM reader → i
 reference). As of writing, `src/tipopac/` is an empty skeleton — only the
 package directory exists.
 
+The `references/` directory contains other authoritative references. These
+include:
+
+- `references/ms_v2_memo_299.html`: Specification for the MeasurementSet v2.
+
 ## Toolchain & commands
 
 The repo uses **`uv`** (Astral) with `pyproject.toml` + `uv.lock`. Python ≥

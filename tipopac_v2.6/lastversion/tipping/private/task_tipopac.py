@@ -9,7 +9,7 @@ else:
     import casac
     from taskinit import *
 
-#sys.path.append('/lustre/aoc/sciops/pbeaklin/allin/short/TestTask/Temp/analysis_scripts') 
+#sys.path.append('/lustre/aoc/sciops/pbeaklin/allin/short/TestTask/Temp/analysis_scripts')
 #import analysisUtils as au
 
 
@@ -50,7 +50,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
     #
     #    Version 1.0 (tested with CASA Version 5.6.0 REL)
     #    22 October 2019
-    
+
     casalog.origin('tipopac')
     casalog.post('--> tipopac version 2.5')
 
@@ -58,42 +58,42 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
     porder = 3    # order of polynomial fit
     zmin   = 40.  # zenith angle min, degrees
     zmax   = 62.  # zenith angle max, degrees
-    
+
     # minimum number of (assuming 1 sec) integration times to get a good solution
     # pick ~40 sec somewhat randomly.  A normal tipping scan should take ~90 sec.
     minTipInts = 3
-    
+
     # for calcTcals=True, set threshold warning level for % diff with TcalMS
     Tdifthresh = 30
     #Pedro added next if
     if caltableZ=='': caltableZ = 'defaultZ'
     if caltable and caltableZ == 'defaultZ':
-                casalog.post("*** WARNING: caltable = True, but no name to opacity caltable. Set as defaultZ.cal.","WARN")   
-    if caltableT=='':    
+                casalog.post("*** WARNING: caltable = True, but no name to opacity caltable. Set as defaultZ.cal.","WARN")
+    if caltableT=='':
         if calcTcals:
                 casalog.post("*** WARNING: caltable = True, but no name to Tcal caltable. Set as defaultT.cal","WARN")
                 caltableT='defaultT.cal'
     else:
         if calcTcals==False and caltableT!='defaultT':
                 casalog.post("*** WARNING: caltableT=False. File "+caltableT+" will not be saved.","WARN")
-    
+
     if calcTcals & tauPerAnt:
         casalog.post("*** WARNING: Setting tauPerAnt=False because calcTcals=True.","WARN")
         tauPerAnt = False
-    #if caltable and tauPerAnt: 
+    #if caltable and tauPerAnt:
     #            casalog.post("*** WARNING: caltable = True, getting tau per antenna not allowed. Set tauPerAnt = False","WARN")
     #            tauPerAnt = False
-    if not caltable and caltableZ != 'defaultZ': 
+    if not caltable and caltableZ != 'defaultZ':
                 casalog.post("INFO: caltable = False, opacity calibration table will not be saved.","INFO")
-    if not caltable and caltableZ != 'defaultT': 
-                casalog.post("INFO: caltable = False, Tcal calibration table will not be saved.","INFO") 
+    if not caltable and caltableZ != 'defaultT':
+                casalog.post("INFO: caltable = False, Tcal calibration table will not be saved.","INFO")
     if doPlot:
         if os.path.exists(msname+'.tipping.plots/'):
                  casalog.post("INFO: Plots will be saved at "+msname+".tipping.plots","INFO")
         else:
                  os.system('mkdir '+msname+'.tipping.plots')
                  casalog.post("INFO: Plots will be saved at "+msname+".tipping.plots","INFO")
-    
+
     # avoid using global cb tool, which can cause issues with table cache
     def gencaltableZ(msname,caltableZ):
         if is_CASA6:
@@ -103,16 +103,16 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         mycb.open(msname,False,False,False)
         mycb.createcaltable(caltableZ,'Real','TOpac',True)
         mycb.close()
-    
-    
+
+
     # kinetic to noise temp in K
     def k2nt(T,nu_Hz):
         h = 6.6261e-34
         k = 1.3806e-23
         return T * (h*nu_Hz/(k*T)/(np.exp(h*nu_Hz/(k*T))-1.))
-    
 
-    
+
+
     # Tsys vs z tipping curve function
     def func(z,params,Twmtp):
         # z in deg, T's all in noise K
@@ -120,7 +120,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         T0,tau0 = params
         Tsys = T0+Twmtp*(1-np.exp(-tau0/np.cos(np.deg2rad(z))))
         return Tsys
-    
+
     # option 1: calcTcals=False and tauPerAnt=True
     #           3 unknown parameters: T0_pol0, T0_pol1, tau0
     # option 2: calcTcals=False and tauPerAnt=False
@@ -130,7 +130,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
     # these can share the same wrapper (op1: N=1, op2/3: N=nant)
 
     def err_multi_wrap(Twmtp):
-        def err_multi(p,*argv):  
+        def err_multi(p,*argv):
             N      = int(len(argv)/3)
             z      = argv[:N]
             Tsys   = argv[N:]
@@ -143,7 +143,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         return err_multi
 
     def err_multi_wrapTcal(Twmtp):
-    	    	def err_multiTcal(p,*argv):  
+    	    	def err_multiTcal(p,*argv):
     	        	N      = int(len(argv)/3)
     	        	z      = argv[:N]
     	        	Tsys   = argv[N:]
@@ -179,25 +179,25 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                 Nlower = np.sum(np.array(Lower) > 0)
                 VersionFit = 1
                 #print(VersionFit,fitall[-1])
-                if (Lower[-1] > 0) or (Upper[-1] < 0) or (Nupper+Nlower > 8): 
+                if (Lower[-1] > 0) or (Upper[-1] < 0) or (Nupper+Nlower > 8):
                                 fitall = scipy.optimize.least_squares(err_multi_wrapTcal(Twmtp),seT,args=arg,bounds=(bound3,bound4),max_nfev=1000)
                                 Upper = 0.98*np.array(bound3)-fitall.x
                                 Lower = 1.02*np.array(bound4)-fitall.x
                                 Nupper = np.sum(np.array(Upper) < 0)
                                 Nlower = np.sum(np.array(Lower) > 0)
                                 #print(VersionFit,fitall[-1])
-                                if (Lower[-1] > 0) or (Upper[-1] < 0) or (Nupper+Nlower > 10): 
+                                if (Lower[-1] > 0) or (Upper[-1] < 0) or (Nupper+Nlower > 10):
                                                 fitall = scipy.optimize.least_squares(err_multi_wrapTcal(Twmtp),seT,args=arg,bounds=(bound5,bound6),max_nfev=1000)
                                                 Upper = 0.98*np.array(bound5)-fitall.x
                                                 Lower = 1.02*np.array(bound6)-fitall.x
                                                 VersionFit = 3
                                                 #print(VersionFit,fitall[-1])
-				
+
         except:
                 Nok = False
                 VersionFit = 0
                 Upper = np.zeros(len(bound1))-1
-                Lower = np.zeros(len(bound1))+1             
+                Lower = np.zeros(len(bound1))+1
 
         if Nok:
                 FIT = np.array(fitall.x)
@@ -215,7 +215,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
 
         indexBad = (np.array(Upper) < 0) + (np.array(Lower) > 0)
 
-		
+
         Nant = int((len(FIT)-1)/2)
         fit = np.zeros(Nant+1)
         Tcal = np.zeros(Nant)
@@ -269,35 +269,35 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                      plt.close(fig)
                 except:
                      plt.close(fig)
-    #make plot per antenna		
+    #make plot per antenna
     def water_saturation_pressure (temperature, pressure):
         """calculate saturation vapor pressure over water or ice, in mbar,
            given temperature in degrees C, and pressure in mbar.  from:
-    
+
            Buck, A., New Equations for Computing Vapor Pressure and
               Enhancement Factor, J. Appl. Met., v.20, pp. 1527-1532, 1981
-    
+
            who references:
-    
+
            Wexler, A., Vapor Pressure Formulation for Water in the Range
               0C to 100C - A Revision, J. Res. Natl. Bur. Stand., v.80A,
               pp. 775 ff, 1976
-    
+
            and
-    
+
            Wexler, A., Vapor Pressure Formulation for Ice, J. Res. Natl.
               Bur. Stand., v.81A, pp. 5-20, 1977
-    
+
            for the "exact" formulations - which are reworks of the
            Goff-Gratch formulation:
-    
+
            Goff, J.A., and S. Gratch, Low-pressure Properties of Water from
               -160F to 212F. Trans. Am. Soc. Heat. Vent. Eng., v. 52, 95-121,
               1946
-    
+
            Use the fw5 and fi5 coefficients for the "enhancement
            factor" from Table 3 of Buck."""
-    
+
         A_w = 4.1e-4
         B_w = 3.48e-6
         C_w = 7.4e-10
@@ -308,9 +308,9 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         C_i = 5.9e-10
         D_i = 23.8e0
         E_i = -3.1e-2
-    
+
         theta = temperature + 273.15e0
-    
+
         if temperature > 0.01e0:
     #
     # water
@@ -608,7 +608,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         if Nk > 0 and Nk_used < 3:
             Nk_used2 = 0
             for f in range(Nspw):
-                 if spwF0[f] > 18 and spwF0[f] < 26.5: 
+                 if spwF0[f] > 18 and spwF0[f] < 26.5:
                            err_frac2[f] = ((spwT0[f]*0.04)/0.1)/spwE0[f]
                            Nk_used2 += 1
             if Nk_used2 < 4:
@@ -660,7 +660,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         			rmspwv[indh,indp] = rms
         			#listofrms.append(rms)
         			#minresi = np.min(listofrms)
-        			if rms < rmsf: 
+        			if rms < rmsf:
         					pwvf = pwvi
         					hf = hs
         					rmsf = rms
@@ -678,7 +678,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         		epwv = np.std(possiblepwv)
         	#minresi = np.min(listofrms)
         	#listofhk = hsrange[listofrms<minresi+meanerr]
-        	#listofrms = [] 
+        	#listofrms = []
         else:
         	pwvf = 1000.0 * m_w * P_0 * HH / (rho_l * k_0 * T)
         	epwv = 0.3*pwvf
@@ -690,12 +690,12 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         		xx,yy = model(pwv0,H,T,P,hs)
         		rms, resi = residuals(xx,yy,spwF,spwT,spwE)
         		listofrms.append(rms)
-        listofrms = np.array(listofrms) 
+        listofrms = np.array(listofrms)
         minresi = np.min(listofrms)
         meanerr = (np.median(spwE))/10.0
         #print(hsrange)
         #print(listofrms)
-        #print(minresi,meanerr,minresi+meanerr)    
+        #print(minresi,meanerr,minresi+meanerr)
         listofh = hsrange[listofrms<minresi+meanerr]
         listofrms2 = listofrms[listofrms<minresi+meanerr]
         listofh = np.array(listofh)
@@ -746,7 +746,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
              plt.savefig(msname+'.model.atm.pwv.perantenna.png')
         plt.close(fig)
         plt.ion()
-        
+
         return finalh, errorh, new_pwv, errorpwv, rms
 
 
@@ -770,8 +770,8 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
     antNames=tb.getcol('NAME')
     tb.close()
     lenAnt = len(antNames)
-    
-    
+
+
     ### get full spw details for MS (not only tipping scans)
     tb.open(msname+'/SPECTRAL_WINDOW')
     spwRef=(tb.getcol('REF_FREQUENCY'))    #Channel Zer0
@@ -781,14 +781,14 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
     #spwCntFreq=np.mean(tb.getcol('CHAN_FREQ'),axis=0)
     tb.close()
     lenSpw = len(spwCntFreq)
-    
-    
+
+
     ### get pointing zenith angle
     # check if pointing sub-table contains data. If not, give error and exit.
     # this should be produced by importasdm in all cases (with_pointing_correction true or false)
     casalog.post('--> Reading antenna pointing data.')
     tb.open(msname+'/POINTING')
-    
+
     # read in elevation vs time, will include data from tips and also pointing if performed
     # Note this is stored in ENCODER in AZELGEO coordinates
     #tb.getcolkeywords('ENCODER')
@@ -797,7 +797,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
     #
     # CASA coordinate frames:
     # https://casa.nrao.edu/casadocs/casa-5.1.0/reference-material/coordinate-frames
-    
+
     # extract pointing data for full observation
     # not super efficient, but majority of data is expected to come from tipping scans.
     # first, get max timestamps per antenna, in case they differ
@@ -806,12 +806,12 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         temptb  = tb.query('ANTENNA_ID=='+str(a))
         lenAntT = len(temptb.getcol('TIME'))
         if lenAntT > maxAntT: maxAntT = lenAntT
-    
+
     if maxAntT == 0:
         casalog.post("*** ERROR: That's strange, the pointing table is empty.","ERROR")
         casalog.post("*** ERROR: Exiting tipopac.","ERROR")
         return
-    
+
     # 0 = time UTC seconds, 1 = zenith angle (deg)
     dataPoint = np.zeros([lenAnt,maxAntT,2])
     me.doframe(me.observatory('VLA'))
@@ -826,11 +826,11 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                                              str(np.rad2deg(azel[0,i]))+'deg',
                                              str(np.rad2deg(azel[1,i]))+'deg'),
                                              'AZEL')['m1']['value'])
-    
+
     tb.close()
     del temptb,azel
- 
-    msmd.open(msname)    
+
+    msmd.open(msname)
     ### read in time ranges for tipping scans and get associated spw's
     casalog.post('--> Reading time ranges for tipping scans.')
     # Only the scan with 2 subscans, with intent DO_SKYDIP, are of interest.
@@ -848,9 +848,9 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
     for i in range(lenScans):
         times[i,0] = msmd.timesforscan(scans[i])[0]
         times[i,1] = msmd.timesforscan(scans[i])[-1]
-    
+
     msmd.done()
-    
+
 
     ### get estimated weighted mean atmospheric temperatures in kinetic temp K
     casalog.post('--> Reading MS surface temperature data and '+\
@@ -867,8 +867,8 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
     # time (UTC sec), temp (K)
     dataTemp = np.column_stack((tmp1,tmp2))
     del tmp1,tmp2
-    
-    
+
+
     ### read in online flags except for ANTENNA_NOT_ON_SOURCE
     # subreflector errors shouldn't make any difference, but no harm flagging
     if cmdFlag:
@@ -880,7 +880,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                          "importasdm.","ERROR")
             casalog.post("*** ERROR: Exiting tipopac.","ERROR")
             return
-        
+
         #temptb     = tb.query("REASON!='ANTENNA_NOT_ON_SOURCE'") ------- Pedro commented
         #dataCmdRaw = temptb.getcol('COMMAND') ------ Pedro Commented and added line below
         dataCmdRaw = tb.query("REASON!='ANTENNA_NOT_ON_SOURCE' and REASON!='SHADOW'and REASON!='CLIP_ZERO_ALL'").getcol('COMMAND')
@@ -894,17 +894,17 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                              split('&&')[4].split('~')[0],'ymd')['value']*24*3600
             dataCmd[f,2] = qa.quantity(dataCmdRaw[f].replace("'","&&").\
                              split('&&')[4].split('~')[1],'ymd')['value']*24*3600
-        
+
         tb.close()
-    
-    
+
+
     ### read in user-specified flags
     if usrFlag:
         casalog.post('--> Reading user-defined flags.')
         dataUsrRaw = np.loadtxt(flagFile,dtype=str)
         if dataUsrRaw.size == 3:
-            dataUsrRaw = dataUsrRaw.reshape([1,3]) 		
-        
+            dataUsrRaw = dataUsrRaw.reshape([1,3])
+
         lenDataUsr = len(dataUsrRaw)
         # antenna, spw, start time, end time (UTC sec)
         dataUsr    = np.zeros([lenDataUsr,4])
@@ -926,13 +926,13 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
             else:
                 dataUsr[f,0] = np.where(antNames==myant)[0][0]
 
-            
+
             if myspw == '-1':
                 allspw = True
             else:
-                dataUsr[f,1] = float(myspw)		
-		
-            
+                dataUsr[f,1] = float(myspw)
+
+
             dataUsr[f,2] = mytime1
             dataUsr[f,3] = mytime2
             # to avoid having to modify code below, copy flag command to all
@@ -952,7 +952,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     dataUsr[f,2] = mytime1
                     dataUsr[f,3] = mytime2
                     f += 1
-                
+
                 maxf += lenSpw-1
             elif (allant) and (not allspw):
                 # all spws for a given antenna in a given time range
@@ -963,7 +963,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     dataUsr[f,2] = mytime1
                     dataUsr[f,3] = mytime2
                     f += 1
-                
+
                 maxf += lenAnt-1
             elif (allant) and (allspw):
                 # all antennas and all spws in a given time range
@@ -975,14 +975,14 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                         dataUsr[f,2] = mytime1
                         dataUsr[f,3] = mytime2
                         f += 1
-                
+
                 maxf += lenAnt*lenSpw-1
             else:
                 casalog.post("*** ERROR: Manual flags not specified "+\
                              "according to instructions in help.","ERROR")
                 casalog.post("*** ERROR: Exiting tipopac.","ERROR")
                 return
-     
+
     ### read in switched power psum and pdif per tip scan and apply flags
     casalog.post('--> Reading switched power data.')
     # start by reading in stored Tcals (K)
@@ -1003,13 +1003,13 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
             except:
             	casalog.post('*** WARNING: No data for spw '+str(s)+' at antenna id '+str(a),'WARN')
             	if (s >0):
-            		dataTcalMS[a,s,0] = dataTcalMS[a,s-1,0] 
+            		dataTcalMS[a,s,0] = dataTcalMS[a,s-1,0]
             		dataTcalMS[a,s,1] = dataTcalMS[a,s-1,1]
             		casalog.post('Value used for spw '+str(s))
             	else:
             		casalog.post('Value set as zero.')
-		                           
-    
+
+
     tb.close()
     # create Z caltable to be filled in below
     if caltable:
@@ -1034,7 +1034,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                 tb.putcell('SNR',               k,np.array([[1.]]))
                 # the WEIGHT column can be left with empty cells
                 k += 1
-    
+
     	tb.flush()
     	tb.close()
     if calcTcals and caltable:
@@ -1057,10 +1057,10 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     tb.putcell('NOISE_CAL',         k,np.array([[0.,0.],[0.,0.]]))
                     # other columns can default
                     k += 1
-        
+
         tb.flush()
         tb.close()
-    
+
     # first, get all data wrt zenith angle into a master array
     # JVLA tipping scans don't run for more than 2 mins with 1 sec sampling
     # scan, ant, spw, pol, timestamp: 0=ZA[deg], 1=Twmt[kinetic K], 2=Tsys'[K]
@@ -1072,7 +1072,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
 
 
     #### We will set the same size always
-    
+
     if calcTcals:
         Ndata = 4
     else:
@@ -1082,9 +1082,9 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         data1 = np.zeros([lenScans,lenAnt,lenSpw,2,1200,Ndata])
     except:
         data1 = np.zeros([lenScans,lenAnt,lenSpw,2,200,Ndata])
-    
+
     #### Changes end here
-    
+
     tb.open(msname+'/SYSPOWER')
     for i in range(lenScans):
         casalog.post('--> Gathering data for scan '+str(scans[i])+' ('+str(i+1)+'/'+str(lenScans)+')')
@@ -1106,10 +1106,10 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                 if lenSpT > 0:
                     # cols 0/1 = R/L
                     pdif  = subtb.getcol('SWITCHED_DIFF')
-                    psum  = subtb.getcol('SWITCHED_SUM')		 
+                    psum  = subtb.getcol('SWITCHED_SUM')
                     #rq   = subtb.getcol('REQUANTIZER_GAIN')
                     # rq not needed.  Pdif reported in MS appears to neglect digital gain factor
-                    
+
                     # apply online flags except for ANTENNA_NOT_ON_SOURCE
                     # there is probably a smarter way to do this...
 		    # Pedro added if's
@@ -1121,7 +1121,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	for f in range(len(tmp)):
                     	    pdif[:,np.where((spT>=tmp[f,1]) & (spT<=tmp[f,2]))] = np.nan
                     	    psum[:,np.where((spT>=tmp[f,1]) & (spT<=tmp[f,2]))] = np.nan
-                    
+
                     # cmd case 2: flagging starts before tip and ends within tip
                     if cmdFlag:
                     	tmp = dataCmd[np.where((dataCmd[:,0]==a) &\
@@ -1131,7 +1131,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	for f in range(len(tmp)):
                     	    pdif[:,np.where((spT>=tmp[f,1]) & (spT<=tmp[f,2]))] = np.nan
                     	    psum[:,np.where((spT>=tmp[f,1]) & (spT<=tmp[f,2]))] = np.nan
-                    
+
                     # cmd case 3: flagging starts during tip and ends after tip
                     if cmdFlag:
                     	tmp = dataCmd[np.where((dataCmd[:,0]==a) &\
@@ -1141,7 +1141,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	for f in range(len(tmp)):
                     	    pdif[:,np.where((spT>=tmp[f,1]) & (spT<=tmp[f,2]))] = np.nan
                     	    psum[:,np.where((spT>=tmp[f,1]) & (spT<=tmp[f,2]))] = np.nan
-                    
+
                     # cmd case 4: flagging starts before tip and ends after tip
                     if cmdFlag:
                     	tmp = dataCmd[np.where((dataCmd[:,0]==a) &\
@@ -1150,7 +1150,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	for f in range(len(tmp)):
                     	    pdif[:,np.where((spT>=tmp[f,1]) & (spT<=tmp[f,2]))] = np.nan
                     	    psum[:,np.where((spT>=tmp[f,1]) & (spT<=tmp[f,2]))] = np.nan
-                    
+
                     # apply manual flags
                     # usr case 1: flagging starts and ends within tip
 		    # Pedro added if
@@ -1162,7 +1162,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	for f in range(len(tmp)):
                         	pdif[:,np.where((spT>=tmp[f,2]) & (spT<=tmp[f,3]))] = np.nan
                         	psum[:,np.where((spT>=tmp[f,2]) & (spT<=tmp[f,3]))] = np.nan
-                    
+
                     # usr case 2: flagging starts before tip and ends within tip
 		    # Pedro added if
                     if usrFlag:
@@ -1174,7 +1174,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	for f in range(len(tmp)):
                         	pdif[:,np.where((spT>=tmp[f,2]) & (spT<=tmp[f,3]))] = np.nan
                         	psum[:,np.where((spT>=tmp[f,2]) & (spT<=tmp[f,3]))] = np.nan
-                    
+
                     # usr case 3: flagging starts during tip and ends after tip
 		    # Pedro added if
                     if usrFlag:
@@ -1186,7 +1186,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	for f in range(len(tmp)):
                         	pdif[:,np.where((spT>=tmp[f,2]) & (spT<=tmp[f,3]))] = np.nan
                         	psum[:,np.where((spT>=tmp[f,2]) & (spT<=tmp[f,3]))] = np.nan
-                    
+
                     # usr case 4: flagging starts before tip and ends after tip
 		    # Pedro added if
                     if usrFlag:
@@ -1197,14 +1197,14 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	for f in range(len(tmp)):
                         	pdif[:,np.where((spT>=tmp[f,2]) & (spT<=tmp[f,3]))] = np.nan
                         	psum[:,np.where((spT>=tmp[f,2]) & (spT<=tmp[f,3]))] = np.nan
-                    
- 
+
+
                     if usrFlag or cmdFlag: del tmp
 
-                    
+
                     # put the following info into data1 (for each poln, meh)
 
-	 
+
                     for x in range(lenSpT):
                         # get pointing zenith angle in deg at spT times
                         # pointing data for the JVLA is recorded every approximately 0.1 sec
@@ -1213,19 +1213,19 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
 
                         data1[i,a,s,:,x,0] = dataPoint[a,(np.abs(dataPoint[a,:,0]-spT[x])).argmin(),1]
 			#################################################################################################################### Open file - Save spT[x] and data1 (thinking) Each X save data1 array
-			                        
+
                         # get Tatm in kinetic K at spT times
                         # MS Tsurf is only sampled approximately every minute
                         # So it's perhaps worth interpolating temperatures at the switched power timestamps
 
                         data1[i,a,s,:,x,1] = np.interp(spT[x],dataTemp[:,0],dataTemp[:,1])
-		    	
+
 
                     for p in range(2):
                         # calculate Tsys = (Psum/2)/Pdif * Tcal
                         data1[i,a,s,p,0:lenSpT,2] = (psum[p]/2.) / (pdif[p]) * dataTcalMS[a,s,p]
-                        #print(i,a,s,p) 
-                        #print(len(np.where(data1[i,a,s,p,:,2]>0)[0]),len(np.where(psum>0)),len(np.where(pdif>0)),len(np.where(dataTcalMS[a,s,p]>0))) 
+                        #print(i,a,s,p)
+                        #print(len(np.where(data1[i,a,s,p,:,2]>0)[0]),len(np.where(psum>0)),len(np.where(pdif>0)),len(np.where(dataTcalMS[a,s,p]>0)))
                         # flag Tsys if pdif<0 or psum<0
                         tmpIndx = np.where(pdif[p]<0)[0]
                         #print(tmpIndx)
@@ -1255,11 +1255,11 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                                 polstr = 'R'
                             else:
                                 polstr = 'L'
-                            
+
                             casalog.post('*** WARNING: '+antNames[a]+' spw '+str(s)+' poln '+polstr+\
                                          ' completely flagged in scan '+str(scans[i])+' due to insufficient unflagged'+\
                                          ' data after manual flagging or abnormal negative switched power data.','WARN')
-  
+
     tb.close()
 
     ## proceed with nominated solution type
@@ -1269,7 +1269,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         casalog.post('    Results will be highlighted if the abs(change) in Tcal_new for R or L is >= '+'{:.0f}'.format(Tdifthresh)+'%.  Check Tcal solutions carefully.')
     else:
         casalog.post('    Zenith opacities (tau0) and ant+elec contributions (Tae=Tant+Trx1+Trx2) are reported below.')
-    
+
     dataTae = np.zeros([lenScans,lenAnt,lenSpw,2])
     if caltable: edataTae = np.zeros([lenScans,lenAnt,lenSpw,2])
 
@@ -1292,15 +1292,15 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     if len(indx)>0:
                         # for this scan, ant, spw: we have 2 datasets (Tsys vs ZA for 2 pols)
                         # and the equations have 3 unknowns (T0_pol1, T0_pol2, tau0)
-                        
+
                         # convert kinetic Twmt to noise temp in K
                         # hmm, to simplify, take mean weighted mean atmospheric temperature during scan
                         Twmtp = k2nt(np.mean(data1[i,a,s,0,indx,1]),spwCntFreq[s])
-                        
+
                         # starting estimate for unknown parameters (T0_pol1, T0_pol2, tau0)
                         se       = [50.,50.,0.2]
 			#print(a,s)
-			#if (a==11) and (s==27): 
+			#if (a==11) and (s==27):
 			#	fit = using_curvefit2(data1[i,a,s,0,indx,2],data1[i,a,s,1,indx,2],
 			#					data1[i,a,s,0,indx,0],Trab,Tuab,Twmtp)
 			#	print(fit)
@@ -1313,9 +1313,9 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                         except:
                         		casalog.post('*** WARNING: Not enought unflagged data to fit antenna '+str(a)+\
                         			' at scan '+str(scans[i])+'. Setting opacity = 0 and T=-999 K.','WARN')
-                        		NNN=len(se)			
+                        		NNN=len(se)
                         		fit=np.zeros(NNN)-999
-		
+
                         #x  = data1[i,a,s,0,indx,0]
                         #y1 = data1[i,a,s,0,indx,2]
                         #y2 = data1[i,a,s,1,indx,2]
@@ -1323,11 +1323,11 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                         #plt.plot(x,y1,'b.-',x,func(x,np.r_[fit[0],fit[-1]],Trab,Tuab,Twmtp),'r.-',
                         #         x,y2,'g.-',x,func(x,np.r_[fit[1],fit[-1]],Trab,Tuab,Twmtp),'y.-')
                         #plt.show()
-                        
+
                         dataopZ[i,a,s]   = fit[-1]
                         dataTae[i,a,s,0] = fit[0]-dataTcalMS[a,s,0]/2.
                         dataTae[i,a,s,1] = fit[1]-dataTcalMS[a,s,1]/2.
-                        
+
                         casalog.post('    scan '+str(scans[i])+', '+antNames[a]+', spw '+str(s)+\
                                      ' - tau0: '+'{:.3f}'.format(fit[-1])+', Tae (K): '+\
                                      '{:.2f}'.format(dataTae[i,a,s,0])+' (R), '+\
@@ -1356,7 +1356,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
             # diff = (new-old)/old*100
             dataTcal = np.zeros([lenScans,lenAnt,lenSpw,8])-999
             if caltable: edataTcal = np.zeros([lenScans,lenAnt,lenSpw,4])
-     
+
         for i in range(lenScans):
             casalog.filter('WARN')
             msmd.open(msname)
@@ -1394,9 +1394,9 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
 		    # setting standard deviation of Tsys as criterion of includ antenna in the spw fitting (stdTsys)
 		    # setting limit for standard deviation of the residuals of the first fitting (stdResi)
                     stdResi = 3.
-                    trUpperLimit = 300.	
+                    trUpperLimit = 300.
                     if ((spwCntFreq[s]/1e9) > 40):
-                    	stdTsys = 20.                    	
+                    	stdTsys = 20.
                     	if ((spwCntFreq[s]/1e9) > 45):
                     		tauUpperLimit = 0.4
                     		tauLowerLimit = 0.04
@@ -1405,18 +1405,18 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     		tauLowerLimit = 0.02
                     else:
                     	if ((spwCntFreq[s]/1e9) > 18):
-                    		stdTsys = 15.	
+                    		stdTsys = 15.
                     	else:
-                    		stdTsys = 5.                    	
+                    		stdTsys = 5.
                     	tauUpperLimit = 0.3
                     	tauLowerLimit = 0.02
-                    	#cheking for bad points.	
+                    	#cheking for bad points.
                     indx = (data1[i,a,s,0,:,2]>0) * (data1[i,a,s,0,:,2]<trUpperLimit)	* (data1[i,a,s,0,:,2] != np.inf) * (data1[i,a,s,0,:,2] != -np.inf)
 
                     if getTruw: Twmtp   = k2nt(np.mean(data1[i,a,s,0,indx,1]),spwCntFreq[s])
 
 		    # Prior Fitting (pfit, no tcal), checking outliers (output RR and LL correlation), compute std without outliers (noOutRR, noOutLL), find outliers indexs and update indx, recompute std, get first Tau value.
-                    if True in indx:	
+                    if True in indx:
                     	try:
                     		pfit, ier = scipy.optimize.leastsq(err_multi_wrap(Twmtp),[50.,50.,0.2],args=(data1[i,a,s,0,indx,0],data1[i,a,s,0,indx,2],data1[i,a,s,1,indx,2]))
                     		outRR = data1[i,a,s,0,:,2]-(pfit[0] +Twmtp*(1-np.exp(-pfit[-1]/np.cos(np.deg2rad(data1[i,a,s,0,:,0])))))
@@ -1448,7 +1448,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
 
 
 		      ##################
-		     
+
 			# Adding a last criterion prior the last fitting. Checking if ZA is changing properly.
                     	deltaZA = np.max(data1[i,a,s,0,indx,0])-np.min(data1[i,a,s,0,indx,0])
                     	mZA = np.min(data1[i,a,s,0,indx,0])
@@ -1460,13 +1460,13 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
 			# Select antenna to perform the fit, and adding the boundaries
                     	if (np.max(data1[i,a,s,0,indx,2]) != np.inf) and (np.max(data1[i,a,s,1,indx,2]) != np.inf) and (np.min(data1[i,a,s,0,indx,2]) != -np.inf) and (np.min(data1[i,a,s,1,indx,2]) != -np.inf) and (np.std(data1[i,a,s,0,indx,2])<stdTsys) and (np.std(data1[i,a,s,1,indx,2])<stdTsys) and (deltaZA > 10) and (mZA>30) and (stdR < stdResi) and (stdL < stdResi) and (np.mean(data1[i,a,s,0,indx,2])<trUpperLimit) and (np.mean(data1[i,a,s,1,indx,2])<trUpperLimit):
                     	#if crit01 and crit02 and crit03 and crit04 and crit06:
-                    		dataTsys += (data1[i,a,s,0,indx,2],data1[i,a,s,1,indx,2])			        
+                    		dataTsys += (data1[i,a,s,0,indx,2],data1[i,a,s,1,indx,2])
                     		dataZA   += (data1[i,a,s,0,indx,0],)
-                    		boundLower  += [0.,0.8,0.,0.8]	
+                    		boundLower  += [0.,0.8,0.,0.8]
                     		boundUpper  += [trUpperLimit,1.2,trUpperLimit,1.2]
-                    		boundLower2  += [0.,0.7,0.,0.7]	
+                    		boundLower2  += [0.,0.7,0.,0.7]
                     		boundUpper2  += [trUpperLimit,1.2,trUpperLimit,1.2]
-                    		boundLower3  += [0.,0.7,0.,0.7]	
+                    		boundLower3  += [0.,0.7,0.,0.7]
                     		boundUpper3  += [trUpperLimit,1.3,trUpperLimit,1.3]
                     		se       += [50.,50.]
                     		AntArr   += [a]
@@ -1478,18 +1478,18 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     		badStd += [totalStd]
 
                 if AntArr == []:
-                    		dataTsys += (data1[i,besta,s,0,indxbesta,2],data1[i,besta,s,1,indxbesta,2])			        
+                    		dataTsys += (data1[i,besta,s,0,indxbesta,2],data1[i,besta,s,1,indxbesta,2])
                     		dataZA   += (data1[i,besta,s,0,indxbesta,0],)
-                    		boundLower  += [0.,0.8,0.,0.8]	
+                    		boundLower  += [0.,0.8,0.,0.8]
                     		boundUpper  += [trUpperLimit,1.2,trUpperLimit,1.2]
-                    		boundLower2  += [0.,0.7,0.,0.7]	
+                    		boundLower2  += [0.,0.7,0.,0.7]
                     		boundUpper2  += [trUpperLimit,1.2,trUpperLimit,1.2]
-                    		boundLower3  += [0.,0.7,0.,0.7]	
+                    		boundLower3  += [0.,0.7,0.,0.7]
                     		boundUpper3  += [trUpperLimit,1.3,trUpperLimit,1.3]
                     		se       += [50.,50.]
                     		AntArr   += [besta]
                     		seTcal   += [50.,1.,50.,1.]
-                    		antUsed += [antNames[besta],]                
+                    		antUsed += [antNames[besta],]
                 seTcal += [0.2]
                 boundLower += [tauLowerLimit]
                 boundUpper += [tauUpperLimit]
@@ -1499,14 +1499,14 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                 boundUpper3 += [tauUpperLimit]
 		#Pedro added Try
                 if not calcTcals:
-                	try:					
+                	try:
                 		fit, ier = scipy.optimize.leastsq(err_multi_wrap(Twmtp),se,args=dataZA+dataTsys)
-                	except:		
+                	except:
                 		casalog.post('*** WARNING: Not enought unflagged data to fit spw '+str(s)+' at scan '+str(scans[i])+\
                 			'. Setting opacity = 0 and T=-999 K.','WARN')
-                		NNN=len(se)			
+                		NNN=len(se)
                 		fit=np.zeros(NNN)-999
-                	if fit[-1] < 0: 
+                	if fit[-1] < 0:
                 		fit[-1] = np.mean(tauTemp[tauTemp>0])
                 		efit[-1] = 3*np.std(tauTemp[tauTemp>0])
                 		casalog.post('Scan '+str(scans[i])+' opacity for spw '+str(s)+' at '+'{:.3f}'.format(spwCntFreq[s]/1e9)+' GHz computed per antenna without fitting Tcal.','WARN')
@@ -1551,13 +1551,13 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                 				dataTcal[i,a,s,2] = (Tcal[inan]-1)*100.
                 				dataTcal[i,a,s,4] = Tcal[inan]
                 				dataTcal[i,a,s,6] = dataTcalMS[a,s,0]
-                				if caltable: 
+                				if caltable:
                 					edataTcal[i,a,s,0] = eTcal[inan]*dataTcalMS[a,s,0]
                 					edataTcal[i,a,s,2] = abs((Tcal[inan]+eTcal[inan]-1)*100.-(Tcal[inan]-1)*100.)
                 			else:
                 				badTcalRight += [antNames[a],]
                 				anyBadRight = True
-                			if not ErrorAnt[inan+1]:				
+                			if not ErrorAnt[inan+1]:
                 				dataTcal[i,a,s,1]   = Tcal[inan+1] * dataTcalMS[a,s,1]
                 				dataTcal[i,a,s,3] = (Tcal[inan+1]-1)*100.
                 				dataTcal[i,a,s,5] = Tcal[inan+1]
@@ -1575,7 +1575,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                 	if anyBadRight and caltable: casalog.post('Scan '+str(scans[i])+': The following antennas for spw '+str(s)+' do not show a good Tcal solution for R polarization:'+str(badTcalRight),'INFO')
                 	if anyBadLeft and caltable: casalog.post('Scan '+str(scans[i])+': The following antennas for spw '+str(s)+' do not show a good Tcal solution for L polarization:'+str(badTcalLeft),'INFO')
                 	casalog.post('Fit attempt: '+str(VersionFit)+'. Scan '+str(scans[i])+' opacity for spw '+str(s)+' at '+'{:.3f}'.format(spwCntFreq[s]/1e9)+' GHz: '+'{:.3f}'.format(fit[-1])+' pm '+'{:.3f}'.format(efit[-1]),'INFO')
-			
+
 
                 #import matplotlib.pyplot as plt
                 #a=4
@@ -1627,14 +1627,14 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     	 tb.putcell('FPARAM',int(k),np.array([[fit[-1]]]))
                     	 tb.putcell('FLAG',  int(k),np.array([[False]],dtype=bool))
                     	 tb.flush()
-                    	 tb.close()	
+                    	 tb.close()
                     	 if calcTcals:
                     	 	tb.open(caltableT,nomodify=False)
                     	 	tb.putcell('NOISE_CAL',int(k),np.array([[dataTcal[i,a,s,0],dataTcal[i,a,s,1]],[0.,0.]]))
                     	 	tb.flush()
                     	 	tb.close()
-			  
-    
+
+
     # print out summary statistics
     casalog.post('--> Print summary statistics for zenith opacity (over antenna) in nepers: ')
     if (not calcTcals):
@@ -1657,7 +1657,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                     sB = sA[np.abs(dataopZ[i,:,s])>0]
 		    #if sB==[]:
 			#	sB=0
-		    
+
 		    #Pedro added the if
                     if (len(sB)!=0):
                     	s1 = np.median(sB)
@@ -1672,7 +1672,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
             msmd.open(msname)
             scanspws = msmd.spwsforintent('*DO_SKYDIP*')
             msmd.done()
-			
+
         else:
             #
             # OPTION 2: opacity was solved per scan and spw
@@ -1725,7 +1725,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         	    # don't let this contribute to statistics
 		    # Pedro added next if
         	    sA = dataTae[i,:,s,:]
-        	    sB = sA[np.abs(dataTae[i,:,s,:])>0] 
+        	    sB = sA[np.abs(dataTae[i,:,s,:])>0]
         	    #sB = sA[(dataTae[i,:,s,:])>0 * (dataTae[i,:,s,:]) < 600]
         	    sindex = (sB>0.) * (sB<600.)
         	    if (len(sB[sindex])!=0):
@@ -1739,7 +1739,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         	    else:
         	    	casalog.post('*** WARNING: Not enought unflagged data to fit spw '+str(s)+'.','WARN')
 
-  
+
     if calcTcals and caltable:
         casalog.post('--> Print summary statistics for new Tcal solutions (over antenna and polarization) in K: ')
         casalog.post('    median, median absolute deviation, min outlier, max outlier')
@@ -1780,7 +1780,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
             sA = dataTcal[i,:,s,2:4]
 	    #NN = np.isnan(dataTcal).any()
 	    #if (NN==False):
-            s0 = sA[np.abs(dataTcal[i,:,s,0:2])>0.]	
+            s0 = sA[np.abs(dataTcal[i,:,s,0:2])>0.]
             sB = sA[np.abs(dataTcal[i,:,s,2:4])>0.]
             sindex = (sB>(-19.999)) * (sB<19.999) * (s0 != 0.0)
             if (len(sB[sindex])!=0):
@@ -1809,7 +1809,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
         tipErrorModel = np.zeros(lenSpw)
         inds = 0
         for s in scanspws:
-    	      if not tauPerAnt: 
+    	      if not tauPerAnt:
                   Tau = dataopZ[:,s]
                   eTau = edataopZ[:,s]
     	      else:
@@ -1819,7 +1819,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                   if emax > emin:
                       eTau = emax/20
                   else:
-                      eTau = emin/20 
+                      eTau = emin/20
     	      tipOpacity[inds] = np.median(Tau[Tau>0])
     	      tipFreq[inds] = spwCntFreq[s]
     	      if not tauPerAnt:
@@ -1833,7 +1833,7 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
               FGHz = tipFreq[si]/1e9
               freq_opacity = estimateOpacity(pwvmean=pwv,reffreq=FGHz,altitude=2124,P=Pressure,H=Humidity,T=Temperature,h0=hscale,maxAltitude=20.0,verbose=False)
               tipErrorModel[si] = abs(freq_opacity[0]-tipOpacity[si])
-        typical_error = np.max(tipErrorModel)       
+        typical_error = np.max(tipErrorModel)
         for si in range(len(spwCntFreq)):
               FGHz = spwCntFreq[si]/1e9
               freq_opacity = estimateOpacity(pwvmean=pwv,reffreq=FGHz,altitude=2124,P=Pressure,H=Humidity,T=Temperature,h0=hscale,maxAltitude=20.0,verbose=False)
@@ -1841,13 +1841,13 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
               ealltau[si] = typical_error
         if not caltable:
             return alltau
-        else:            
+        else:
     	    if not tauPerAnt:
                 newdataopZ = np.zeros([lenScans,lenSpw])
                 enewdataopZ = np.zeros([lenScans,lenSpw])
                 for i in range(lenScans):
                      for ii in range(lenSpw):
-                             if dataopZ[i,ii] > 0: 
+                             if dataopZ[i,ii] > 0:
                                            newdataopZ[i,ii] = alltau[ii]
                                            enewdataopZ[i,ii] = ealltau[ii]
                 return spwCntFreq, antNames, newdataopZ, dataTae, dataTcal, enewdataopZ, edataTae, edataTcal, hscale, errfit, pwv, errpwv, rmsTau
@@ -1857,11 +1857,11 @@ def tipopac(msname,caltableZ,tauPerAnt,calcTcals,caltableT,cmdFlag,usrFlag,flagF
                 for i in range(lenScans):
                      for ii in range(lenSpw):
                              for an in range(lenAnt):
-                                   if dataopZ[i,an,ii] > 0: 
+                                   if dataopZ[i,an,ii] > 0:
                                                      newdataopZ[i,an,ii] = alltau[ii]
                                                      enewdataopZ[i,an,ii] = ealltau[ii]
                 edataTae = 0.1*dataTae
-                return spwCntFreq, antNames,newdataopZ, dataTae, enewdataopZ, edataTae, hscale, errfit, pwv, errpwv, rmsTau 
+                return spwCntFreq, antNames,newdataopZ, dataTae, enewdataopZ, edataTae, hscale, errfit, pwv, errpwv, rmsTau
     else:
        if not caltable:
     	    if tauPerAnt:
