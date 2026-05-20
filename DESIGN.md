@@ -260,7 +260,11 @@ Attrs
 
 - `tau_zenith` keeps an `antenna` dim even in the non-per-antenna modes; values
   broadcast equal across antennas. The dim cost is trivial and downstream code
-  simplifies.
+  simplifies. In `global_tau` and `tcal_solve`, `tau_zenith` is written to **all**
+  antennas when the global fit succeeds — including antennas that failed per-antenna
+  screening. An antenna excluded by screening has `fit_success=False` and `T0`/
+  `tcal_fit` set to NaN, but `tau_zenith` is still populated with the global τ₀ so
+  downstream caltable writers can populate every antenna row without special-casing.
 - `tau_extrapolated` is populated for every spw in the source (§7) — including
   those with a successful per-(scan, antenna) fit — so the am curve can serve
   as a QA cross-check overlay. Downstream consumers should prefer `tau_zenith`
@@ -333,11 +337,25 @@ bounds taken from v2.6's most relaxed (layer-3) bracket:
 - `τ ∈ [0.0, tauUpperLimit]`: `tauUpperLimit = 0.4` for spw center > 45 GHz,
   else `0.3` (`task_tipopac.py:1398–1412`).
 
-The fit is run **twice** per `(scan, antenna, spw)` as a clip-and-refit
-sequence: initial `least_squares` → flag samples with `|residual| > 2σ`
-→ re-run `least_squares` with the clipped samples masked. The refit result
-is the published fit. This mirrors v2.6 (`task_tipopac.py:1421–1431`) and
-is essential for matching v2.6's τ numerics on noisy scans.
+**`tau_per_antenna` fit flow.** The fit is run **twice** per `(scan, antenna, spw)`
+as a clip-and-refit sequence: initial `least_squares` → flag samples with
+`|residual| > 2σ` → re-run `least_squares` with the clipped samples masked.
+The refit result is the published fit. This mirrors v2.6 (`task_tipopac.py:1421–1431`)
+and is essential for matching v2.6's τ numerics on noisy scans.
+
+**`global_tau` / `tcal_solve` fit flow.** These modes have a two-phase structure:
+1. **Per-antenna screening** (using the no-Tcal `tau_per_antenna` residuals). For
+   each antenna a two-pass clip-and-refit is run to identify and remove 2σ outliers
+   and to apply all QA gates (dz, mz, tsys_std, tsys_upper, resid_clip). Antennas
+   that fail any gate are excluded from the global fit and their failure reason is
+   stored in `fit_reason`; `tau_zenith` is still broadcast to them on global-fit
+   success (see §5 note above). Twmt is taken from the first passing antenna's valid
+   samples (matching v2.6's `getTruw` flag).
+2. **Global least_squares** over all passing antennas. Parameter vector:
+   - `global_tau`: `[T0_R_0, T0_L_0, ..., T0_R_{N-1}, T0_L_{N-1}, τ₀]` (2N+1 params)
+   - `tcal_solve`: `[T0_R_0, c_R_0, T0_L_0, c_L_0, ..., τ₀]` (4N+1 params),
+     where `c` is the Tcal correction multiplier (model: `Tsys_meas = (T0+pred)/c`).
+   One call, no retry (DESIGN.md §12 defers multi-layer escalation).
 
 QA gates (from v2.6) move into a single `quality_check(...)` function
 returning a typed reason string from the enum below. Thresholds match v2.6
