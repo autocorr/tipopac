@@ -41,8 +41,8 @@ DEFAULT_OUT = REPO_ROOT / "tests" / "integration" / "reference" / "v26"
 
 MODES: dict[str, dict[str, bool]] = {
     "tau_per_antenna": {"tauPerAnt": True, "calcTcals": False},
-    "global_tau":      {"tauPerAnt": False, "calcTcals": False},
-    "tcal_solve":      {"tauPerAnt": False, "calcTcals": True},
+    "global_tau": {"tauPerAnt": False, "calcTcals": False},
+    "tcal_solve": {"tauPerAnt": False, "calcTcals": True},
 }
 
 PER_ANT_FIT = re.compile(
@@ -60,7 +60,9 @@ NEG_TAU_RESCUE = re.compile(
 ANTENNAS_USED = re.compile(
     r"Scan (\d+): Antennas used for spw (\d+) to get tau:\[(.*?)\]"
 )
-TOO_FEW_ANT = re.compile(r"Not enought unflagged data to fit antenna (\d+) at scan (\d+)")
+TOO_FEW_ANT = re.compile(
+    r"Not enought unflagged data to fit antenna (\d+) at scan (\d+)"
+)
 TOO_FEW_SPW = re.compile(r"Not enought unflagged data to fit spw (\d+) at scan (\d+)")
 TIPOPAC_BANNER = re.compile(r"--> tipopac version (\S+)")
 
@@ -77,14 +79,14 @@ def read_caltable_z(z_path: Path) -> dict[str, np.ndarray]:
     tb = _table()
     tb.open(str(z_path))
     out = {
-        "fparam":   tb.getcol("FPARAM")[0, 0, :],
+        "fparam": tb.getcol("FPARAM")[0, 0, :],
         "paramerr": tb.getcol("PARAMERR")[0, 0, :],
-        "snr":      tb.getcol("SNR")[0, 0, :],
-        "flag":     tb.getcol("FLAG")[0, 0, :],
-        "scan":     tb.getcol("SCAN_NUMBER"),
-        "ant":      tb.getcol("ANTENNA1"),
-        "spw":      tb.getcol("SPECTRAL_WINDOW_ID"),
-        "time":     tb.getcol("TIME"),
+        "snr": tb.getcol("SNR")[0, 0, :],
+        "flag": tb.getcol("FLAG")[0, 0, :],
+        "scan": tb.getcol("SCAN_NUMBER"),
+        "ant": tb.getcol("ANTENNA1"),
+        "spw": tb.getcol("SPECTRAL_WINDOW_ID"),
+        "time": tb.getcol("TIME"),
     }
     tb.close()
     return out
@@ -95,9 +97,9 @@ def read_caltable_t(t_path: Path) -> dict[str, np.ndarray]:
     tb.open(str(t_path))
     out = {
         "noise_cal": tb.getcol("NOISE_CAL"),  # (n_load=2, n_pol=2, n_rows)
-        "ant":       tb.getcol("ANTENNA_ID"),
-        "spw":       tb.getcol("SPECTRAL_WINDOW_ID"),
-        "time":      tb.getcol("TIME"),
+        "ant": tb.getcol("ANTENNA_ID"),
+        "spw": tb.getcol("SPECTRAL_WINDOW_ID"),
+        "time": tb.getcol("TIME"),
     }
     tb.close()
     return out
@@ -110,7 +112,11 @@ def read_caldevice_ref(ms_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray
     ant = tb.getcol("ANTENNA_ID")
     spw = tb.getcol("SPECTRAL_WINDOW_ID")
     tb.close()
-    return nc[0, :, :], ant, spw  # row 0 is the noise tube; row 1 is the unused solar slot
+    return (
+        nc[0, :, :],
+        ant,
+        spw,
+    )  # row 0 is the noise tube; row 1 is the unused solar slot
 
 
 def parse_casalog(text: str) -> dict[str, object]:
@@ -139,7 +145,8 @@ def parse_casalog(text: str) -> dict[str, object]:
             s, w, names_str = m.groups()
             names = (
                 [n.strip().strip("'\"") for n in names_str.split(",")]
-                if names_str.strip() else []
+                if names_str.strip()
+                else []
             )
             ants_used[(int(s), int(w))] = names
             continue
@@ -254,19 +261,19 @@ def build_dataset(
             too_few_per_spw[s_idx[s], w_idx[w]] = True
 
     data_vars: dict[str, tuple] = {
-        "tau_caltable":                (("scan", "antenna", "spw"), tau_caltable),
-        "tau_log":                     (("scan", "antenna", "spw"), tau_log),
-        "tau_err_log":                 (("scan", "antenna", "spw"), tau_err_log),
-        "paramerr_caltable":           (("scan", "antenna", "spw"), paramerr_caltable),
-        "snr_caltable":                (("scan", "antenna", "spw"), snr_caltable),
-        "T0":                          (("scan", "antenna", "spw", "polarization"), T0),
-        "version_fit":                 (("scan", "spw"), version_fit),
-        "negative_tau_rescue":         (("scan", "spw"), neg_tau),
-        "besta_rescue":                (("scan", "spw"), besta_rescue),
-        "antennas_used_count":         (("scan", "spw"), ants_used_count),
+        "tau_caltable": (("scan", "antenna", "spw"), tau_caltable),
+        "tau_log": (("scan", "antenna", "spw"), tau_log),
+        "tau_err_log": (("scan", "antenna", "spw"), tau_err_log),
+        "paramerr_caltable": (("scan", "antenna", "spw"), paramerr_caltable),
+        "snr_caltable": (("scan", "antenna", "spw"), snr_caltable),
+        "T0": (("scan", "antenna", "spw", "polarization"), T0),
+        "version_fit": (("scan", "spw"), version_fit),
+        "negative_tau_rescue": (("scan", "spw"), neg_tau),
+        "besta_rescue": (("scan", "spw"), besta_rescue),
+        "antennas_used_count": (("scan", "spw"), ants_used_count),
         "too_few_samples_per_antenna": (("scan", "antenna", "spw"), too_few_per_ant),
-        "too_few_samples_per_spw":     (("scan", "spw"), too_few_per_spw),
-        "caltable_flag":               (("scan", "antenna", "spw"), flag_caltable),
+        "too_few_samples_per_spw": (("scan", "spw"), too_few_per_spw),
+        "caltable_flag": (("scan", "antenna", "spw"), flag_caltable),
     }
 
     if t_path is not None and t_path.exists():
