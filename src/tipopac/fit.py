@@ -7,6 +7,7 @@ All three modes implemented: tau_per_antenna, global_tau, tcal_solve.
 from __future__ import annotations
 
 import numpy as np
+import scipy.sparse as _sp
 import xarray as xr
 from scipy.optimize import least_squares
 
@@ -230,6 +231,39 @@ def _residuals_global(
     return np.concatenate(parts)
 
 
+def _jac_global(
+    p: np.ndarray,
+    z_list: list[np.ndarray],
+    tsys_R_list: list[np.ndarray],
+    tsys_L_list: list[np.ndarray],
+    Twmt: float,
+) -> np.ndarray:
+    """Analytical Jacobian for _residuals_global.
+
+    p = [T0_R_0, T0_L_0, ..., T0_R_{N-1}, T0_L_{N-1}, tau0].
+    Residual order per antenna k: [R samples..., L samples...].
+    """
+    tau0 = p[-1]
+    N = len(z_list)
+    n_total = sum(2 * len(z) for z in z_list)
+    J = np.zeros((n_total, 2 * N + 1))
+    row = 0
+    for k in range(N):
+        n_k = len(z_list[k])
+        cos_z = np.cos(np.deg2rad(z_list[k]))
+        # ∂pred/∂τ = Twmt * exp(-τ/cos z) / cos z; residual = tsys − (T0 + pred)
+        dpred_dtau = Twmt * np.exp(-tau0 / cos_z) / cos_z
+        # R rows
+        J[row : row + n_k, 2 * k] = -1.0
+        J[row : row + n_k, -1] = -dpred_dtau
+        row += n_k
+        # L rows
+        J[row : row + n_k, 2 * k + 1] = -1.0
+        J[row : row + n_k, -1] = -dpred_dtau
+        row += n_k
+    return _sp.csr_matrix(J)
+
+
 def _residuals_tcal(
     p: np.ndarray,
     z_list: list[np.ndarray],
@@ -255,12 +289,53 @@ def _residuals_tcal(
     return np.concatenate(parts)
 
 
+def _jac_tcal(
+    p: np.ndarray,
+    z_list: list[np.ndarray],
+    tsys_R_list: list[np.ndarray],
+    tsys_L_list: list[np.ndarray],
+    Twmt: float,
+) -> np.ndarray:
+    """Analytical Jacobian for _residuals_tcal.
+
+    p = [T0_R_0, c_R_0, T0_L_0, c_L_0, ..., tau0].
+    Residual order per antenna k: [R samples..., L samples...].
+    """
+    tau0 = p[-1]
+    N = len(z_list)
+    n_total = sum(2 * len(z) for z in z_list)
+    J = np.zeros((n_total, 4 * N + 1))
+    row = 0
+    for k in range(N):
+        n_k = len(z_list[k])
+        T0_R = p[4 * k]
+        c_R = p[4 * k + 1]
+        T0_L = p[4 * k + 2]
+        c_L = p[4 * k + 3]
+        cos_z = np.cos(np.deg2rad(z_list[k]))
+        pred = Twmt * (1.0 - np.exp(-tau0 / cos_z))
+        dpred_dtau = Twmt * np.exp(-tau0 / cos_z) / cos_z
+        # r_R = tsys_R − (T0_R + pred) / c_R
+        J[row : row + n_k, 4 * k] = -1.0 / c_R
+        J[row : row + n_k, 4 * k + 1] = (T0_R + pred) / c_R**2
+        J[row : row + n_k, -1] = -dpred_dtau / c_R
+        row += n_k
+        # r_L = tsys_L − (T0_L + pred) / c_L
+        J[row : row + n_k, 4 * k + 2] = -1.0 / c_L
+        J[row : row + n_k, 4 * k + 3] = (T0_L + pred) / c_L**2
+        J[row : row + n_k, -1] = -dpred_dtau / c_L
+        row += n_k
+    return _sp.csr_matrix(J)
+
+
 def _tau_err_from_jac(
     jac: np.ndarray,
     residuals: np.ndarray,
     n_params: int,
 ) -> float:
     """Return τ error (last parameter) from SVD of the least_squares Jacobian."""
+    if _sp.issparse(jac):
+        jac = jac.toarray()
     n_obs = len(residuals)
     if n_obs <= n_params or jac.shape[0] == 0:
         return float("nan")
@@ -455,16 +530,19 @@ def _fit_global(
         lb = [0.0, 0.0] * N + [0.0]
         ub = [_TR_UPPER, _TR_UPPER] * N + [tau_upper]
         fn = _residuals_global
+        jac_fn = _jac_global
     else:
         n_params = 4 * N + 1
         p0 = [50.0, 1.0, 50.0, 1.0] * N + [0.2]
         lb = [0.0, _TCAL_LO, 0.0, _TCAL_LO] * N + [0.0]
         ub = [_TR_UPPER, _TCAL_HI, _TR_UPPER, _TCAL_HI] * N + [tau_upper]
         fn = _residuals_tcal
+        jac_fn = _jac_tcal
 
     try:
         res = least_squares(
-            fn, p0, args=(z_list, tsys_R_list, tsys_L_list, Twmt), bounds=(lb, ub)
+            fn, p0, args=(z_list, tsys_R_list, tsys_L_list, Twmt),
+            bounds=(lb, ub), jac=jac_fn,
         )
     except Exception:
         return {"reason": "fit_failed"}

@@ -63,69 +63,66 @@ def test_nearest_idx_exact_match() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Slow tests — require data/tip_test.sdm
+# Slow tests — require data/tip_test.sdm (and data/tip_test.ms for parity)
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def ds_sdm():
+    from tipopac.readers.sdm import SDMReader
+
+    if not SDMReader.supports(SDM_PATH):
+        pytest.skip(f"tip_test.sdm not found at {SDM_PATH}")
+    return SDMReader.from_path(SDM_PATH).read()
+
+
+@pytest.fixture(scope="module")
+def ds_ms():
+    from tipopac.readers.ms import MSReader
+
+    if not MSReader.supports(MS_PATH):
+        pytest.skip(f"tip_test.ms not found at {MS_PATH}")
+    return MSReader.from_path(MS_PATH).read()
+
+
 @pytest.mark.slow
-def test_sdm_reader_schema_validates() -> None:
+def test_sdm_reader_schema_validates(ds_sdm) -> None:
     """SDMReader.read() on the real SDM must pass schema.validate()."""
     from tipopac import schema
-    from tipopac.readers.sdm import SDMReader
 
-    assert SDMReader.supports(SDM_PATH), f"tip_test.sdm not found at {SDM_PATH}"
-    reader = SDMReader.from_path(SDM_PATH)
-    ds = reader.read()
-    schema.validate(ds)
+    schema.validate(ds_sdm)
 
 
 @pytest.mark.slow
-def test_sdm_reader_source_format_attr() -> None:
-    from tipopac.readers.sdm import SDMReader
-
-    ds = SDMReader.from_path(SDM_PATH).read()
-    assert ds.attrs["source_format"] == "sdm"
+def test_sdm_reader_source_format_attr(ds_sdm) -> None:
+    assert ds_sdm.attrs["source_format"] == "sdm"
 
 
 @pytest.mark.slow
-def test_sdm_reader_flag_pad_invariant() -> None:
+def test_sdm_reader_flag_pad_invariant(ds_sdm) -> None:
     """flag must be True at every NaN-padded position."""
-    from tipopac.readers.sdm import SDMReader
-
-    ds = SDMReader.from_path(SDM_PATH).read()
-    nan_mask = np.isnan(ds["time_utc"].values)  # (scan, time)
+    nan_mask = np.isnan(ds_sdm["time_utc"].values)  # (scan, time)
     for i_scan in range(nan_mask.shape[0]):
         pad_start = int(np.argmax(nan_mask[i_scan]))
         if not nan_mask[i_scan, pad_start]:
             continue
-        flag_at_pad = ds["flag"].values[i_scan, :, :, :, pad_start:]
+        flag_at_pad = ds_sdm["flag"].values[i_scan, :, :, :, pad_start:]
         assert flag_at_pad.all(), (
             f"scan index {i_scan}: flag not True at NaN-pad positions"
         )
 
 
 @pytest.mark.slow
-def test_sdm_reader_no_data_in_flagged_cells() -> None:
+def test_sdm_reader_no_data_in_flagged_cells(ds_sdm) -> None:
     """switched_diff must be NaN wherever flag is True."""
-    from tipopac.readers.sdm import SDMReader
-
-    ds = SDMReader.from_path(SDM_PATH).read()
-    diff = ds["switched_diff"].values
-    fl = ds["flag"].values
+    diff = ds_sdm["switched_diff"].values
+    fl = ds_sdm["flag"].values
     assert np.all(np.isnan(diff[fl])), "flagged cells contain non-NaN switched_diff"
 
 
 @pytest.mark.slow
-def test_sdm_ms_parity_coords() -> None:
+def test_sdm_ms_parity_coords(ds_ms, ds_sdm) -> None:
     """SDMReader and MSReader must produce identical coordinate values."""
-    from tipopac.readers.ms import MSReader
-    from tipopac.readers.sdm import SDMReader
-
-    assert MSReader.supports(MS_PATH), f"tip_test.ms not found at {MS_PATH}"
-    assert SDMReader.supports(SDM_PATH), f"tip_test.sdm not found at {SDM_PATH}"
-
-    ds_ms = MSReader.from_path(MS_PATH).read()
-    ds_sdm = SDMReader.from_path(SDM_PATH).read()
 
     # antenna names and scan ids must be identical
     np.testing.assert_array_equal(
@@ -198,19 +195,13 @@ def _common_time_indices(
 
 
 @pytest.mark.slow
-def test_sdm_ms_parity_syspower() -> None:
+def test_sdm_ms_parity_syspower(ds_ms, ds_sdm) -> None:
     """switched_diff and switched_sum must agree between readers to within 1e-4.
 
     The SDM reader may have slightly more samples than the MS reader (the MS
     reader bounds SYSPOWER on msmd integration-center times; the SDM reader uses
     the full Scan.startTime/endTime).  We compare only at matched timestamps.
     """
-    from tipopac.readers.ms import MSReader
-    from tipopac.readers.sdm import SDMReader
-
-    ds_ms = MSReader.from_path(MS_PATH).read()
-    ds_sdm = SDMReader.from_path(SDM_PATH).read()
-
     n_scan = ds_ms.sizes["scan"]
     utc_ms = ds_ms["time_utc"].values    # (scan, time)
     utc_sdm = ds_sdm["time_utc"].values
@@ -241,14 +232,8 @@ def test_sdm_ms_parity_syspower() -> None:
 
 
 @pytest.mark.slow
-def test_sdm_ms_parity_tcal_ref() -> None:
+def test_sdm_ms_parity_tcal_ref(ds_ms, ds_sdm) -> None:
     """tcal_ref must agree between MS and SDM readers to within 1%."""
-    from tipopac.readers.ms import MSReader
-    from tipopac.readers.sdm import SDMReader
-
-    ds_ms = MSReader.from_path(MS_PATH).read()
-    ds_sdm = SDMReader.from_path(SDM_PATH).read()
-
     ms_tcal = ds_ms["tcal_ref"].values
     sdm_tcal = ds_sdm["tcal_ref"].values
 
@@ -262,14 +247,8 @@ def test_sdm_ms_parity_tcal_ref() -> None:
 
 
 @pytest.mark.slow
-def test_sdm_ms_parity_zenith_angle() -> None:
+def test_sdm_ms_parity_zenith_angle(ds_ms, ds_sdm) -> None:
     """zenith_angle must agree between MS and SDM readers to within 0.1 deg."""
-    from tipopac.readers.ms import MSReader
-    from tipopac.readers.sdm import SDMReader
-
-    ds_ms = MSReader.from_path(MS_PATH).read()
-    ds_sdm = SDMReader.from_path(SDM_PATH).read()
-
     n_scan = ds_ms.sizes["scan"]
     utc_ms = ds_ms["time_utc"].values
     utc_sdm = ds_sdm["time_utc"].values
@@ -294,14 +273,8 @@ def test_sdm_ms_parity_zenith_angle() -> None:
 
 
 @pytest.mark.slow
-def test_sdm_ms_parity_weather() -> None:
+def test_sdm_ms_parity_weather(ds_ms, ds_sdm) -> None:
     """weather_T, weather_P, weather_RH must agree between readers."""
-    from tipopac.readers.ms import MSReader
-    from tipopac.readers.sdm import SDMReader
-
-    ds_ms = MSReader.from_path(MS_PATH).read()
-    ds_sdm = SDMReader.from_path(SDM_PATH).read()
-
     n_scan = ds_ms.sizes["scan"]
     utc_ms = ds_ms["time_utc"].values
     utc_sdm = ds_sdm["time_utc"].values
