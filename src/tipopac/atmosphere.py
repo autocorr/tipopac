@@ -277,12 +277,17 @@ def _fetch_open_meteo(
             rh_by_level[p_level] = float(vals[t_idx])
 
     # Build ordered arrays (surface → top of atmosphere).
-    pressure_hPa = np.array(_OM_PRESSURE_LEVELS, dtype=np.float64)
+    # Open-meteo omits pressure levels below the surface (e.g. 1000 hPa at
+    # high-altitude sites like the VLA at 2115 m); skip missing levels silently.
+    valid_levels = [p for p in _OM_PRESSURE_LEVELS if p in temp_by_level and p in rh_by_level]
+    if not valid_levels:
+        raise RuntimeError("open-meteo returned no valid pressure levels")
+    pressure_hPa = np.array(valid_levels, dtype=np.float64)
     temperature_C = np.array(
-        [temp_by_level[p] for p in _OM_PRESSURE_LEVELS], dtype=np.float64
+        [temp_by_level[p] for p in valid_levels], dtype=np.float64
     )
     rh_frac = np.array(
-        [rh_by_level[p] / 100.0 for p in _OM_PRESSURE_LEVELS], dtype=np.float64
+        [rh_by_level[p] / 100.0 for p in valid_levels], dtype=np.float64
     )
 
     pressure_q = pressure_hPa * u.hPa
