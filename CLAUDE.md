@@ -28,7 +28,8 @@ include:
 ## Toolchain & commands
 
 The repo uses **`uv`** (Astral) with `pyproject.toml` + `uv.lock`. Python ≥
-3.13 (`.python-version` pins `3.13`).
+3.13 (`.python-version` pins `3.13`). Always use `uv run python` and never run
+bare `python` commands.
 
 ```bash
 # install / sync deps (creates .venv/, respects uv.lock)

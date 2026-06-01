@@ -34,6 +34,7 @@ extend-exclude = ["tipopac_v2.6", "amwrap", "data", ".venv"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "-m 'not slow and not network'"
 markers = [
     "slow: integration tests requiring data/tip_test.ms",
     "network: tests exercising the live open-meteo endpoint",

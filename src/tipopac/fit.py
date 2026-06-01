@@ -524,33 +524,23 @@ def _fit_global(
     tsys_R_list = [s["tsys_R_c"] for s in screens]
     tsys_L_list = [s["tsys_L_c"] for s in screens]
 
+    tau_init = float(np.median([s["tau0"] for s in screens]))
+
     if not tcal_mode:
         n_params = 2 * N + 1
-        p0 = [50.0, 50.0] * N + [0.2]
+        p0 = [50.0, 50.0] * N + [tau_init]
         lb = [0.0, 0.0] * N + [0.0]
         ub = [_TR_UPPER, _TR_UPPER] * N + [tau_upper]
-        fn = _residuals_global
-        jac_fn = _jac_global
-    else:
-        n_params = 4 * N + 1
-        p0 = [50.0, 1.0, 50.0, 1.0] * N + [0.2]
-        lb = [0.0, _TCAL_LO, 0.0, _TCAL_LO] * N + [0.0]
-        ub = [_TR_UPPER, _TCAL_HI, _TR_UPPER, _TCAL_HI] * N + [tau_upper]
-        fn = _residuals_tcal
-        jac_fn = _jac_tcal
-
-    try:
-        res = least_squares(
-            fn, p0, args=(z_list, tsys_R_list, tsys_L_list, Twmt),
-            bounds=(lb, ub), jac=jac_fn,
-        )
-    except Exception:
-        return {"reason": "fit_failed"}
-
-    tau0 = float(res.x[-1])
-    tau_err_val = _tau_err_from_jac(res.jac, res.fun, n_params)
-
-    if not tcal_mode:
+        try:
+            res = least_squares(
+                _residuals_global, p0,
+                args=(z_list, tsys_R_list, tsys_L_list, Twmt),
+                bounds=(lb, ub), jac=_jac_global,
+            )
+        except Exception:
+            return {"reason": "fit_failed"}
+        tau0 = float(res.x[-1])
+        tau_err_val = _tau_err_from_jac(res.jac, res.fun, n_params)
         return {
             "reason": "ok",
             "tau0": tau0,
@@ -558,13 +548,48 @@ def _fit_global(
             "T0_R": [float(res.x[2 * k]) for k in range(N)],
             "T0_L": [float(res.x[2 * k + 1]) for k in range(N)],
         }
-    else:
-        return {
-            "reason": "ok",
-            "tau0": tau0,
-            "tau_err": tau_err_val,
-            "T0_R": [float(res.x[4 * k]) for k in range(N)],
-            "c_R": [float(res.x[4 * k + 1]) for k in range(N)],
-            "T0_L": [float(res.x[4 * k + 2]) for k in range(N)],
-            "c_L": [float(res.x[4 * k + 3]) for k in range(N)],
-        }
+
+    # tcal_mode: 3-pass escalation matching v2.6 fitting_Tcal.
+    # Pass 1: tight c∈[0.8,1.2] prevents the high-c local minimum reached from
+    # tau_init=0.2.  Escalate if tau or >8 params land on their bounds.
+    # Pass 2: c∈[0.7,1.2]; pass 3: c∈[0.7,1.3] (widest, _TCAL_LO/_TCAL_HI).
+    n_params = 4 * N + 1
+    p0 = [50.0, 1.0, 50.0, 1.0] * N + [tau_init]
+    bound_ladder: list[tuple[list, list]] = [
+        ([0.0, 0.8, 0.0, 0.8] * N + [0.0], [_TR_UPPER, 1.2, _TR_UPPER, 1.2] * N + [tau_upper]),
+        ([0.0, 0.7, 0.0, 0.7] * N + [0.0], [_TR_UPPER, 1.2, _TR_UPPER, 1.2] * N + [tau_upper]),
+        ([0.0, _TCAL_LO, 0.0, _TCAL_LO] * N + [0.0], [_TR_UPPER, _TCAL_HI, _TR_UPPER, _TCAL_HI] * N + [tau_upper]),
+    ]
+    escalation_thresholds = [8, 10]
+
+    res = None
+    for pass_idx, (lb, ub) in enumerate(bound_ladder):
+        try:
+            res = least_squares(
+                _residuals_tcal, p0,
+                args=(z_list, tsys_R_list, tsys_L_list, Twmt),
+                bounds=(lb, ub), jac=_jac_tcal,
+            )
+        except Exception:
+            return {"reason": "fit_failed"}
+        if pass_idx == len(bound_ladder) - 1:
+            break
+        upper_margin = 0.98 * np.array(ub) - res.x
+        lower_margin = 1.02 * np.array(lb) - res.x
+        n_at_bound = int(np.sum(upper_margin < 0)) + int(np.sum(lower_margin > 0))
+        if (lower_margin[-1] > 0) or (upper_margin[-1] < 0) or n_at_bound > escalation_thresholds[pass_idx]:
+            continue
+        break
+
+    assert res is not None
+    tau0 = float(res.x[-1])
+    tau_err_val = _tau_err_from_jac(res.jac, res.fun, n_params)
+    return {
+        "reason": "ok",
+        "tau0": tau0,
+        "tau_err": tau_err_val,
+        "T0_R": [float(res.x[4 * k]) for k in range(N)],
+        "c_R": [float(res.x[4 * k + 1]) for k in range(N)],
+        "T0_L": [float(res.x[4 * k + 2]) for k in range(N)],
+        "c_L": [float(res.x[4 * k + 3]) for k in range(N)],
+    }

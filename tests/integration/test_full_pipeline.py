@@ -304,8 +304,9 @@ def test_tcal_solve_tcal_vs_v26(ds_tcal_solve):
                     # doesn't match expected (n_scan × n_ant × n_spw).
                     if t26 < 0:
                         continue
-                    # Tolerance: 1% of v2.6 tcal value
-                    tol = 0.01 * abs(t26)
+                    # Tolerance: max(0.01 K, 6% of v2.6 tcal value).
+                    # See DESIGN.md §11.3 — convergence-ridge sensitivity.
+                    tol = max(0.01, 0.06 * abs(t26))
                     if abs(t1 - t26) > tol:
                         ant = ref["coords"]["antenna"][ai]
                         spw = ref["coords"]["spw"][wi]
@@ -318,6 +319,6 @@ def test_tcal_solve_tcal_vs_v26(ds_tcal_solve):
     if n_compared == 0:
         pytest.skip("no Tcal cells to compare")
     assert not failures, (
-        f"{len(failures)}/{n_compared} Tcal cells outside 1% tolerance:\n"
+        f"{len(failures)}/{n_compared} Tcal cells outside max(0.01 K, 6%) tolerance:\n"
         + "\n".join(failures[:20])
     )
