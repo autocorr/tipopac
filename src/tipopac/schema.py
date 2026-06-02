@@ -77,6 +77,13 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "tau_extrapolated": (("scan", "spw"), np.dtype(np.float32)),
     "am_freq_grid": (("frequency_dense",), np.dtype(np.float64)),
     "am_tau": (("frequency_dense",), np.dtype(np.float64)),
+    # Stage 2 (forward-model atmosphere): PWV is fitted as the single
+    # atmospheric DOF; per-antenna value lives here, with consensus +
+    # outlier flag at scan level. See design/model_refactor.md §2.5.
+    "pwv": (("scan", "antenna"), np.dtype(np.float32)),
+    "pwv_err": (("scan", "antenna"), np.dtype(np.float32)),
+    "pwv_outlier": (("scan", "antenna"), np.dtype(np.bool_)),
+    "pwv_scan_median": (("scan",), np.dtype(np.float32)),
 }
 
 POL_VALUES: tuple[str, ...] = ("R", "L")

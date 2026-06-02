@@ -1,5 +1,36 @@
 # Tipopac robustness redesign — staged plan
 
+## Implementation status
+
+- **Stage 1 (solver-side cleanup)** — landed in commit `0d1460c`. Single
+  physical bounds, σ-weighted `soft_l1` loss, iterative 4σ residual rejection,
+  identifiability gate via `σ_τ/τ`. v2.6 numerical-parity retired as a hard
+  acceptance gate (`design/initial_design.md` §11.3).
+- **Stage 2 (forward-model atmosphere)** — landed: `atmgrid.PwvGrid` builds
+  τ_z / Tb_z on a 1–50 mm × 0.5 mm PWV axis per scan via
+  `multiprocessing.Pool` of am workers (per-worker `cache_dir`). Fit modes
+  `per_antenna_pwv`, `shared_pwv` (median-then-refit-T0 implementation),
+  and `tcal_solve` reparameterise the fit so PWV is the only free
+  atmospheric DOF. Schema gains `pwv`, `pwv_err`, `pwv_outlier`,
+  `pwv_scan_median`. `extrapolate()` consumes the grid directly (no
+  separate anchor fit). Legacy modes retained as deprecated aliases plus
+  the explicit `tcal_solve_legacy` opt-in.
+
+  Plan deviations from the original document:
+  - PWV grid step reduced from 0.05 mm → 0.5 mm. Bilinear interpolation on
+    the smooth functions resolves PWV to ≲ µ-mm; 0.05 mm was 10× over-cost
+    for no measurable benefit (advisor flag).
+  - `shared_pwv` is implemented as per-antenna-fit-then-freeze rather than
+    a 417-parameter joint LM. Same user-visible semantics, no
+    ill-conditioning (advisor flag).
+  - Per-antenna fits run sequentially within a scan (~50 ms / antenna ×
+    ~27 antennas ≈ 1.4 s/scan, comfortably under the 10-minute budget).
+    The `multiprocessing.Pool` is reserved for the PWV grid precompute.
+  - Bandwidth-weighted τ vs spw-centre τ: deferred to a later release;
+    centre-freq evaluation matches v2.6's behaviour.
+
+- **Stage 3 (MCMC uncertainty quantification)** — deferred, not started.
+
 ## Context
 
 The current rewrite (`src/tipopac/`) reproduces the v2.6 CASA `tipopac`

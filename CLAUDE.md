@@ -9,13 +9,13 @@ opacity / Tcal estimation). The new package is `tipopac` under `src/tipopac/`;
 the legacy reference implementation lives **read-only** at
 `tipopac_v2.6/lastversion/tipping/private/task_tipopac.py` (~1900 lines).
 
-**`DESIGN.md` is the authoritative implementation contract** for v1. Anything
-ambiguous about API shape, data schema, fit modes, atmospheric-model anchoring,
-or acceptance criteria is answered there before you read the code. If the code
-and DESIGN.md disagree, the bug is in the code unless a follow-up has been
-explicitly agreed.
+**`design/initial_design.md` is the authoritative implementation contract** for
+v1. Anything ambiguous about API shape, data schema, fit modes,
+atmospheric-model anchoring, or acceptance criteria is answered there before
+you read the code. If the code and initial_design.md disagree, the bug is in
+the code unless a follow-up has been explicitly agreed.
 
-Implementation order is in DESIGN.md §13 (schema → MS reader → physics/fit →
+Implementation order is in `initial_design.md` §13 (schema → MS reader → physics/fit →
 flags → other modes → caltables → atmosphere → plot → SDM reader → integration
 reference). As of writing, `src/tipopac/` is an empty skeleton — only the
 package directory exists.
@@ -49,15 +49,15 @@ uv run ruff format .
 uv run ty check src/tipopac
 ```
 
-The integration test (DESIGN.md §11.2) is gated by `pytest.mark.slow` and needs
-the ~7 GB MS at `data/tip_test.ms` (symlink to `../data/`).
+The integration test (initial_design.md §11.2) is gated by `pytest.mark.slow`
+and needs the ~7 GB MS at `data/tip_test.ms` (symlink to `../data/`).
 
 ## Architecture — the parts that span multiple files
 
 Everything funnels through one in-memory representation: the canonical
-`xarray.Dataset` defined in **DESIGN.md §5**. Read that section before adding
-a data variable, changing a dim order, or touching either reader — it is the
-contract the rest of the codebase relies on.
+`xarray.Dataset` defined in **initial_design.md §5**. Read that section before
+adding a data variable, changing a dim order, or touching either reader — it is
+the contract the rest of the codebase relies on.
 
 The pipeline is:
 
@@ -68,7 +68,7 @@ readers/{ms,sdm}.py  →  schema.validate(ds)  →  flags.apply  →  fit.fit_sc
 - **`readers/`** — `MSReader` (uses `casatools.table`) and `SDMReader` (uses
   `sdmpy`) implement the `TippingReader` Protocol in `readers/base.py`. **Both
   must produce the same `xarray.Dataset` schema.** The SDM↔MS column mapping is
-  the table in DESIGN.md §4 — that is the contract for parity between readers,
+  the table in initial_design.md §4 — that is the contract for parity between readers,
   not something to re-derive.
 - **`fit.py`** — three modes (`tau_per_antenna`, `global_tau`, `tcal_solve`)
   matching v2.6's three solver configurations. `tcal_solve` forces global τ —
@@ -77,7 +77,7 @@ readers/{ms,sdm}.py  →  schema.validate(ds)  →  flags.apply  →  fit.fit_sc
   for free; no manual `linalg.inv(J^T J)`.
 - **`atmosphere.py`** — am model via the local `amwrap/` package, anchored by
   fitting a single scalar `pwv_scaling` against the per-spw fitted τ values
-  (DESIGN.md §7). am is run **once per analysis**, never inside the fit loop.
+  (initial_design.md §7). am is run **once per analysis**, never inside the fit loop.
   Vertical profiles come from open-meteo (`openmeteo-requests`); the fallback
   on HTTP/timeout is an amwrap AFGL climatology (default
   `midlatitude_summer`). The local `amwrap/` directory is a checkout; the
@@ -96,13 +96,13 @@ purely to let notebook users inspect the dataset between stages.
 - **`ty`, not `mypy`.** `ty` is in the dev group and is the typechecker for
   this project. Do not propose mypy commands or `[tool.mypy]` config.
 - **`tipopac_v2.6/` is reference, not a dependency.** Read it to understand
-  what the rewrite must match numerically (DESIGN.md §11.3 acceptance: opacity
-  within `max(0.005, 0.05·τ_v26)`; Tcal corrections within 1%). Do not import
-  from it; do not modify it.
+  what the rewrite must match numerically (initial_design.md §11.3 acceptance:
+  opacity within `max(0.005, 0.05·τ_v26)`; Tcal corrections within 1%). Do not
+  import from it; do not modify it.
 - **Antenna dim is kept even when redundant.** `tau_zenith` carries an
   `antenna` dim in all three fit modes — in `global_tau` and `tcal_solve` the
   values broadcast equal across antennas. This is deliberate (downstream code
-  simplification), spelled out in DESIGN.md §5 "Representation choices".
+  simplification), spelled out in initial_design.md §5 "Representation choices".
 - **Time axis is per-scan-local and NaN-padded.** No MultiIndex; the `flag`
   array masks the pad.
 - **Online-flag application is one interval-overlap call**, not the four-case
@@ -111,9 +111,9 @@ purely to let notebook users inspect the dataset between stages.
 - **The `data/` directory is a symlink** to `../data/` outside the repo; the
   MS is large and shared. Don't write to it.
 
-## When DESIGN.md and reality drift
+## When initial_design.md and reality drift
 
-`DESIGN.md` is versioned in-repo and is meant to track v1. If implementation
-forces a change to the schema, the anchor algorithm, the fit-mode semantics,
-or the acceptance criteria, update DESIGN.md in the same commit. Do not let
-code-vs-doc skew accumulate silently.
+`initial_design.md` is versioned in-repo and is meant to track v1. If
+implementation forces a change to the schema, the anchor algorithm, the
+fit-mode semantics, or the acceptance criteria, update initial_design.md in the
+same commit. Do not let code-vs-doc skew accumulate silently.

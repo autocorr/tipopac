@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import xarray as xr
 
+from tipopac.atmgrid import PwvGrid
+
 _READERS: list = []  # populated on first call to avoid import-time casatools load
+
+# VLA coordinates for open-meteo lookup. Repeated from atmosphere.py because the
+# api layer needs them too; harmless duplication for two lines.
+_VLA_LAT: float = 34.0784
+_VLA_LON: float = -107.6177
 
 
 def _get_readers() -> list:
@@ -79,6 +88,9 @@ class Result:
     software_versions: dict[str, str]
 
 
+_STAGE2_MODES = ("per_antenna_pwv", "shared_pwv", "tcal_solve")
+
+
 def tipopac(
     path: str | Path,
     *,
@@ -119,6 +131,11 @@ def tipopac(
     """
     ta = TippingAnalysis.from_path(path)
     ta.apply_flags(online=flags_online, file=None if flags_file is None else Path(flags_file))
+    if mode in _STAGE2_MODES:
+        ta.build_atm_grids(
+            atm_profile_source=atm_profile_source,
+            afgl_climatology=afgl_climatology,
+        )
     ta.fit(mode=mode)
     if atm_model:
         ta.extrapolate(
@@ -147,6 +164,7 @@ class TippingAnalysis:
         self._path = path
         self._mode: str | None = None
         self._versions = _software_versions()
+        self._grids: dict[int, PwvGrid] = {}
 
     @classmethod
     def from_path(cls, path: str | Path) -> "TippingAnalysis":
@@ -165,10 +183,63 @@ class TippingAnalysis:
 
         self._ds = flags.apply(self._ds, online=online, file=file)
 
+    def build_atm_grids(
+        self,
+        *,
+        atm_profile_source: str = "open-meteo",
+        afgl_climatology: str = "midlatitude_summer",
+        pwv_step_mm: float = 0.5,
+        freq_step_Hz: float = 100e6,
+        n_workers: int | None = None,
+    ) -> None:
+        """Build per-scan :class:`PwvGrid` objects required for Stage 2 fits.
+
+        Populates ``self._grids[scan_id] = PwvGrid`` for every scan and writes
+        ``ds.attrs["pwv_profile_source"][scan_id]`` for provenance.
+        """
+        from tipopac.atmgrid import build_pwv_grid
+        from tipopac.atmosphere import fetch_profile
+
+        freqs = self._ds.coords["frequency"].values
+        freq_min_Hz = float(freqs.min()) * 0.95
+        freq_max_Hz = float(freqs.max()) * 1.05
+
+        scan_ids = self._ds.coords["scan"].values
+        scan_times = self._ds.coords["scan_time_start"].values
+        sources: dict[int, str] = {}
+        for i, scan_id in enumerate(scan_ids):
+            obs_time_mjd_s = float(scan_times[i])
+            pressure, temperature, h2o_vmr, source_label, _meta = fetch_profile(
+                _VLA_LAT,
+                _VLA_LON,
+                obs_time_mjd_s,
+                source=atm_profile_source,
+                afgl_climatology=afgl_climatology,
+            )
+            grid = build_pwv_grid(
+                pressure,
+                temperature,
+                h2o_vmr,
+                freq_min_Hz=freq_min_Hz,
+                freq_max_Hz=freq_max_Hz,
+                profile_source=source_label,
+                pwv_step_mm=pwv_step_mm,
+                freq_step_Hz=freq_step_Hz,
+                n_workers=n_workers,
+            )
+            self._grids[int(scan_id)] = grid
+            sources[int(scan_id)] = source_label
+
+        self._ds.attrs["pwv_profile_source"] = sources
+
     def fit(self, mode: str = "tcal_solve") -> None:
         from tipopac import fit
 
-        fit.fit_dataset(self._ds, mode=mode)
+        fit.fit_dataset(
+            self._ds,
+            mode=mode,
+            grids=self._grids if self._grids else None,
+        )
         self._mode = mode
 
     def extrapolate(
@@ -183,6 +254,7 @@ class TippingAnalysis:
             self._ds,
             atm_profile_source=atm_profile_source,
             afgl_climatology=afgl_climatology,
+            grids=self._grids if self._grids else None,
         )
 
     def plot(self, out_dir: str | Path) -> None:

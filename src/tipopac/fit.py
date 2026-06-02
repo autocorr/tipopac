@@ -1,11 +1,30 @@
-"""Tipping-curve fitter for tipopac (DESIGN.md §6.3).
+"""Tipping-curve fitter for tipopac.
 
-Public entry point: `fit_dataset(ds, mode)` — mutates the dataset in-place.
-All three modes implemented: tau_per_antenna, global_tau, tcal_solve.
+Public entry point: ``fit_dataset(ds, mode, grids=...)`` — mutates the dataset
+in place.
+
+Modes
+-----
+Stage 2 (forward-model atmosphere; PWV is the single atmospheric DOF):
+    - ``per_antenna_pwv``: PWV per antenna, T0 per (ant, spw, pol)
+    - ``shared_pwv``: one PWV per scan, T0 per (ant, spw, pol)
+    - ``tcal_solve``: PWV per antenna, T0 + c per (ant, spw, pol)
+
+Stage 1 (legacy per-spw τ; for back-compat, will be removed in a future
+release):
+    - ``tau_per_antenna`` (deprecated alias warns at call time)
+    - ``global_tau`` (deprecated alias warns at call time)
+    - ``tcal_solve_legacy`` (explicit opt-in to the Stage-1 ridge-prone fit)
+
+Stage 2 modes require a per-scan ``PwvGrid`` (see
+:mod:`tipopac.atmgrid`); pass them as ``grids={scan_idx: PwvGrid, ...}``.
+``TippingAnalysis.build_atm_grids()`` populates the dict. Stage 1 modes do not
+use the grid and accept ``grids=None``.
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import cast
 
 import numpy as np
@@ -13,6 +32,7 @@ import scipy.sparse as _sp
 import xarray as xr
 from scipy.optimize import least_squares
 
+from tipopac.atmgrid import PwvGrid
 from tipopac.physics import k2nt, weighted_mean_atm_T
 
 __all__ = ["fit_dataset"]
@@ -27,17 +47,61 @@ _C_LO: float = 0.5  # Tcal correction multiplier lower bound (physical prior)
 _C_HI: float = 2.0  # Tcal correction multiplier upper bound (physical prior)
 _TAU_HI: float = 1.0  # zenith τ upper bound (physical prior across VLA bands)
 
-_ALLOWED_MODES = ("tau_per_antenna", "global_tau", "tcal_solve")
+_LEGACY_MODES = ("tau_per_antenna", "global_tau", "tcal_solve_legacy")
+_NEW_MODES = ("per_antenna_pwv", "shared_pwv", "tcal_solve")
+_ALLOWED_MODES = _LEGACY_MODES + _NEW_MODES
+_OUTLIER_PWV_FLOOR_MM: float = 1.0  # VLA A-config inter-antenna PWV variability
+_OUTLIER_MAD_K: float = 3.0
 
 
-def fit_dataset(ds: xr.Dataset, mode: str) -> None:
+def fit_dataset(
+    ds: xr.Dataset,
+    mode: str,
+    grids: dict[int, PwvGrid] | None = None,
+) -> None:
     """Fit tipping curves and write result variables into *ds* in-place.
 
-    Adds: Tsys, tau_zenith, tau_err, T0, tcal_fit, fit_success, fit_reason.
-    Raises ValueError for unrecognised mode.
+    Adds (Stage 2 modes): Tsys, sigma_Tsys, tau_zenith (derived), tau_err
+    (derived), T0, tcal_fit, fit_success, fit_reason, pwv, pwv_err,
+    pwv_outlier, pwv_scan_median.
+
+    Adds (legacy modes): Tsys, sigma_Tsys, tau_zenith, tau_err, T0, tcal_fit,
+    fit_success, fit_reason.
+
+    Parameters
+    ----------
+    ds:
+        Canonical xarray.Dataset (schema §5).
+    mode:
+        One of the strings listed in the module docstring.
+    grids:
+        ``dict[scan_idx: int → PwvGrid]``. Required for Stage 2 modes; ignored
+        for legacy modes.
+
+    Raises
+    ------
+    ValueError
+        On unrecognised mode or when a Stage 2 mode is invoked without grids.
     """
     if mode not in _ALLOWED_MODES:
         raise ValueError(f"mode must be one of {_ALLOWED_MODES!r}, got {mode!r}")
+
+    if mode in ("tau_per_antenna", "global_tau"):
+        new_eq = "per_antenna_pwv" if mode == "tau_per_antenna" else "shared_pwv"
+        warnings.warn(
+            f"mode={mode!r} is deprecated and routes to the Stage-1 legacy fit. "
+            f"For the Stage-2 forward-model fit, call mode={new_eq!r} after "
+            "TippingAnalysis.build_atm_grids() (semantics differ — "
+            "see design/model_refactor.md §2.4).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    if mode in _NEW_MODES and grids is None:
+        raise ValueError(
+            f"mode={mode!r} requires precomputed PWV grids; "
+            "call TippingAnalysis.build_atm_grids() first."
+        )
 
     Tsys_arr = _compute_tsys(ds)
     ds["Tsys"] = (("scan", "antenna", "spw", "polarization", "time"), Tsys_arr)
@@ -47,6 +111,15 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
         ("scan", "antenna", "spw", "polarization", "time"),
         sigma_Tsys_arr,
     )
+
+    if mode in _NEW_MODES:
+        assert grids is not None  # narrowed by the earlier check
+        _fit_dataset_stage2(ds, mode, grids, Tsys_arr, sigma_Tsys_arr)
+        return
+
+    # ---- Legacy (Stage 1) fit path ----
+    # tcal_solve_legacy uses the same code as the v2.6-style tcal_solve.
+    legacy_mode = "tcal_solve" if mode == "tcal_solve_legacy" else mode
 
     n_scan = ds.sizes["scan"]
     n_ant = ds.sizes["antenna"]
@@ -72,7 +145,7 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
             freq_Hz = float(freq_vals[i_spw])
             tau_upper = _TAU_HI  # uniform physical bound — no freq-dep cliff
 
-            if mode == "tau_per_antenna":
+            if legacy_mode == "tau_per_antenna":
                 for i_ant in range(n_ant):
                     result = _fit_tau_per_antenna(
                         z_all=zenith_vals[i_scan, i_ant, :],
@@ -141,7 +214,7 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
                 passing_screens = [s for _, s in passing]
                 global_result = _fit_global(
                     passing_screens,
-                    tcal_mode=(mode == "tcal_solve"),
+                    tcal_mode=(legacy_mode == "tcal_solve"),
                 )
 
                 global_reason = global_result["reason"]
@@ -170,7 +243,7 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
                 for j, (i_ant, _) in enumerate(passing):
                     T0_out[i_scan, i_ant, i_spw, 0] = global_result["T0_R"][j]
                     T0_out[i_scan, i_ant, i_spw, 1] = global_result["T0_L"][j]
-                    if mode == "global_tau":
+                    if legacy_mode == "global_tau":
                         tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[
                             i_ant, i_spw, 0
                         ]
@@ -761,4 +834,494 @@ def _fit_global(
         "c_R": [float(res.x[4 * k + 1]) for k in range(N)],
         "T0_L": [float(res.x[4 * k + 2]) for k in range(N)],
         "c_L": [float(res.x[4 * k + 3]) for k in range(N)],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — forward-model fit with PwvGrid
+# ---------------------------------------------------------------------------
+
+
+def _param_err_from_jac(
+    jac: "np.ndarray | _sp.csr_matrix",
+    residuals: np.ndarray,
+    n_params: int,
+    idx: int,
+) -> float:
+    """Return σ for parameter ``idx`` from σ-weighted Jacobian + residuals.
+
+    Same covariance computation as :func:`_tau_err_from_jac`, generalised to
+    any parameter index (Stage 1 always returned σ_τ at the last column).
+    """
+    if _sp.issparse(jac):
+        jac_dense: np.ndarray = np.asarray(cast(_sp.csr_matrix, jac).toarray())
+    else:
+        jac_dense = np.asarray(jac)
+    n_obs = len(residuals)
+    if n_obs <= n_params or jac_dense.shape[0] == 0:
+        return float("nan")
+    sigma2 = float(np.sum(residuals**2)) / (n_obs - n_params)
+    try:
+        _, s, Vt = np.linalg.svd(jac_dense, full_matrices=False)
+    except np.linalg.LinAlgError:
+        return float("nan")
+    if s[0] == 0.0:
+        return float("nan")
+    thresh = np.finfo(float).eps * max(jac.shape) * s[0]
+    s_safe = np.where(s > thresh, s, thresh)
+    cov_diag = sigma2 * float(np.sum((Vt[:, idx] / s_safe) ** 2))
+    return float(np.sqrt(max(cov_diag, 0.0)))
+
+
+def _forward_predict(
+    pwv: float,
+    T0: np.ndarray,  # (n_pol, n_spw)
+    c: np.ndarray,   # (n_pol, n_spw) — ones for opacity-only mode
+    z_v: np.ndarray,  # (n_time,) zenith angle degrees
+    freq_per_spw: np.ndarray,
+    grid: PwvGrid,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Forward model + per-(spw) atmospheric ingredients.
+
+    Returns ``(pred, tau_z, tmean, dtau_dpwv, dtmean_dpwv)`` where
+    ``pred`` has shape ``(n_spw, n_pol, n_time)``.
+    """
+    tau_z, tmean, dtau_dpwv, dtmean_dpwv = grid.lookup_with_grad(pwv, freq_per_spw)
+    airmass = 1.0 / np.cos(np.deg2rad(z_v))  # (n_time,)
+    tau_slant = tau_z[:, None] * airmass[None, :]  # (n_spw, n_time)
+    absorb = -np.expm1(-tau_slant)  # 1 − exp(−τA)
+    t_sky = tmean[:, None] * absorb  # (n_spw, n_time)
+    # Broadcast T0[(n_pol, n_spw)] and c[(n_pol, n_spw)] over time.
+    T0_b = np.transpose(T0)[:, :, None]  # (n_spw, n_pol, 1)
+    c_b = np.transpose(c)[:, :, None]    # (n_spw, n_pol, 1)
+    pred = (T0_b + t_sky[:, None, :]) / c_b  # (n_spw, n_pol, n_time)
+    return pred, tau_z, tmean, dtau_dpwv, dtmean_dpwv
+
+
+def _unpack_params(
+    p: np.ndarray,
+    n_spw: int,
+    n_pol: int,
+    *,
+    tcal_mode: bool,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Decompose flat parameter vector into ``(pwv, T0, c)``.
+
+    Layout:
+      opacity: ``p = [pwv, T0[0,0], T0[0,1], …, T0[1,n_spw-1]]``
+      tcal:    ``p = [pwv, T0[0,0], c[0,0], T0[0,1], c[0,1], …]``
+    """
+    pwv = float(p[0])
+    T0 = np.empty((n_pol, n_spw))
+    c = np.ones((n_pol, n_spw))
+    if not tcal_mode:
+        T0[:] = np.asarray(p[1 : 1 + n_pol * n_spw]).reshape(n_pol, n_spw)
+    else:
+        body = np.asarray(p[1 : 1 + 2 * n_pol * n_spw]).reshape(n_pol, n_spw, 2)
+        T0[:] = body[..., 0]
+        c[:] = body[..., 1]
+    return pwv, T0, c
+
+
+def _fit_per_antenna_pwv(
+    z_all: np.ndarray,
+    tsys_arr: np.ndarray,
+    sigma_arr: np.ndarray,
+    flag_arr: np.ndarray,
+    freq_per_spw: np.ndarray,
+    grid: PwvGrid,
+    *,
+    tcal_mode: bool,
+    pwv_init: float | None = None,
+    pwv_fixed: float | None = None,
+) -> dict:
+    """Forward-model fit for one (scan, antenna).
+
+    Parameters
+    ----------
+    z_all, tsys_arr, sigma_arr, flag_arr:
+        Per-(spw, pol, time) arrays already restricted to this antenna.
+        ``z_all`` has shape ``(n_time,)``; the others ``(n_spw, n_pol, n_time)``.
+    freq_per_spw:
+        Per-spw centre frequencies (Hz).
+    grid:
+        Precomputed PwvGrid for this scan.
+    tcal_mode:
+        If True, also fits a per-(spw, pol) multiplicative ``c`` factor on
+        ``Tcal`` (Stage-2 ``tcal_solve`` semantics).
+    pwv_init:
+        Initial PWV (mm). Defaults to ``grid.pwv_unscaled_mm`` if finite, else
+        the grid midpoint.
+    pwv_fixed:
+        If given, pins PWV at this value by setting tight equal-bracketed
+        bounds. Used by the ``shared_pwv`` two-pass procedure to refit T0
+        (and c) only, after the per-antenna PWVs have been collapsed to
+        the scan-level median.
+
+    Returns
+    -------
+    dict
+        Keys: ``reason``, ``pwv``, ``pwv_err``, ``tau_z`` (per-spw at fitted
+        PWV), ``tau_err`` (per-spw, derived from σ_PWV via dτ/dPWV), ``T0_R``,
+        ``T0_L``, ``c_R``, ``c_L`` (None if not ``tcal_mode``), ``reduced_chi2``.
+        ``reason`` is one of ``ok``, ``poorly_identified``,
+        ``too_few_samples``, ``high_chi2``, ``fit_failed``.
+    """
+    n_spw, n_pol, n_time = tsys_arr.shape
+
+    valid = (
+        ~flag_arr
+        & np.isfinite(tsys_arr) & (tsys_arr > 0) & (tsys_arr < _TR_UPPER)
+        & np.isfinite(sigma_arr) & (sigma_arr > 0)
+    )
+    # Require ≥ _MIN_SAMPLES across the entire (spw, pol) data; a per-spw-pol
+    # check is too strict at noisy edges.
+    if int(valid.sum()) < n_spw * n_pol * _MIN_SAMPLES:
+        return {"reason": "too_few_samples"}
+
+    airmass_all = 1.0 / np.cos(np.deg2rad(z_all))
+
+    T0_init = np.full((n_pol, n_spw), 50.0, dtype=np.float64)
+    for k in range(n_spw):
+        for p in range(n_pol):
+            v = valid[k, p, :]
+            if int(v.sum()) >= 3 and float(np.ptp(airmass_all[v])) > 1e-6:
+                try:
+                    coefs = np.polyfit(airmass_all[v], tsys_arr[k, p, v], 1)
+                    T0_init[p, k] = float(np.clip(coefs[1], 0.0, _TR_UPPER))
+                except (np.linalg.LinAlgError, ValueError):
+                    pass
+
+    if pwv_init is None:
+        if np.isfinite(grid.pwv_unscaled_mm):
+            pwv_init = float(
+                np.clip(grid.pwv_unscaled_mm, grid.pwv_mm[0], grid.pwv_mm[-1])
+            )
+        else:
+            pwv_init = float(grid.pwv_mm[len(grid.pwv_mm) // 2])
+    pwv_init = float(np.clip(pwv_init, grid.pwv_mm[0], grid.pwv_mm[-1]))
+
+    if pwv_fixed is not None:
+        # scipy.optimize.least_squares requires lb < ub strictly; pin via a
+        # vanishingly small bracket. ε well below the grid step so the LM
+        # cannot move PWV across an interpolation node.
+        eps_pwv = 1e-6
+        pwv_lb = float(
+            np.clip(pwv_fixed - eps_pwv, grid.pwv_mm[0], grid.pwv_mm[-1])
+        )
+        pwv_ub = float(
+            np.clip(pwv_fixed + eps_pwv, grid.pwv_mm[0], grid.pwv_mm[-1])
+        )
+        if pwv_ub <= pwv_lb:
+            pwv_ub = pwv_lb + eps_pwv  # last-resort sentinel; grid clips anyway
+        pwv_init = float(np.clip(pwv_fixed, pwv_lb, pwv_ub))
+    else:
+        pwv_lb = float(grid.pwv_mm[0])
+        pwv_ub = float(grid.pwv_mm[-1])
+
+    if not tcal_mode:
+        n_params = 1 + n_pol * n_spw
+        p0 = np.empty(n_params)
+        p0[0] = pwv_init
+        p0[1:] = T0_init.reshape(-1)
+        lb = [pwv_lb] + [0.0] * (n_pol * n_spw)
+        ub = [pwv_ub] + [_TR_UPPER] * (n_pol * n_spw)
+    else:
+        n_params = 1 + 2 * n_pol * n_spw
+        body = np.stack([T0_init, np.ones_like(T0_init)], axis=-1)
+        p0 = np.empty(n_params)
+        p0[0] = pwv_init
+        p0[1:] = body.reshape(-1)
+        lb = [pwv_lb] + ([0.0, _C_LO] * (n_pol * n_spw))
+        ub = [pwv_ub] + ([_TR_UPPER, _C_HI] * (n_pol * n_spw))
+
+    def _resid(p: np.ndarray, keep: np.ndarray) -> np.ndarray:
+        pwv, T0, c = _unpack_params(p, n_spw, n_pol, tcal_mode=tcal_mode)
+        pred, *_ = _forward_predict(pwv, T0, c, z_all, freq_per_spw, grid)
+        return ((tsys_arr - pred) / sigma_arr)[keep]
+
+    def _jac(p: np.ndarray, keep: np.ndarray) -> np.ndarray:
+        """Dense σ-weighted Jacobian, shape (n_keep, n_params).
+
+        T0 / c partials are structurally sparse but the matrix is small
+        enough at VLA scales (~480 × 33 worst case) that a dense build is
+        simpler and faster than sparse bookkeeping.
+        """
+        pwv, T0, c = _unpack_params(p, n_spw, n_pol, tcal_mode=tcal_mode)
+        _, tau_z, tmean, dtau_dpwv, dtmean_dpwv = _forward_predict(
+            pwv, T0, c, z_all, freq_per_spw, grid
+        )
+        airmass = 1.0 / np.cos(np.deg2rad(z_all))  # (n_time,)
+        tau_slant = tau_z[:, None] * airmass[None, :]  # (n_spw, n_time)
+        exp_neg = np.exp(-tau_slant)
+        absorb = 1.0 - exp_neg
+        c_b = np.transpose(c)[:, :, None]  # (n_spw, n_pol, 1)
+        T0_b = np.transpose(T0)[:, :, None]
+        t_sky = tmean[:, None] * absorb  # (n_spw, n_time)
+        inv_sigma = 1.0 / sigma_arr  # (n_spw, n_pol, n_time)
+
+        # ∂pred/∂pwv = (1/c) · ∂t_sky/∂pwv
+        # ∂t_sky/∂pwv = (∂tmean/∂pwv)·absorb + tmean · A · exp(-τA) · ∂τ/∂pwv
+        dt_sky_dpwv = (
+            dtmean_dpwv[:, None] * absorb
+            + tmean[:, None] * airmass[None, :] * exp_neg * dtau_dpwv[:, None]
+        )  # (n_spw, n_time)
+        dpred_dpwv = dt_sky_dpwv[:, None, :] / c_b  # (n_spw, n_pol, n_time)
+
+        jac_full = np.zeros(
+            (n_spw, n_pol, n_time, n_params), dtype=np.float64
+        )
+        # Residual r = (Tsys - pred)/σ → ∂r/∂param = -(∂pred/∂param)/σ
+        jac_full[..., 0] = -dpred_dpwv * inv_sigma
+        if not tcal_mode:
+            # ∂pred/∂T0_{p',k'} = δ/c → ∂r/∂T0 = -1/(c σ)
+            for k in range(n_spw):
+                for pp in range(n_pol):
+                    col = 1 + pp * n_spw + k
+                    jac_full[k, pp, :, col] = -1.0 / (c[pp, k] * sigma_arr[k, pp, :])
+        else:
+            # T0 columns: -1/(c σ); c columns: +(T0 + t_sky)/(c² σ)
+            for k in range(n_spw):
+                for pp in range(n_pol):
+                    col_T0 = 1 + 2 * (pp * n_spw + k)
+                    col_c = col_T0 + 1
+                    jac_full[k, pp, :, col_T0] = -1.0 / (
+                        c[pp, k] * sigma_arr[k, pp, :]
+                    )
+                    jac_full[k, pp, :, col_c] = (
+                        (T0_b[k, pp, 0] + t_sky[k, :])
+                        / (c[pp, k] ** 2 * sigma_arr[k, pp, :])
+                    )
+        return jac_full.reshape(-1, n_params)[keep.ravel()]
+
+    keep_mask = valid.copy()
+    res = None
+    for _ in range(_RES_REJECT_MAX_PASS):
+        if int(keep_mask.sum()) < n_spw * n_pol * _MIN_SAMPLES:
+            return {"reason": "too_few_samples"}
+        try:
+            res = least_squares(
+                _resid,
+                p0,
+                jac=_jac,
+                args=(keep_mask,),
+                bounds=(lb, ub),
+                loss="soft_l1",
+                f_scale=_SOFT_L1_FSCALE,
+            )
+        except Exception:
+            return {"reason": "fit_failed"}
+        chi2 = res.fun**2
+        new_drop = chi2 > _RES_REJECT_CHI2
+        if not new_drop.any():
+            break
+        kept_flat = np.flatnonzero(keep_mask.ravel())
+        drop_flat = kept_flat[new_drop]
+        keep_mask = keep_mask.copy()
+        keep_mask.ravel()[drop_flat] = False
+        p0 = res.x.copy()
+
+    assert res is not None
+
+    n_obs = len(res.fun)
+    dof = max(1, n_obs - n_params)
+    reduced_chi2 = float(np.sum(res.fun**2)) / dof
+    if reduced_chi2 > _REDUCED_CHI2_MAX:
+        return {"reason": "high_chi2"}
+
+    pwv_fit, T0_fit, c_fit = _unpack_params(
+        res.x, n_spw, n_pol, tcal_mode=tcal_mode
+    )
+    pwv_err = _param_err_from_jac(res.jac, res.fun, n_params, idx=0)
+
+    poorly_identified = (
+        not np.isfinite(pwv_err)
+        or pwv_fit <= 0.0
+        or pwv_err / max(pwv_fit, 1e-9) > _TAU_REL_ERR_MAX
+    )
+
+    # Derive per-spw τ_z and σ_τ from the fitted PWV and dτ/dPWV.
+    tau_z_per_spw, _, dtau_dpwv, _ = grid.lookup_with_grad(pwv_fit, freq_per_spw)
+    tau_err_per_spw = np.abs(dtau_dpwv) * pwv_err
+
+    return {
+        "reason": "poorly_identified" if poorly_identified else "ok",
+        "pwv": float(pwv_fit),
+        "pwv_err": float(pwv_err),
+        "tau_z": tau_z_per_spw.astype(np.float64),
+        "tau_err": tau_err_per_spw.astype(np.float64),
+        "T0_R": T0_fit[0, :].astype(np.float64),
+        "T0_L": T0_fit[1, :].astype(np.float64),
+        "c_R": c_fit[0, :].astype(np.float64) if tcal_mode else None,
+        "c_L": c_fit[1, :].astype(np.float64) if tcal_mode else None,
+        "reduced_chi2": reduced_chi2,
+    }
+
+
+def _fit_dataset_stage2(
+    ds: xr.Dataset,
+    mode: str,
+    grids: dict[int, PwvGrid],
+    Tsys_arr: np.ndarray,
+    sigma_Tsys_arr: np.ndarray,
+) -> None:
+    """Stage 2 fit loop: per-(scan, antenna) forward-model with PwvGrid.
+
+    Always populates the Stage-2 PWV variables. Also fills the legacy
+    ``tau_zenith``, ``tau_err``, ``T0``, ``tcal_fit``, ``fit_success``,
+    ``fit_reason`` so downstream (caltables, plot) keeps working unchanged.
+    """
+    n_scan = ds.sizes["scan"]
+    n_ant = ds.sizes["antenna"]
+    n_spw = ds.sizes["spw"]
+    n_pol = ds.sizes["polarization"]
+
+    flag_vals = ds["flag"].values
+    zenith_vals = ds["zenith_angle"].values
+    tcal_ref_vals = ds["tcal_ref"].values
+    freq_vals = ds.coords["frequency"].values.astype(np.float64)
+    scan_ids = ds.coords["scan"].values
+
+    tau_zenith = np.full((n_scan, n_ant, n_spw), np.nan, dtype=np.float32)
+    tau_err = np.full((n_scan, n_ant, n_spw), np.nan, dtype=np.float32)
+    T0_out = np.full((n_scan, n_ant, n_spw, n_pol), np.nan, dtype=np.float32)
+    tcal_fit = np.full((n_scan, n_ant, n_spw, n_pol), np.nan, dtype=np.float32)
+    fit_success = np.zeros((n_scan, n_ant, n_spw), dtype=bool)
+    fit_reason = np.full((n_scan, n_ant, n_spw), "", dtype=object)
+
+    pwv_out = np.full((n_scan, n_ant), np.nan, dtype=np.float32)
+    pwv_err_out = np.full((n_scan, n_ant), np.nan, dtype=np.float32)
+    pwv_outlier = np.zeros((n_scan, n_ant), dtype=bool)
+    pwv_scan_median = np.full((n_scan,), np.nan, dtype=np.float32)
+
+    is_tcal = mode == "tcal_solve"
+
+    for i_scan in range(n_scan):
+        scan_id = int(scan_ids[i_scan])
+        grid = grids.get(scan_id)
+        if grid is None:
+            # No grid for this scan → mark all antennas as fit_failed.
+            for i_ant in range(n_ant):
+                for i_spw in range(n_spw):
+                    fit_reason[i_scan, i_ant, i_spw] = "no_atm_grid"
+            continue
+
+        for i_ant in range(n_ant):
+            result = _fit_per_antenna_pwv(
+                z_all=zenith_vals[i_scan, i_ant, :].astype(np.float64),
+                tsys_arr=Tsys_arr[i_scan, i_ant, :, :, :].astype(np.float64),
+                sigma_arr=sigma_Tsys_arr[i_scan, i_ant, :, :, :].astype(np.float64),
+                flag_arr=flag_vals[i_scan, i_ant, :, :, :],
+                freq_per_spw=freq_vals,
+                grid=grid,
+                tcal_mode=is_tcal,
+            )
+            reason = result["reason"]
+            for i_spw in range(n_spw):
+                fit_reason[i_scan, i_ant, i_spw] = reason
+                if reason in ("ok", "poorly_identified"):
+                    tau_zenith[i_scan, i_ant, i_spw] = result["tau_z"][i_spw]
+                    tau_err[i_scan, i_ant, i_spw] = result["tau_err"][i_spw]
+                    T0_out[i_scan, i_ant, i_spw, 0] = result["T0_R"][i_spw]
+                    T0_out[i_scan, i_ant, i_spw, 1] = result["T0_L"][i_spw]
+                    if is_tcal:
+                        tcal_fit[i_scan, i_ant, i_spw, 0] = (
+                            result["c_R"][i_spw] * tcal_ref_vals[i_ant, i_spw, 0]
+                        )
+                        tcal_fit[i_scan, i_ant, i_spw, 1] = (
+                            result["c_L"][i_spw] * tcal_ref_vals[i_ant, i_spw, 1]
+                        )
+                    else:
+                        tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[
+                            i_ant, i_spw, 0
+                        ]
+                        tcal_fit[i_scan, i_ant, i_spw, 1] = tcal_ref_vals[
+                            i_ant, i_spw, 1
+                        ]
+                    fit_success[i_scan, i_ant, i_spw] = reason == "ok"
+            if reason in ("ok", "poorly_identified"):
+                pwv_out[i_scan, i_ant] = result["pwv"]
+                pwv_err_out[i_scan, i_ant] = result["pwv_err"]
+
+        # Scan-level PWV consensus + outlier flag (advisor #shared_pwv-cheap-alt
+        # is implemented in a wrapping pass below for that specific mode).
+        scan_pwvs = pwv_out[i_scan, :][np.isfinite(pwv_out[i_scan, :])]
+        if scan_pwvs.size > 0:
+            median = float(np.median(scan_pwvs))
+            mad = float(np.median(np.abs(scan_pwvs - median)))
+            pwv_scan_median[i_scan] = median
+            threshold = max(_OUTLIER_PWV_FLOOR_MM, _OUTLIER_MAD_K * mad)
+            for i_ant in range(n_ant):
+                pv = pwv_out[i_scan, i_ant]
+                if np.isfinite(pv) and abs(pv - median) > threshold:
+                    pwv_outlier[i_scan, i_ant] = True
+
+    # shared_pwv mode (median-then-refit-T0): freeze PWV at scan median, re-fit
+    # T0 (and c if applicable) per antenna. Avoids the 400+ parameter joint LM
+    # while matching the user-visible semantics "one PWV per scan".
+    if mode == "shared_pwv":
+        for i_scan in range(n_scan):
+            scan_id = int(scan_ids[i_scan])
+            grid = grids.get(scan_id)
+            if grid is None or not np.isfinite(pwv_scan_median[i_scan]):
+                continue
+            shared_pwv = float(pwv_scan_median[i_scan])
+            for i_ant in range(n_ant):
+                if fit_reason[i_scan, i_ant, 0] in ("too_few_samples", "no_atm_grid"):
+                    continue
+                result = _fit_per_antenna_pwv(
+                    z_all=zenith_vals[i_scan, i_ant, :].astype(np.float64),
+                    tsys_arr=Tsys_arr[i_scan, i_ant, :, :, :].astype(np.float64),
+                    sigma_arr=sigma_Tsys_arr[i_scan, i_ant, :, :, :].astype(
+                        np.float64
+                    ),
+                    flag_arr=flag_vals[i_scan, i_ant, :, :, :],
+                    freq_per_spw=freq_vals,
+                    grid=grid,
+                    tcal_mode=False,
+                    pwv_fixed=shared_pwv,
+                )
+                # Pin PWV: overwrite the per-antenna PWV with the consensus, and
+                # recompute τ_z at the consensus value.
+                if result["reason"] in ("ok", "poorly_identified"):
+                    tau_z_shared, _ = grid.lookup(shared_pwv, freq_vals)
+                    _, _, dtau_dpwv, _ = grid.lookup_with_grad(shared_pwv, freq_vals)
+                    for i_spw in range(n_spw):
+                        tau_zenith[i_scan, i_ant, i_spw] = tau_z_shared[i_spw]
+                        # Common τ_err comes from the median absolute deviation
+                        # of the per-antenna PWVs (a robust σ_PWV estimator).
+                        pwv_consensus_err = float(
+                            np.std(pwv_out[i_scan, :][np.isfinite(pwv_out[i_scan, :])])
+                            / np.sqrt(
+                                max(
+                                    1,
+                                    int(np.sum(np.isfinite(pwv_out[i_scan, :]))),
+                                )
+                            )
+                        )
+                        tau_err[i_scan, i_ant, i_spw] = (
+                            abs(dtau_dpwv[i_spw]) * pwv_consensus_err
+                        )
+                        T0_out[i_scan, i_ant, i_spw, 0] = result["T0_R"][i_spw]
+                        T0_out[i_scan, i_ant, i_spw, 1] = result["T0_L"][i_spw]
+                    pwv_out[i_scan, i_ant] = shared_pwv
+                    # Recompute outlier flag — once PWV is frozen, none are
+                    # outliers in shared_pwv (semantics by design).
+                    pwv_outlier[i_scan, i_ant] = False
+
+    ds["tau_zenith"] = (("scan", "antenna", "spw"), tau_zenith)
+    ds["tau_err"] = (("scan", "antenna", "spw"), tau_err)
+    ds["T0"] = (("scan", "antenna", "spw", "polarization"), T0_out)
+    ds["tcal_fit"] = (("scan", "antenna", "spw", "polarization"), tcal_fit)
+    ds["fit_success"] = (("scan", "antenna", "spw"), fit_success)
+    ds["fit_reason"] = (("scan", "antenna", "spw"), fit_reason)
+    ds["pwv"] = (("scan", "antenna"), pwv_out)
+    ds["pwv_err"] = (("scan", "antenna"), pwv_err_out)
+    ds["pwv_outlier"] = (("scan", "antenna"), pwv_outlier)
+    ds["pwv_scan_median"] = (("scan",), pwv_scan_median)
+    ds.attrs["mode"] = mode
+    ds.attrs["pwv_profile_source"] = {
+        int(scan_ids[i]): grids[int(scan_ids[i])].profile_source
+        for i in range(n_scan)
+        if int(scan_ids[i]) in grids
     }
