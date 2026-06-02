@@ -72,6 +72,10 @@ def _make_plot_ds(
             ("scan", "time"),
             np.full((n_scan, n_time), 0.3, dtype=np.float32),
         ),
+        "exposure_time": (
+            ("scan", "time"),
+            np.full((n_scan, n_time), 1.0, dtype=np.float32),
+        ),
         "flag": (
             ("scan", "antenna", "spw", "polarization", "time"),
             np.zeros((n_scan, n_ant, n_spw, 2, n_time), dtype=bool),

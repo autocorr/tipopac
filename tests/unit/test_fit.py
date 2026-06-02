@@ -44,10 +44,22 @@ def _make_tip_ds(
 
     z = np.linspace(*za_range, n_time) if not flat_za else np.full(n_time, za_range[0])
 
-    tsys_R = physics.tsys_model(z, T0_R, tau0, Twmt) + rng.normal(0.0, noise_K, n_time)
-    tsys_L = physics.tsys_model(z, T0_L, tau0, Twmt) + rng.normal(0.0, noise_K, n_time)
+    tsys_R_clean = physics.tsys_model(z, T0_R, tau0, Twmt)
+    tsys_L_clean = physics.tsys_model(z, T0_L, tau0, Twmt)
+    tsys_R = tsys_R_clean + rng.normal(0.0, noise_K, n_time)
+    tsys_L = tsys_L_clean + rng.normal(0.0, noise_K, n_time)
 
     tcal = 5.0
+    # Pick exposure_time so radiometer σ_Tsys ≈ max(noise_K, 0.01 K) at the
+    # scan-mean Tsys. This keeps synthetic test data consistent with the
+    # reader-derived σ that the fit consumes:
+    #   σ = √2 · Tsys² / (Tcal · √(Δν·τ_int))
+    bandwidth_Hz = 2e9
+    Tsys_typ = float(np.mean((tsys_R_clean + tsys_L_clean) / 2.0))
+    sigma_eff = max(float(noise_K), 0.01)
+    expo_s = float(
+        2.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz)
+    )
     # Tsys = (switched_sum/2) / switched_diff * tcal_ref
     # With switched_diff=1, switched_sum = 2 * tsys / tcal
     switched_diff = np.ones((n_scan, n_ant, n_spw, 2, n_time), dtype=np.float32)
@@ -96,6 +108,10 @@ def _make_tip_ds(
             "weather_RH": (
                 ("scan", "time"),
                 np.full((n_scan, n_time), 0.3, dtype=np.float32),
+            ),
+            "exposure_time": (
+                ("scan", "time"),
+                np.full((n_scan, n_time), expo_s, dtype=np.float32),
             ),
             "flag": (
                 ("scan", "antenna", "spw", "polarization", "time"),
@@ -193,12 +209,17 @@ def test_fit_tcal_fit_equals_tcal_ref_in_tau_per_antenna() -> None:
     )
 
 
-def test_fit_dz_too_small() -> None:
-    """All identical ZA → dz_too_small gate fires, fit_success=False."""
+def test_fit_zero_airmass_leverage_is_poorly_identified() -> None:
+    """Flat ZA (no airmass leverage) → poorly_identified, not silent success.
+
+    Replaces the legacy `dz_too_small` geometric gate with an identifiability
+    signal derived from the fit covariance (σ_τ/τ > _TAU_REL_ERR_MAX). See
+    design/model_refactor.md §1.3.
+    """
     ds = _make_tip_ds(flat_za=True)
     fit_dataset(ds, mode="tau_per_antenna")
     assert not bool(ds["fit_success"].values[0, 0, 0])
-    assert ds["fit_reason"].values[0, 0, 0] == "dz_too_small"
+    assert ds["fit_reason"].values[0, 0, 0] == "poorly_identified"
 
 
 def test_fit_too_few_samples() -> None:
@@ -276,13 +297,18 @@ def test_fit_global_tau_tcal_fit_equals_tcal_ref() -> None:
         )
 
 
-def test_fit_global_tau_all_antennas_fail() -> None:
-    """If every antenna fails screening, tau_zenith is NaN and all fit_success=False."""
+def test_fit_global_tau_all_antennas_poorly_identified() -> None:
+    """Flat ZA across all antennas → fit_success=False with poorly_identified reason.
+
+    Under the post-refactor identifiability check, the global fit still
+    produces τ values (so users can inspect them) but flags them via
+    fit_success=False and fit_reason="poorly_identified". This replaces the
+    legacy `dz_too_small` hard gate.
+    """
     ds = _make_tip_ds(flat_za=True, n_ant=3)
     fit_dataset(ds, mode="global_tau")
     assert not ds["fit_success"].values.any()
-    assert np.isnan(ds["tau_zenith"].values).all()
-    assert (ds["fit_reason"].values == "dz_too_small").all()
+    assert (ds["fit_reason"].values == "poorly_identified").all()
 
 
 def test_fit_global_tau_excluded_antenna_gets_global_tau() -> None:
@@ -304,7 +330,10 @@ def test_fit_global_tau_excluded_antenna_gets_global_tau() -> None:
     assert bool(ds["fit_success"].values[0, 2, 0]), (
         "included ant should have success=True"
     )
-    assert ds["fit_reason"].values[0, 0, 0] == "dz_too_small"
+    # Antenna 0 has Tsys varying with airmass embedded in switched_sum but
+    # zenith_angle forced flat → model can't fit, screening returns either
+    # high_chi2 (post-fit) or poorly_identified (degenerate Jacobian).
+    assert ds["fit_reason"].values[0, 0, 0] in ("high_chi2", "poorly_identified")
 
     # All three antennas share the same tau_zenith (broadcast equal)
     tau_arr = ds["tau_zenith"].values[0, :, 0]
@@ -347,14 +376,18 @@ def _make_tcal_ds(
     T_surf = 280.0
     Twmt = float(physics.k2nt(physics.weighted_mean_atm_T(T_surf), freq_Hz))
     z = np.linspace(35.0, 65.0, n_time)
-    tsys_R_true = physics.tsys_model(z, T0_R, tau0, Twmt) + rng.normal(
-        0, noise_K, n_time
-    )
-    tsys_L_true = physics.tsys_model(z, T0_L, tau0, Twmt) + rng.normal(
-        0, noise_K, n_time
-    )
+    tsys_R_clean = physics.tsys_model(z, T0_R, tau0, Twmt)
+    tsys_L_clean = physics.tsys_model(z, T0_L, tau0, Twmt)
+    tsys_R_true = tsys_R_clean + rng.normal(0, noise_K, n_time)
+    tsys_L_true = tsys_L_clean + rng.normal(0, noise_K, n_time)
 
     tcal = 5.0
+    bandwidth_Hz = 2e9
+    Tsys_typ = float(np.mean((tsys_R_clean + tsys_L_clean) / 2.0))
+    sigma_eff = max(float(noise_K), 0.01)
+    expo_s = float(
+        2.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz)
+    )
     switched_diff = np.ones((1, n_ant, 1, 2, n_time), dtype=np.float32)
     switched_sum = np.zeros((1, n_ant, 1, 2, n_time), dtype=np.float32)
     for ia in range(n_ant):
@@ -396,6 +429,10 @@ def _make_tcal_ds(
             "weather_RH": (
                 ("scan", "time"),
                 np.full((1, n_time), 0.3, dtype=np.float32),
+            ),
+            "exposure_time": (
+                ("scan", "time"),
+                np.full((1, n_time), expo_s, dtype=np.float32),
             ),
             "flag": (
                 ("scan", "antenna", "spw", "polarization", "time"),

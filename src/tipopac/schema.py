@@ -40,6 +40,7 @@ INPUT_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "weather_T": (("scan", "time"), np.dtype(np.float32)),
     "weather_P": (("scan", "time"), np.dtype(np.float32)),
     "weather_RH": (("scan", "time"), np.dtype(np.float32)),
+    "exposure_time": (("scan", "time"), np.dtype(np.float32)),
     "flag": (
         ("scan", "antenna", "spw", "polarization", "time"),
         np.dtype(np.bool_),
@@ -57,6 +58,10 @@ REQUIRED_COORDS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
 
 OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "Tsys": (
+        ("scan", "antenna", "spw", "polarization", "time"),
+        np.dtype(np.float32),
+    ),
+    "sigma_Tsys": (
         ("scan", "antenna", "spw", "polarization", "time"),
         np.dtype(np.float32),
     ),

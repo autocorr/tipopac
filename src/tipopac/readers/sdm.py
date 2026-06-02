@@ -361,7 +361,15 @@ def _build_dataset(
     weather_T = np.full((n_scan, n_time), np.nan, dtype=np.float32)
     weather_P = np.full((n_scan, n_time), np.nan, dtype=np.float32)
     weather_RH = np.full((n_scan, n_time), np.nan, dtype=np.float32)
+    exposure_time = np.full((n_scan, n_time), np.nan, dtype=np.float32)
     flag = np.ones((n_scan, n_ant, n_spw, 2, n_time), dtype=bool)
+
+    sp_field_names = set(sp_data.dtype.names or ())
+    sp_interval_field: str | None = None
+    for cand in ("interval", "duration", "integrationTime"):
+        if cand in sp_field_names:
+            sp_interval_field = cand
+            break
     time_utc = np.full((n_scan, n_time), np.nan, dtype=np.float64)
     scan_time_start_arr = np.empty(n_scan, dtype=np.float64)
     scan_time_end_arr = np.empty(n_scan, dtype=np.float64)
@@ -409,6 +417,17 @@ def _build_dataset(
         sp_diff = sc_sp["switchedPowerDifference"]  # (n_rows, 2)
         sp_sum = sc_sp["switchedPowerSum"]  # (n_rows, 2)
 
+        # exposure per scan-local time slot: SysPower interval is in ns
+        if sp_interval_field is not None:
+            sp_dur_s = sc_sp[sp_interval_field].astype(np.float64) / 1e9
+            for j_t, t_val in enumerate(ts):
+                mask_t = np.isclose(sp_times, t_val)
+                if mask_t.any():
+                    exposure_time[i, j_t] = float(np.nanmedian(sp_dur_s[mask_t]))
+        if not np.isfinite(exposure_time[i, :n_t]).any() and n_t >= 2:
+            dt = np.diff(ts)
+            exposure_time[i, :n_t] = float(np.median(dt))
+
         for row in range(sc_sp.shape[0]):
             a = ant_id_to_idx.get(str(sp_ant_ids[row]))
             spw_int = spw_id_to_idx.get(str(sp_spw_ids[row]))
@@ -447,6 +466,7 @@ def _build_dataset(
             "weather_T": (("scan", "time"), weather_T),
             "weather_P": (("scan", "time"), weather_P),
             "weather_RH": (("scan", "time"), weather_RH),
+            "exposure_time": (("scan", "time"), exposure_time),
             "flag": (
                 ("scan", "antenna", "spw", "polarization", "time"),
                 flag,

@@ -6,6 +6,8 @@ All three modes implemented: tau_per_antenna, global_tau, tcal_solve.
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import scipy.sparse as _sp
 import xarray as xr
@@ -15,14 +17,15 @@ from tipopac.physics import k2nt, weighted_mean_atm_T
 
 __all__ = ["fit_dataset"]
 
-# QA thresholds from v2.6 (task_tipopac.py:1396-1412)
-_STD_RESI: float = 3.0  # K — post-refit residual σ ceiling
-_TR_UPPER: float = 300.0  # K — Tsys upper limit (per-sample validity + QA gate)
+# Per-sample validity / physical bounds. The legacy 6-gate QA cascade
+# (`_STD_RESI`, freq-dep `stdTsys` bins, `_DZ_MIN`, `_MZ_MIN`, mean-Tsys)
+# has been replaced by σ-weighted robust loss + reduced-χ² + identifiability
+# checks (see design/model_refactor.md §1.2–1.3).
+_TR_UPPER: float = 300.0  # K — per-sample Tsys validity ceiling
 _MIN_SAMPLES: int = 3  # minimum unflagged time samples
-_DZ_MIN: float = 10.0  # deg — minimum Δ(zenith angle) across scan
-_MZ_MIN: float = 30.0  # deg — minimum ZA in valid samples (uses min, not mean)
-_TCAL_LO: float = 0.7  # Tcal correction multiplier lower bound (v2.6 layer-3)
-_TCAL_HI: float = 1.3  # Tcal correction multiplier upper bound (v2.6 layer-3)
+_C_LO: float = 0.5  # Tcal correction multiplier lower bound (physical prior)
+_C_HI: float = 2.0  # Tcal correction multiplier upper bound (physical prior)
+_TAU_HI: float = 1.0  # zenith τ upper bound (physical prior across VLA bands)
 
 _ALLOWED_MODES = ("tau_per_antenna", "global_tau", "tcal_solve")
 
@@ -38,6 +41,12 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
 
     Tsys_arr = _compute_tsys(ds)
     ds["Tsys"] = (("scan", "antenna", "spw", "polarization", "time"), Tsys_arr)
+
+    sigma_Tsys_arr = _compute_sigma_tsys(ds, Tsys_arr)
+    ds["sigma_Tsys"] = (
+        ("scan", "antenna", "spw", "polarization", "time"),
+        sigma_Tsys_arr,
+    )
 
     n_scan = ds.sizes["scan"]
     n_ant = ds.sizes["antenna"]
@@ -55,12 +64,13 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
     zenith_vals = ds["zenith_angle"].values  # (scan, ant, time)
     weather_T_vals = ds["weather_T"].values  # (scan, time)
     tcal_ref_vals = ds["tcal_ref"].values  # (ant, spw, pol)
+    sigma_vals = sigma_Tsys_arr  # (scan, ant, spw, pol, time)
     freq_vals = ds.coords["frequency"].values  # (spw,) Hz
 
     for i_scan in range(n_scan):
         for i_spw in range(n_spw):
             freq_Hz = float(freq_vals[i_spw])
-            tau_upper = 0.4 if freq_Hz > 45e9 else 0.3
+            tau_upper = _TAU_HI  # uniform physical bound — no freq-dep cliff
 
             if mode == "tau_per_antenna":
                 for i_ant in range(n_ant):
@@ -68,6 +78,8 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
                         z_all=zenith_vals[i_scan, i_ant, :],
                         tsys_R_all=Tsys_arr[i_scan, i_ant, i_spw, 0, :],
                         tsys_L_all=Tsys_arr[i_scan, i_ant, i_spw, 1, :],
+                        sigma_R_all=sigma_vals[i_scan, i_ant, i_spw, 0, :],
+                        sigma_L_all=sigma_vals[i_scan, i_ant, i_spw, 1, :],
                         flag_R=flag_vals[i_scan, i_ant, i_spw, 0, :],
                         flag_L=flag_vals[i_scan, i_ant, i_spw, 1, :],
                         weather_T=weather_T_vals[i_scan, :],
@@ -76,13 +88,14 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
                     )
                     reason = result["reason"]
                     fit_reason[i_scan, i_ant, i_spw] = reason
+                    # "ok" → success; "poorly_identified" → values present but
+                    # fit_success=False so downstream code can opt-in.
                     fit_success[i_scan, i_ant, i_spw] = reason == "ok"
-                    if reason == "ok":
+                    if reason in ("ok", "poorly_identified"):
                         tau_zenith[i_scan, i_ant, i_spw] = result["tau0"]
                         tau_err[i_scan, i_ant, i_spw] = result["tau_err"]
                         T0_out[i_scan, i_ant, i_spw, 0] = result["T0_R"]
                         T0_out[i_scan, i_ant, i_spw, 1] = result["T0_L"]
-                        # tau_per_antenna: no Tcal correction — tcal_fit == tcal_ref
                         tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[
                             i_ant, i_spw, 0
                         ]
@@ -99,6 +112,8 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
                         z_all=zenith_vals[i_scan, i_ant, :],
                         tsys_R_all=Tsys_arr[i_scan, i_ant, i_spw, 0, :],
                         tsys_L_all=Tsys_arr[i_scan, i_ant, i_spw, 1, :],
+                        sigma_R_all=sigma_vals[i_scan, i_ant, i_spw, 0, :],
+                        sigma_L_all=sigma_vals[i_scan, i_ant, i_spw, 1, :],
                         flag_R=flag_vals[i_scan, i_ant, i_spw, 0, :],
                         flag_L=flag_vals[i_scan, i_ant, i_spw, 1, :],
                         weather_T=weather_T_vals[i_scan, :],
@@ -106,7 +121,11 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
                         tau_upper=tau_upper,
                     )
                     screen_reasons.append(sc["reason"])
-                    screens.append(sc if sc["reason"] == "ok" else None)
+                    # Use both "ok" and "poorly_identified" — the global fit
+                    # constrains τ better than a single antenna.
+                    screens.append(
+                        sc if sc["reason"] in ("ok", "poorly_identified") else None
+                    )
 
                 passing: list[tuple[int, dict]] = []
                 for i_ant in range(n_ant):
@@ -122,11 +141,11 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
                 passing_screens = [s for _, s in passing]
                 global_result = _fit_global(
                     passing_screens,
-                    tau_upper=tau_upper,
                     tcal_mode=(mode == "tcal_solve"),
                 )
 
-                if global_result["reason"] != "ok":
+                global_reason = global_result["reason"]
+                if global_reason not in ("ok", "poorly_identified"):
                     for i_ant in range(n_ant):
                         if screens[i_ant] is None:
                             fit_reason[i_scan, i_ant, i_spw] = screen_reasons[i_ant]
@@ -137,19 +156,17 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
                 tau0 = global_result["tau0"]
                 tau_err_val = global_result["tau_err"]
 
-                # tau_zenith broadcasts equal across ALL antennas (DESIGN.md §5)
+                # tau_zenith broadcasts equal across ALL antennas (schema §5)
                 tau_zenith[i_scan, :, i_spw] = tau0
                 tau_err[i_scan, :, i_spw] = tau_err_val
 
-                # Fill fit_reason for all antennas first
                 for i_ant in range(n_ant):
                     if screens[i_ant] is None:
                         fit_reason[i_scan, i_ant, i_spw] = screen_reasons[i_ant]
                     else:
-                        fit_success[i_scan, i_ant, i_spw] = True
-                        fit_reason[i_scan, i_ant, i_spw] = "ok"
+                        fit_reason[i_scan, i_ant, i_spw] = global_reason
+                        fit_success[i_scan, i_ant, i_spw] = global_reason == "ok"
 
-                # Fill per-antenna T0 and tcal in passing order
                 for j, (i_ant, _) in enumerate(passing):
                     T0_out[i_scan, i_ant, i_spw, 0] = global_result["T0_R"][j]
                     T0_out[i_scan, i_ant, i_spw, 1] = global_result["T0_L"][j]
@@ -199,17 +216,61 @@ def _compute_tsys(ds: xr.Dataset) -> np.ndarray:
     return tsys.astype(np.float32)
 
 
+def _compute_sigma_tsys(
+    ds: xr.Dataset, tsys: np.ndarray
+) -> np.ndarray:
+    """Per-sample σ_Tsys from radiometer-equation error propagation.
+
+    Derivation. Tsys is formed from switched-power: with S = switched_sum,
+    D = switched_diff, T_c = tcal_ref:
+        Tsys = (S / 2) · T_c / D
+    In steady state D ≈ T_c, so ∂Tsys/∂D ≈ -Tsys / D ≈ -Tsys / T_c. The
+    switched-difference noise from a Dicke-style accumulation over total
+    integration time τ_int is σ_D ≈ √2 · Tsys / √(Δν · τ_int) (per-state
+    contributions add in quadrature). Dropping the S-side correlation term
+    (it cancels in steady state) and the σ_S contribution (sub-dominant
+    when Tsys ≫ T_c), the dominant propagation gives:
+
+        σ_Tsys ≈ √2 · Tsys² / (T_c · √(Δν · τ_int))
+
+    The Tsys/T_c amplification factor (~10–60× for VLA bands) is the
+    physically essential part — dropping it would mis-scale σ by that
+    factor and cause 4σ residual rejection to trip on most samples.
+    Δν: per-spw bandwidth (coord). τ_int: per-sample exposure_time. T_c:
+    tcal_ref per (antenna, spw, pol). See plan: design/model_refactor.md §1.1.
+    """
+    n_scan, n_ant, n_spw, n_pol, n_time = tsys.shape
+    tcal = ds["tcal_ref"].values  # (ant, spw, pol)
+    bw = ds.coords["bandwidth"].values  # (spw,) Hz
+    expo = ds["exposure_time"].values  # (scan, time) seconds
+
+    tcal_b = tcal[None, :, :, :, None]  # (1, ant, spw, pol, 1)
+    bw_b = bw[None, None, :, None, None]  # (1, 1, spw, 1, 1)
+    expo_b = expo[:, None, None, None, :]  # (scan, 1, 1, 1, time)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        denom = tcal_b * np.sqrt(bw_b * expo_b)
+        sigma = np.sqrt(2.0) * (tsys * tsys) / denom
+
+    finite = np.isfinite(tsys) & np.isfinite(denom) & (denom > 0)
+    return np.where(finite, sigma, np.nan).astype(np.float32)
+
+
 def _residuals(
     p: np.ndarray,
     z: np.ndarray,
     tsys_R: np.ndarray,
     tsys_L: np.ndarray,
+    sigma_R: np.ndarray,
+    sigma_L: np.ndarray,
     Twmt: float,
 ) -> np.ndarray:
-    """Concatenated residuals for tau_per_antenna: [R_resid..., L_resid...]."""
+    """σ-weighted concatenated residuals for tau_per_antenna: [R..., L...]."""
     T0_R, T0_L, tau0 = p
     pred = Twmt * (1.0 - np.exp(-tau0 / np.cos(np.deg2rad(z))))
-    return np.concatenate([tsys_R - (T0_R + pred), tsys_L - (T0_L + pred)])
+    return np.concatenate(
+        [(tsys_R - (T0_R + pred)) / sigma_R, (tsys_L - (T0_L + pred)) / sigma_L]
+    )
 
 
 def _residuals_global(
@@ -217,17 +278,22 @@ def _residuals_global(
     z_list: list[np.ndarray],
     tsys_R_list: list[np.ndarray],
     tsys_L_list: list[np.ndarray],
+    sigma_R_list: list[np.ndarray],
+    sigma_L_list: list[np.ndarray],
     Twmt: float,
 ) -> np.ndarray:
-    """global_tau residuals.  p = [T0_R_0, T0_L_0, ..., T0_R_{N-1}, T0_L_{N-1}, tau0]."""
+    """σ-weighted global_tau residuals.
+
+    p = [T0_R_0, T0_L_0, ..., T0_R_{N-1}, T0_L_{N-1}, tau0].
+    """
     tau0 = p[-1]
     parts = []
     for k in range(len(z_list)):
         T0_R = p[2 * k]
         T0_L = p[2 * k + 1]
         pred = Twmt * (1.0 - np.exp(-tau0 / np.cos(np.deg2rad(z_list[k]))))
-        parts.append(tsys_R_list[k] - (T0_R + pred))
-        parts.append(tsys_L_list[k] - (T0_L + pred))
+        parts.append((tsys_R_list[k] - (T0_R + pred)) / sigma_R_list[k])
+        parts.append((tsys_L_list[k] - (T0_L + pred)) / sigma_L_list[k])
     return np.concatenate(parts)
 
 
@@ -236,12 +302,13 @@ def _jac_global(
     z_list: list[np.ndarray],
     tsys_R_list: list[np.ndarray],
     tsys_L_list: list[np.ndarray],
+    sigma_R_list: list[np.ndarray],
+    sigma_L_list: list[np.ndarray],
     Twmt: float,
-) -> np.ndarray:
-    """Analytical Jacobian for _residuals_global.
+) -> _sp.csr_matrix:
+    """σ-weighted analytical Jacobian for _residuals_global.
 
-    p = [T0_R_0, T0_L_0, ..., T0_R_{N-1}, T0_L_{N-1}, tau0].
-    Residual order per antenna k: [R samples..., L samples...].
+    Each row is divided by the corresponding σ so that JᵀJ → inverse covariance.
     """
     tau0 = p[-1]
     N = len(z_list)
@@ -251,15 +318,16 @@ def _jac_global(
     for k in range(N):
         n_k = len(z_list[k])
         cos_z = np.cos(np.deg2rad(z_list[k]))
-        # ∂pred/∂τ = Twmt * exp(-τ/cos z) / cos z; residual = tsys − (T0 + pred)
         dpred_dtau = Twmt * np.exp(-tau0 / cos_z) / cos_z
+        inv_sR = 1.0 / sigma_R_list[k]
+        inv_sL = 1.0 / sigma_L_list[k]
         # R rows
-        J[row : row + n_k, 2 * k] = -1.0
-        J[row : row + n_k, -1] = -dpred_dtau
+        J[row : row + n_k, 2 * k] = -inv_sR
+        J[row : row + n_k, -1] = -dpred_dtau * inv_sR
         row += n_k
         # L rows
-        J[row : row + n_k, 2 * k + 1] = -1.0
-        J[row : row + n_k, -1] = -dpred_dtau
+        J[row : row + n_k, 2 * k + 1] = -inv_sL
+        J[row : row + n_k, -1] = -dpred_dtau * inv_sL
         row += n_k
     return _sp.csr_matrix(J)
 
@@ -269,12 +337,14 @@ def _residuals_tcal(
     z_list: list[np.ndarray],
     tsys_R_list: list[np.ndarray],
     tsys_L_list: list[np.ndarray],
+    sigma_R_list: list[np.ndarray],
+    sigma_L_list: list[np.ndarray],
     Twmt: float,
 ) -> np.ndarray:
-    """tcal_solve residuals.  p = [T0_R_0, c_R_0, T0_L_0, c_L_0, ..., tau0].
+    """σ-weighted tcal_solve residuals.
 
-    Model: Tsys_meas = (T0 + Twmt*(1-exp(-tau/cos z))) / c
-    where c is the Tcal correction multiplier (Tcal_fit = c * Tcal_ref).
+    p = [T0_R_0, c_R_0, T0_L_0, c_L_0, ..., tau0].
+    Model: Tsys_meas = (T0 + Twmt·(1−exp(−τ/cos z))) / c.
     """
     tau0 = p[-1]
     parts = []
@@ -284,8 +354,8 @@ def _residuals_tcal(
         T0_L = p[4 * k + 2]
         c_L = p[4 * k + 3]
         pred = Twmt * (1.0 - np.exp(-tau0 / np.cos(np.deg2rad(z_list[k]))))
-        parts.append(tsys_R_list[k] - (T0_R + pred) / c_R)
-        parts.append(tsys_L_list[k] - (T0_L + pred) / c_L)
+        parts.append((tsys_R_list[k] - (T0_R + pred) / c_R) / sigma_R_list[k])
+        parts.append((tsys_L_list[k] - (T0_L + pred) / c_L) / sigma_L_list[k])
     return np.concatenate(parts)
 
 
@@ -294,13 +364,11 @@ def _jac_tcal(
     z_list: list[np.ndarray],
     tsys_R_list: list[np.ndarray],
     tsys_L_list: list[np.ndarray],
+    sigma_R_list: list[np.ndarray],
+    sigma_L_list: list[np.ndarray],
     Twmt: float,
-) -> np.ndarray:
-    """Analytical Jacobian for _residuals_tcal.
-
-    p = [T0_R_0, c_R_0, T0_L_0, c_L_0, ..., tau0].
-    Residual order per antenna k: [R samples..., L samples...].
-    """
+) -> _sp.csr_matrix:
+    """σ-weighted analytical Jacobian for _residuals_tcal."""
     tau0 = p[-1]
     N = len(z_list)
     n_total = sum(2 * len(z) for z in z_list)
@@ -315,32 +383,52 @@ def _jac_tcal(
         cos_z = np.cos(np.deg2rad(z_list[k]))
         pred = Twmt * (1.0 - np.exp(-tau0 / cos_z))
         dpred_dtau = Twmt * np.exp(-tau0 / cos_z) / cos_z
-        # r_R = tsys_R − (T0_R + pred) / c_R
-        J[row : row + n_k, 4 * k] = -1.0 / c_R
-        J[row : row + n_k, 4 * k + 1] = (T0_R + pred) / c_R**2
-        J[row : row + n_k, -1] = -dpred_dtau / c_R
+        inv_sR = 1.0 / sigma_R_list[k]
+        inv_sL = 1.0 / sigma_L_list[k]
+        # r_R = (tsys_R − (T0_R + pred)/c_R) / σ_R
+        J[row : row + n_k, 4 * k] = -inv_sR / c_R
+        J[row : row + n_k, 4 * k + 1] = inv_sR * (T0_R + pred) / c_R**2
+        J[row : row + n_k, -1] = -inv_sR * dpred_dtau / c_R
         row += n_k
-        # r_L = tsys_L − (T0_L + pred) / c_L
-        J[row : row + n_k, 4 * k + 2] = -1.0 / c_L
-        J[row : row + n_k, 4 * k + 3] = (T0_L + pred) / c_L**2
-        J[row : row + n_k, -1] = -dpred_dtau / c_L
+        # r_L = (tsys_L − (T0_L + pred)/c_L) / σ_L
+        J[row : row + n_k, 4 * k + 2] = -inv_sL / c_L
+        J[row : row + n_k, 4 * k + 3] = inv_sL * (T0_L + pred) / c_L**2
+        J[row : row + n_k, -1] = -inv_sL * dpred_dtau / c_L
         row += n_k
     return _sp.csr_matrix(J)
 
 
 def _tau_err_from_jac(
-    jac: np.ndarray,
+    jac: "np.ndarray | _sp.csr_matrix",
     residuals: np.ndarray,
     n_params: int,
 ) -> float:
-    """Return τ error (last parameter) from SVD of the least_squares Jacobian."""
+    """Return τ error (last parameter) from σ-weighted Jacobian and residuals.
+
+    Residuals and Jacobian are already divided by per-sample σ_Tsys, so JᵀJ
+    is the inverse covariance up to a goodness-of-fit factor. The diagonal
+    element for τ (last param) gives σ_τ. A `sigma2 = Σr²/(n−p)` factor is
+    retained as a goodness-of-fit inflator — equals reduced χ² when σ is
+    well-calibrated, ≥1 otherwise.
+
+    Note: scipy's `loss="soft_l1"` returns the unscaled Jacobian; we compute
+    covariance under the L2 norm here. For samples with |r̃| ≪ f_scale this
+    matches the actual fit; near/beyond f_scale this slightly inflates σ_τ
+    relative to a true IRLS-equivalent computation. Conservative, not a bug.
+    A proper IRLS reweighting (multiply rows by √ρ′(r̃²)) is deferred.
+    """
+    # scipy.optimize.least_squares may return res.jac as csr_matrix, csr_array,
+    # or dense ndarray depending on `jac=` callable type — use the duck-typed
+    # sparse check rather than isinstance against one concrete class.
     if _sp.issparse(jac):
-        jac = jac.toarray()
+        jac_dense: np.ndarray = np.asarray(cast(_sp.csr_matrix, jac).toarray())
+    else:
+        jac_dense = np.asarray(jac)
     n_obs = len(residuals)
-    if n_obs <= n_params or jac.shape[0] == 0:
+    if n_obs <= n_params or jac_dense.shape[0] == 0:
         return float("nan")
     sigma2 = float(np.sum(residuals**2)) / (n_obs - n_params)
-    U, s, Vt = np.linalg.svd(jac, full_matrices=False)
+    U, s, Vt = np.linalg.svd(jac_dense, full_matrices=False)
     if s[0] == 0.0:
         return float("nan")
     thresh = np.finfo(float).eps * max(jac.shape) * s[0]
@@ -349,127 +437,168 @@ def _tau_err_from_jac(
     return float(np.sqrt(max(cov[-1, -1], 0.0)))
 
 
-def _stdtsys_threshold(freq_Hz: float) -> float:
-    """Per-sample Tsys σ ceiling (v2.6:1398-1410), frequency-dependent."""
-    if freq_Hz > 40e9:
-        return 20.0
-    if freq_Hz > 18e9:
-        return 15.0
-    return 5.0
+# Robust-loss control. 4σ residual cutoff for iterative rejection.
+_SOFT_L1_FSCALE: float = 3.0
+_RES_REJECT_CHI2: float = 16.0  # 4σ on σ-weighted residuals
+_RES_REJECT_MAX_PASS: int = 3
+_REDUCED_CHI2_MAX: float = 5.0
+_TAU_REL_ERR_MAX: float = 0.5  # σ_τ/τ above this → poorly_identified
 
 
 def _screen_antenna(
     z_all: np.ndarray,
     tsys_R_all: np.ndarray,
     tsys_L_all: np.ndarray,
+    sigma_R_all: np.ndarray,
+    sigma_L_all: np.ndarray,
     flag_R: np.ndarray,
     flag_L: np.ndarray,
     weather_T: np.ndarray,
     freq_Hz: float,
     tau_upper: float,
 ) -> dict:
-    """Validity filter + two-pass clip-and-refit + QA for one (scan, antenna, spw).
+    """σ-weighted robust per-antenna tipping fit (one scan, one spw).
 
-    Returns {"reason": "ok", "z_c": ..., "tsys_R_c": ..., "tsys_L_c": ...,
-             "Twmt": ..., "T0_R": ..., "T0_L": ..., "tau0": ...,
-             "jac": ..., "fun": ...} on success.
-    Returns {"reason": <code>} on any failure.
+    Single-pass soft_l1 fit with iterative 4σ residual rejection. Acceptance:
+    reduced χ² < `_REDUCED_CHI2_MAX`. Identifiability: if `σ_τ/τ` exceeds
+    `_TAU_REL_ERR_MAX`, returns reason="poorly_identified" with the fit
+    values intact. The old QA cascade (dz, min(z), Tsys std bins, residual σ
+    ceiling) is replaced by these two signals — see
+    design/model_refactor.md §1.2–1.3.
+
+    Returns {"reason": "ok" | "poorly_identified", "z_c", "tsys_R_c",
+             "tsys_L_c", "sigma_R_c", "sigma_L_c", "Twmt", "T0_R", "T0_L",
+             "tau0", "tau_err", "jac", "fun", "reduced_chi2"} on numerical
+    success. Returns {"reason": <code>} on early failure.
     """
-    # Validity: not flagged AND R-pol Tsys in (0, TR_UPPER) AND not NaN for either pol
     valid = (
         ~flag_R
         & ~flag_L
         & (tsys_R_all > 0)
         & (tsys_R_all < _TR_UPPER)
-        & ~np.isnan(tsys_R_all)
+        & np.isfinite(tsys_R_all)
         & (tsys_L_all > 0)
-        & ~np.isnan(tsys_L_all)
+        & np.isfinite(tsys_L_all)
+        & np.isfinite(sigma_R_all)
+        & np.isfinite(sigma_L_all)
+        & (sigma_R_all > 0)
+        & (sigma_L_all > 0)
     )
 
     if int(valid.sum()) < _MIN_SAMPLES:
         return {"reason": "too_few_samples"}
 
-    z_v = z_all[valid]
-    tsys_R_v = tsys_R_all[valid]
-    tsys_L_v = tsys_L_all[valid]
+    z_v = z_all[valid].astype(np.float64)
+    tsys_R_v = tsys_R_all[valid].astype(np.float64)
+    tsys_L_v = tsys_L_all[valid].astype(np.float64)
+    sigma_R_v = sigma_R_all[valid].astype(np.float64)
+    sigma_L_v = sigma_L_all[valid].astype(np.float64)
 
     T_surf_mean = float(np.mean(weather_T[valid]))
     Twmt = float(k2nt(weighted_mean_atm_T(T_surf_mean), freq_Hz))
 
-    p0 = [50.0, 50.0, 0.2]
+    # T0 init from Tsys-vs-airmass linear intercept (replaces v2.6 hard-coded
+    # T0=50). Per-mode tau init upgrade lands in Task #4.
+    airmass = 1.0 / np.cos(np.deg2rad(z_v))
+    if float(np.ptp(airmass)) < 1e-6:
+        # No airmass leverage (flat tipping); fall back to sample mean. The
+        # identifiability check below will flag this as poorly_identified.
+        T0_R_init = float(np.clip(np.mean(tsys_R_v), 0.0, _TR_UPPER))
+        T0_L_init = float(np.clip(np.mean(tsys_L_v), 0.0, _TR_UPPER))
+    else:
+        try:
+            pR = np.polyfit(airmass, tsys_R_v, 1)
+            pL = np.polyfit(airmass, tsys_L_v, 1)
+            T0_R_init = float(np.clip(pR[1], 0.0, _TR_UPPER))
+            T0_L_init = float(np.clip(pL[1], 0.0, _TR_UPPER))
+        except (np.linalg.LinAlgError, ValueError):
+            T0_R_init, T0_L_init = 50.0, 50.0
+    tau_init = 0.05  # provisional; replaced by am-derived value in Task #4
+
+    p0 = [T0_R_init, T0_L_init, min(tau_init, max(tau_upper * 0.5, 1e-3))]
     bounds = ([0.0, 0.0, 0.0], [_TR_UPPER, _TR_UPPER, tau_upper])
 
-    # --- pass 1: initial fit for outlier detection ---
-    try:
-        res0 = least_squares(
-            _residuals, p0, args=(z_v, tsys_R_v, tsys_L_v, Twmt), bounds=bounds
-        )
-    except Exception:
-        return {"reason": "fit_failed"}
+    # iterative-rejection loop: refit, drop samples with χ² > 16 (=4σ), repeat
+    mask = np.ones(len(z_v), dtype=bool)
+    res = None
+    for _ in range(_RES_REJECT_MAX_PASS):
+        n_keep = int(mask.sum())
+        if n_keep < _MIN_SAMPLES:
+            return {"reason": "too_few_samples"}
+        try:
+            res = least_squares(
+                _residuals,
+                p0,
+                args=(
+                    z_v[mask],
+                    tsys_R_v[mask],
+                    tsys_L_v[mask],
+                    sigma_R_v[mask],
+                    sigma_L_v[mask],
+                    Twmt,
+                ),
+                bounds=bounds,
+                loss="soft_l1",
+                f_scale=_SOFT_L1_FSCALE,
+            )
+        except Exception:
+            return {"reason": "fit_failed"}
+        # χ² per (kept) sample, separately for R and L halves of res.fun
+        chi2 = res.fun**2
+        n_kept = int(mask.sum())
+        chi2_R = chi2[:n_kept]
+        chi2_L = chi2[n_kept:]
+        keep_R = chi2_R < _RES_REJECT_CHI2
+        keep_L = chi2_L < _RES_REJECT_CHI2
+        # Drop the time sample if EITHER polarization exceeds 4σ. Per-pol
+        # rejection would let half-bad samples through and bias T0.
+        sample_keep = keep_R & keep_L
+        if sample_keep.all():
+            break
+        # Map back into the original-mask indexing
+        kept_idx = np.flatnonzero(mask)
+        drop = kept_idx[~sample_keep]
+        mask = mask.copy()
+        mask[drop] = False
+        p0 = list(map(float, res.x))
 
-    T0_R0, T0_L0, tau0_0 = res0.x
-    pred0 = Twmt * (1.0 - np.exp(-tau0_0 / np.cos(np.deg2rad(z_v))))
-    resid_R0 = tsys_R_v - (T0_R0 + pred0)
-    resid_L0 = tsys_L_v - (T0_L0 + pred0)
-    std_R0 = float(np.std(resid_R0))
-    std_L0 = float(np.std(resid_L0))
+    assert res is not None
+    T0_R, T0_L, tau0 = (float(v) for v in res.x)
 
-    clip = np.ones(int(valid.sum()), dtype=bool)
-    if std_R0 > 0.0:
-        clip &= np.abs(resid_R0) < 2.0 * std_R0
-    if std_L0 > 0.0:
-        clip &= np.abs(resid_L0) < 2.0 * std_L0
+    z_c = z_v[mask]
+    tsys_R_c = tsys_R_v[mask]
+    tsys_L_c = tsys_L_v[mask]
+    sigma_R_c = sigma_R_v[mask]
+    sigma_L_c = sigma_L_v[mask]
+    n_data = len(res.fun)
+    dof = max(1, n_data - 3)
+    reduced_chi2 = float(np.sum(res.fun**2)) / dof
+    if reduced_chi2 > _REDUCED_CHI2_MAX:
+        return {"reason": "high_chi2"}
 
-    z_c = z_v[clip]
-    tsys_R_c = tsys_R_v[clip]
-    tsys_L_c = tsys_L_v[clip]
-
-    if len(z_c) < _MIN_SAMPLES:
-        return {"reason": "too_few_samples"}
-
-    # --- pass 2: refit on clipped data ---
-    try:
-        res = least_squares(
-            _residuals, p0, args=(z_c, tsys_R_c, tsys_L_c, Twmt), bounds=bounds
-        )
-    except Exception:
-        return {"reason": "fit_failed"}
-
-    T0_R, T0_L, tau0 = res.x
-
-    # --- post-clip QA (on clipped data + refit residuals) ---
-    dz = float(np.max(z_c) - np.min(z_c))
-    if dz <= _DZ_MIN:
-        return {"reason": "dz_too_small"}
-
-    mz = float(np.min(z_c))  # minimum ZA — legacy v2.6 semantics
-    if mz <= _MZ_MIN:
-        return {"reason": "mz_too_small"}
-
-    std_tsys = _stdtsys_threshold(freq_Hz)
-    if float(np.std(tsys_R_c)) >= std_tsys or float(np.std(tsys_L_c)) >= std_tsys:
-        return {"reason": "tsys_std_too_high"}
-
-    if float(np.mean(tsys_R_c)) >= _TR_UPPER or float(np.mean(tsys_L_c)) >= _TR_UPPER:
-        return {"reason": "tsys_upper_limit"}
-
-    pred = Twmt * (1.0 - np.exp(-tau0 / np.cos(np.deg2rad(z_c))))
-    std_R = float(np.std(tsys_R_c - (T0_R + pred)))
-    std_L = float(np.std(tsys_L_c - (T0_L + pred)))
-    if std_R >= _STD_RESI or std_L >= _STD_RESI:
-        return {"reason": "resid_clip"}
+    tau_err_val = _tau_err_from_jac(res.jac, res.fun, 3)
+    poorly_identified = (
+        not np.isfinite(tau_err_val)
+        or tau0 <= 0.0
+        or tau_err_val / max(tau0, 1e-9) > _TAU_REL_ERR_MAX
+    )
+    reason = "poorly_identified" if poorly_identified else "ok"
 
     return {
-        "reason": "ok",
+        "reason": reason,
         "z_c": z_c,
         "tsys_R_c": tsys_R_c,
         "tsys_L_c": tsys_L_c,
+        "sigma_R_c": sigma_R_c,
+        "sigma_L_c": sigma_L_c,
         "Twmt": Twmt,
-        "T0_R": float(T0_R),
-        "T0_L": float(T0_L),
-        "tau0": float(tau0),
+        "T0_R": T0_R,
+        "T0_L": T0_L,
+        "tau0": tau0,
+        "tau_err": tau_err_val,
         "jac": res.jac,
         "fun": res.fun,
+        "reduced_chi2": reduced_chi2,
     }
 
 
@@ -477,27 +606,38 @@ def _fit_tau_per_antenna(
     z_all: np.ndarray,
     tsys_R_all: np.ndarray,
     tsys_L_all: np.ndarray,
+    sigma_R_all: np.ndarray,
+    sigma_L_all: np.ndarray,
     flag_R: np.ndarray,
     flag_L: np.ndarray,
     weather_T: np.ndarray,
     freq_Hz: float,
     tau_upper: float,
 ) -> dict:
-    """Two-pass clip-and-refit for a single (scan, antenna, spw) cell.
+    """Per-(scan, antenna, spw) σ-weighted robust fit. Thin wrapper around
+    `_screen_antenna` — the fit and the screen are now the same call.
 
-    Returns a dict with at minimum key "reason" (str). On success, also
-    "tau0", "tau_err", "T0_R", "T0_L" (all float).
+    "reason" can be "ok" (clean fit), "poorly_identified" (fit converged but
+    τ is data-limited; values still returned), or a failure code.
     """
     sc = _screen_antenna(
-        z_all, tsys_R_all, tsys_L_all, flag_R, flag_L, weather_T, freq_Hz, tau_upper
+        z_all,
+        tsys_R_all,
+        tsys_L_all,
+        sigma_R_all,
+        sigma_L_all,
+        flag_R,
+        flag_L,
+        weather_T,
+        freq_Hz,
+        tau_upper,
     )
-    if sc["reason"] != "ok":
+    if sc["reason"] not in ("ok", "poorly_identified"):
         return sc
-    tau_err_val = _tau_err_from_jac(sc["jac"], sc["fun"], 3)
     return {
-        "reason": "ok",
+        "reason": sc["reason"],
         "tau0": sc["tau0"],
-        "tau_err": tau_err_val,
+        "tau_err": sc["tau_err"],
         "T0_R": sc["T0_R"],
         "T0_L": sc["T0_L"],
     }
@@ -505,89 +645,118 @@ def _fit_tau_per_antenna(
 
 def _fit_global(
     screens: list[dict],
-    tau_upper: float,
     *,
     tcal_mode: bool = False,
 ) -> dict:
-    """Global least-squares fit over all passing antennas for one (scan, spw).
+    """σ-weighted robust global fit over all passing antennas for one (scan, spw).
 
-    screens: list of passing _screen_antenna result dicts (reason=="ok").
-    Twmt is taken from screens[0] (first passing antenna), matching legacy getTruw.
+    Single-pass `soft_l1` loss; one physical bound set (no escalation ladder).
+    Identifiability mirrors per-antenna: returns reason="poorly_identified"
+    when σ_τ/τ exceeds `_TAU_REL_ERR_MAX`.
 
-    Returns {"reason": "ok", "tau0": ..., "tau_err": ...,
-             "T0_R": [...], "T0_L": [...]}
-    and additionally "c_R": [...], "c_L": [...] when tcal_mode=True.
+    Per-antenna T0/c lists are returned in the order of `screens`. τ is
+    shared. Tcal bounds c∈[_C_LO, _C_HI] are physical (~30% diode prior);
+    τ∈[0, _TAU_HI] covers all VLA bands.
     """
     N = len(screens)
     Twmt = screens[0]["Twmt"]
     z_list = [s["z_c"] for s in screens]
     tsys_R_list = [s["tsys_R_c"] for s in screens]
     tsys_L_list = [s["tsys_L_c"] for s in screens]
+    sigma_R_list = [s["sigma_R_c"] for s in screens]
+    sigma_L_list = [s["sigma_L_c"] for s in screens]
 
     tau_init = float(np.median([s["tau0"] for s in screens]))
+    T0_R_init = [float(s["T0_R"]) for s in screens]
+    T0_L_init = [float(s["T0_L"]) for s in screens]
 
     if not tcal_mode:
         n_params = 2 * N + 1
-        p0 = [50.0, 50.0] * N + [tau_init]
+        p0 = []
+        for k in range(N):
+            p0.extend([T0_R_init[k], T0_L_init[k]])
+        p0.append(min(tau_init, _TAU_HI * 0.9))
         lb = [0.0, 0.0] * N + [0.0]
-        ub = [_TR_UPPER, _TR_UPPER] * N + [tau_upper]
+        ub = [_TR_UPPER, _TR_UPPER] * N + [_TAU_HI]
         try:
             res = least_squares(
-                _residuals_global, p0,
-                args=(z_list, tsys_R_list, tsys_L_list, Twmt),
-                bounds=(lb, ub), jac=_jac_global,
+                _residuals_global,
+                p0,
+                args=(
+                    z_list,
+                    tsys_R_list,
+                    tsys_L_list,
+                    sigma_R_list,
+                    sigma_L_list,
+                    Twmt,
+                ),
+                bounds=(lb, ub),
+                jac=_jac_global,
+                loss="soft_l1",
+                f_scale=_SOFT_L1_FSCALE,
             )
         except Exception:
             return {"reason": "fit_failed"}
         tau0 = float(res.x[-1])
         tau_err_val = _tau_err_from_jac(res.jac, res.fun, n_params)
+        dof = max(1, len(res.fun) - n_params)
+        reduced_chi2 = float(np.sum(res.fun**2)) / dof
+        poorly_identified = (
+            not np.isfinite(tau_err_val)
+            or tau0 <= 0.0
+            or tau_err_val / max(tau0, 1e-9) > _TAU_REL_ERR_MAX
+        )
         return {
-            "reason": "ok",
+            "reason": "poorly_identified" if poorly_identified else "ok",
             "tau0": tau0,
             "tau_err": tau_err_val,
+            "reduced_chi2": reduced_chi2,
             "T0_R": [float(res.x[2 * k]) for k in range(N)],
             "T0_L": [float(res.x[2 * k + 1]) for k in range(N)],
         }
 
-    # tcal_mode: 3-pass escalation matching v2.6 fitting_Tcal.
-    # Pass 1: tight c∈[0.8,1.2] prevents the high-c local minimum reached from
-    # tau_init=0.2.  Escalate if tau or >8 params land on their bounds.
-    # Pass 2: c∈[0.7,1.2]; pass 3: c∈[0.7,1.3] (widest, _TCAL_LO/_TCAL_HI).
+    # tcal_mode: single physical bound set, no escalation ladder.
     n_params = 4 * N + 1
-    p0 = [50.0, 1.0, 50.0, 1.0] * N + [tau_init]
-    bound_ladder: list[tuple[list, list]] = [
-        ([0.0, 0.8, 0.0, 0.8] * N + [0.0], [_TR_UPPER, 1.2, _TR_UPPER, 1.2] * N + [tau_upper]),
-        ([0.0, 0.7, 0.0, 0.7] * N + [0.0], [_TR_UPPER, 1.2, _TR_UPPER, 1.2] * N + [tau_upper]),
-        ([0.0, _TCAL_LO, 0.0, _TCAL_LO] * N + [0.0], [_TR_UPPER, _TCAL_HI, _TR_UPPER, _TCAL_HI] * N + [tau_upper]),
-    ]
-    escalation_thresholds = [8, 10]
+    p0 = []
+    for k in range(N):
+        p0.extend([T0_R_init[k], 1.0, T0_L_init[k], 1.0])
+    p0.append(min(tau_init, _TAU_HI * 0.9))
+    lb = [0.0, _C_LO, 0.0, _C_LO] * N + [0.0]
+    ub = [_TR_UPPER, _C_HI, _TR_UPPER, _C_HI] * N + [_TAU_HI]
+    try:
+        res = least_squares(
+            _residuals_tcal,
+            p0,
+            args=(
+                z_list,
+                tsys_R_list,
+                tsys_L_list,
+                sigma_R_list,
+                sigma_L_list,
+                Twmt,
+            ),
+            bounds=(lb, ub),
+            jac=_jac_tcal,
+            loss="soft_l1",
+            f_scale=_SOFT_L1_FSCALE,
+        )
+    except Exception:
+        return {"reason": "fit_failed"}
 
-    res = None
-    for pass_idx, (lb, ub) in enumerate(bound_ladder):
-        try:
-            res = least_squares(
-                _residuals_tcal, p0,
-                args=(z_list, tsys_R_list, tsys_L_list, Twmt),
-                bounds=(lb, ub), jac=_jac_tcal,
-            )
-        except Exception:
-            return {"reason": "fit_failed"}
-        if pass_idx == len(bound_ladder) - 1:
-            break
-        upper_margin = 0.98 * np.array(ub) - res.x
-        lower_margin = 1.02 * np.array(lb) - res.x
-        n_at_bound = int(np.sum(upper_margin < 0)) + int(np.sum(lower_margin > 0))
-        if (lower_margin[-1] > 0) or (upper_margin[-1] < 0) or n_at_bound > escalation_thresholds[pass_idx]:
-            continue
-        break
-
-    assert res is not None
     tau0 = float(res.x[-1])
     tau_err_val = _tau_err_from_jac(res.jac, res.fun, n_params)
+    dof = max(1, len(res.fun) - n_params)
+    reduced_chi2 = float(np.sum(res.fun**2)) / dof
+    poorly_identified = (
+        not np.isfinite(tau_err_val)
+        or tau0 <= 0.0
+        or tau_err_val / max(tau0, 1e-9) > _TAU_REL_ERR_MAX
+    )
     return {
-        "reason": "ok",
+        "reason": "poorly_identified" if poorly_identified else "ok",
         "tau0": tau0,
         "tau_err": tau_err_val,
+        "reduced_chi2": reduced_chi2,
         "T0_R": [float(res.x[4 * k]) for k in range(N)],
         "c_R": [float(res.x[4 * k + 1]) for k in range(N)],
         "T0_L": [float(res.x[4 * k + 2]) for k in range(N)],

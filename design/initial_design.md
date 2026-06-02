@@ -228,16 +228,18 @@ Data variables — inputs (filled by readers)
   weather_T   (scan, time)                                float32  K   surface kinetic T (interp)
   weather_P   (scan, time)                                float32  Pa
   weather_RH  (scan, time)                                float32  (0–1, fractional RH)
+  exposure_time(scan, time)                               float32  s   per-sample integration time
   flag        (scan, antenna, spw, polarization, time)    bool
 
 Data variables — fit results (filled by fit.py)
   Tsys        (scan, antenna, spw, polarization, time)    float32  K
+  sigma_Tsys  (scan, antenna, spw, polarization, time)    float32  K   radiometer-eq per-sample σ
   tau_zenith  (scan, antenna, spw)                        float32  nepers
   tau_err     (scan, antenna, spw)                        float32
   T0          (scan, antenna, spw, polarization)          float32  K
   tcal_fit    (scan, antenna, spw, polarization)          float32  K
   fit_success (scan, antenna, spw)                        bool
-  fit_reason  (scan, antenna, spw)                        str      ""/"ok" or QA failure code
+  fit_reason  (scan, antenna, spw)                        str      "ok" | "poorly_identified" | failure code
 
 Data variables — am extrapolation (filled by atmosphere.py)
   tau_extrapolated(scan, spw_all)                         float32  nepers, every spw in source
@@ -302,6 +304,20 @@ Attrs
 - `airmass(zenith_angle_deg) -> ndarray` — `1 / cos(z)` (flat-earth, matches
   v2.6; no refraction correction).
 
+**Per-sample noise model.** `σ_Tsys` is added to the dataset by `fit.py` at
+the same site Tsys is computed. The formula (derived from error propagation
+through `Tsys = (switched_sum/2)·Tcal_ref/switched_diff` with Dicke-style
+switched-difference noise) is:
+
+```
+σ_Tsys ≈ √2 · Tsys² / (Tcal_ref · √(Δν · τ_int))
+```
+
+where Δν is the spw bandwidth and τ_int is the per-sample integration time
+read from MS `SYSPOWER.INTERVAL` (or SDM `SysPower.interval`, falling back
+to consecutive `time_utc` differences). See `design/model_refactor.md` §1.1
+for the derivation comment and rationale.
+
 ### 6.2 Geometry (`geometry.py`)
 
 `zenith_angle(el_encoder_rad) -> deg = 90.0 - np.rad2deg(el_encoder_rad)`,
@@ -321,77 +337,62 @@ single subtraction. No `astropy` dependency for this module.
 `"tcal_solve"` corresponds to v2.6's `calcTcals=True` and (matching v2.6) forces
 per-antenna τ off — a single shared τ₀ is solved alongside the Tcal corrections.
 
-All three modes use `scipy.optimize.least_squares` with explicit bounds.
-Covariance comes from `OptimizeResult.jac` via the SVD-based formula:
-`J = U S Vᵀ → cov = σ² · V S⁻² Vᵀ` with `σ² = Σr² / (n − p)` and singular
-values below a small relative threshold clipped to avoid the rank-deficient
-case. Per-parameter error is `PARAMERR = sqrt(diag(cov))`; the τ entry is
-stored as `tau_err` in the dataset, and the TOpac caltable's `SNR` column
-is `|τ| / tau_err`. For `tcal_solve`, a **3-pass escalation** is used, matching v2.6's
-`fitting_Tcal` (`task_tipopac.py:161–236`):
+All three modes use `scipy.optimize.least_squares` with σ-weighted residuals
+(`residual_i = (Tsys_meas_i − model_i) / σ_Tsys_i`) and a `soft_l1` robust
+loss with `f_scale = 3.0`. Covariance comes from `OptimizeResult.jac` via the
+SVD-based formula: `J̃ = U S Vᵀ → cov = σ² · V S⁻² Vᵀ` with `σ² = Σr̃² / (n−p)`
+(reduced χ² when σ is well-calibrated, ≥1 otherwise). Per-parameter error is
+`PARAMERR = sqrt(diag(cov))`; the τ entry is stored as `tau_err`.
 
-| Pass | c bounds | Escalate when |
-|------|----------|---------------|
-| 1 | `[0.8, 1.2]` | tau at bound, or > 8 params within 2% of bound |
-| 2 | `[0.7, 1.2]` | tau at bound, or > 10 params within 2% of bound |
-| 3 | `[0.7, 1.3]` | — (final pass, always accepted) |
+**Bounds.** Single physical bound set per mode — no escalation ladder:
+- `T0 ∈ [0, 300 K]` (per-sample validity).
+- `τ ∈ [0, 1.0]` (covers all VLA bands; previously was a freq-dependent
+  cliff at 45 GHz).
+- `c ∈ [0.5, 2.0]` for `tcal_solve` (±50% receiver-system prior; Tcal diodes
+  drift well within this range).
 
-Pass 1's tight c window prevents convergence to a spurious high-c local
-minimum (c ≈ 1.14, τ ≈ 0.031) that the optimizer reaches when starting from
-τ = 0.2 with wide bounds. The τ initial guess is the median of per-antenna
-τ₀ values from the prescreening step (rather than a flat 0.2).
+**Initialization.** `T0_init` for each polarization comes from the
+y-intercept of a linear `Tsys` vs. `airmass` fit per (antenna, spw, pol);
+this replaces v2.6's hard-coded `T0 = 50 K`. `τ_init = 0.05` is a placeholder
+for Stage 1 (provisional, but robust loss tolerates this) — Stage 2 replaces
+it with an am-derived value from the pre-computed PWV grid (forecast-PWV
+lookup, `design/model_refactor.md` §2.1).
 
-`global_tau` uses a single `least_squares` call (no retry needed; no c
-parameters whose bounds can trap the optimizer). Common bounds:
+**`tau_per_antenna` fit flow** (single pass + iterative residual rejection):
+1. σ-weighted `soft_l1` `least_squares` with the bounds and initialization above.
+2. Drop time samples whose `χ² = ((Tsys − model)/σ)² > 16` (4σ) in *either*
+   polarization. Refit on the remaining samples. Repeat up to 3 iterations
+   or until no sample is rejected.
+3. Acceptance: reduced χ² < 5 AND σ_τ / τ < 0.5 (identifiability check —
+   replaces the legacy geometric `dz > 10°` / `min(z) > 30°` gates with a
+   derived signal that the fit itself provides).
 
-- `T0 ∈ [0, trUpperLimit]` where `trUpperLimit = 300 K`
-  (`task_tipopac.py:1397`).
-- `τ ∈ [0.0, tauUpperLimit]`: `tauUpperLimit = 0.4` for spw center > 45 GHz,
-  else `0.3` (`task_tipopac.py:1398–1412`).
+**`global_tau` / `tcal_solve` fit flow.** Same per-antenna pre-screen (1–3
+above), then a single `least_squares` call over all passing antennas:
+- `global_tau`: `[T0_R_0, T0_L_0, ..., T0_R_{N-1}, T0_L_{N-1}, τ₀]` (2N+1 params)
+- `tcal_solve`: `[T0_R_0, c_R_0, T0_L_0, c_L_0, ..., τ₀]` (4N+1 params),
+  where `c` is the Tcal correction multiplier (model: `Tsys_meas = (T0+pred)/c`).
 
-**`tau_per_antenna` fit flow.** The fit is run **twice** per `(scan, antenna, spw)`
-as a clip-and-refit sequence: initial `least_squares` → flag samples with
-`|residual| > 2σ` → re-run `least_squares` with the clipped samples masked.
-The refit result is the published fit. This mirrors v2.6 (`task_tipopac.py:1421–1431`)
-and is essential for matching v2.6's τ numerics on noisy scans.
+Both use σ-weighted `soft_l1`, sparse analytical Jacobians, and the single
+bound set. The identifiability check fires on the global fit too.
 
-**`global_tau` / `tcal_solve` fit flow.** These modes have a two-phase structure:
-1. **Per-antenna screening** (using the no-Tcal `tau_per_antenna` residuals). For
-   each antenna a two-pass clip-and-refit is run to identify and remove 2σ outliers
-   and to apply all QA gates (dz, mz, tsys_std, tsys_upper, resid_clip). Antennas
-   that fail any gate are excluded from the global fit and their failure reason is
-   stored in `fit_reason`; `tau_zenith` is still broadcast to them on global-fit
-   success (see §5 note above). Twmt is taken from the first passing antenna's valid
-   samples (matching v2.6's `getTruw` flag).
-2. **Global least_squares** over all passing antennas. Parameter vector:
-   - `global_tau`: `[T0_R_0, T0_L_0, ..., T0_R_{N-1}, T0_L_{N-1}, τ₀]` (2N+1 params)
-   - `tcal_solve`: `[T0_R_0, c_R_0, T0_L_0, c_L_0, ..., τ₀]` (4N+1 params),
-     where `c` is the Tcal correction multiplier (model: `Tsys_meas = (T0+pred)/c`).
-   `tcal_solve` uses 3-pass escalation (see bounds table above); `global_tau`
-   uses a single call.
+QA gates collapse to the following typed reason strings — far smaller surface
+area than v2.6's six-gate cascade (which was replaced wholesale; see
+`design/model_refactor.md` §1.3):
 
-QA gates (from v2.6) move into a single `quality_check(...)` function
-returning a typed reason string from the enum below. Thresholds match v2.6
-(`task_tipopac.py:1396–1461`):
-
-- `ok`
-- `too_few_samples` — fewer than `minTipInts = 3` unflagged time samples in
-  either polarization (`task_tipopac.py:1252`).
-- `dz_too_small` — Δ(zenith angle) ≤ 10° across the scan.
-- `mz_too_small` — mean zenith angle ≤ 30°.
-- `tsys_std_too_high` — per-sample Tsys σ exceeds a frequency-dependent
-  threshold (`task_tipopac.py:1398–1410`):
-    - spw center ≤ 18 GHz: 5 K
-    - 18 < spw center ≤ 40 GHz: 15 K
-    - spw center > 40 GHz: 20 K
-- `tsys_upper_limit` — mean Tsys ≥ `trUpperLimit = 300 K`.
-- `resid_clip` — refit residual σ still exceeds `stdResi = 3 K` after the
-  two-pass clip-and-refit (`task_tipopac.py:1396`).
+- `ok` — fit converged with reduced χ² < 5 and σ_τ / τ < 0.5.
+- `poorly_identified` — fit converged but σ_τ / τ > 0.5 (data-limited).
+  Fit values are still populated; `fit_success` is False so downstream
+  callers decide whether to consume them.
+- `too_few_samples` — fewer than 3 unflagged time samples after rejection.
+- `high_chi2` — reduced χ² ≥ 5 after iterative rejection (data inconsistent
+  with the model at the radiometer-equation noise level).
 - `fit_failed` — `least_squares` raised or refused to converge.
 
-This replaces v2.6's per-antenna QA composite at
-`task_tipopac.py:1452–1461` plus the bound-hit / min-samples checks
-scattered nearby. The reason string is stored in `ds.fit_reason`.
+The legacy `_STD_RESI`, freq-dependent `_stdtsys` bins, `_DZ_MIN`, `_MZ_MIN`,
+mean-Tsys upper-limit gates, and the 3-pass bound escalation are *gone*. The
+behavior they were guarding against (over-fit on a degenerate or poorly-
+identified scan) is now caught by the χ² + identifiability checks above.
 
 ---
 
@@ -600,34 +601,31 @@ lint and format.
    open-meteo call so endpoint-shape regressions are still caught, even
    though it does not participate in the reference comparison.
 
-### 11.3 Acceptance criteria for v1 (numerical agreement vs v2.6)
+### 11.3 Acceptance criteria — post-refactor (`design/model_refactor.md`)
 
-- Zenith opacity per `(scan, spw)`: agreement within
-  `max(0.005, 0.05 · τ_v26)` nepers — comparison scoped to `(scan, spw)`
-  where v2.6 reports `ok` without invoking the negative-τ mean fallback,
-  the `besta` rescue, or layer-2 / layer-3 bounds escalation (see §12).
-  Marginal `(scan, spw)` that v2.6 rescued via those paths will not agree
-  by construction and are excluded from the v1 acceptance comparison.
-- Tcal corrections (mode `tcal_solve`): agreement within
-  `max(0.01 K, 0.06 · |Tcal_v26|)` per `(antenna, spw, polarization)`.
-  Rationale: the tipping-curve residual `Tsys − (T0 + Twmt·(1−exp(−τ·A)))/c` is
-  near-degenerate in `(T0, c, τ)` at low airmass and low τ — sub-tolerance τ
-  shifts (∼0.001 nepers, well within the 0.005-neper τ acceptance above) are
-  absorbed by joint `(T0, c)` shifts at very small RMS penalty. Empirically and
-  by back-of-envelope (Δc/c ≈ Twmt·A·Δτ / (T0 + Twmt·τ) ≈ 5–6% for typical VLA
-  K/Ka/Q-band tipping geometry), 1% c agreement is not achievable when v1 and
-  v2.6 take different optimizer trajectories (different `tau_init`, different
-  pass-1 τ lower bounds, scipy version differences, analytical vs finite-diff
-  Jacobian). The 6% threshold reflects the largest c spread induced by the
-  τ-test tolerance and is matched by the worst observed v1↔v2.6 cell deviation
-  on `tip_test.ms` (max 5.94%, 99.5th pct 5.5%).
-- `pwv_scaling` is **not** compared to v2.6 (different ATM stack); it is
-  sanity-checked by the unit test in §11.1.
-- All unit tests pass; `ruff check`, `ruff format --check`, and
-  `ty check` are clean.
+**v2.6 numerical-parity has been retired as a hard acceptance gate.** The
+post-refactor solver uses a different noise model (radiometer-eq σ vs.
+v2.6's unit weights), a robust loss (`soft_l1` vs. v2.6's L2 + 2σ clip),
+single physical bounds (vs. v2.6's 3-pass escalation), and an
+identifiability check (vs. v2.6's geometric `dz`/`min(z)` gates). Numerical
+agreement with v2.6 is **expected to drift**; that drift is the point of
+the refactor.
 
-If any of the above fail at integration time, the rewrite is not yet "v1
-ready"; investigate before freezing the reference.
+The v2.6 comparison test remains in `tests/integration/test_full_pipeline.py`
+as a smoke test only, with loose tolerances (10× the original) and the
+explicit understanding that systematic deviations are now valid behaviour.
+
+**Primary acceptance** comes from the synthetic fixtures in `tests/synth/`:
+
+- `test_low_leverage.py` — well-leveraged scans succeed; flat-ZA / very-high-
+  noise scans return `poorly_identified`; high-leverage scans return `ok`
+  with σ_τ / τ < 0.5. This is the regression test for the geometric-QA-gate
+  removal.
+- (Stage 2) `test_recovery.py` — injected `(PWV, T0, c)` recovered within
+  reported 1σ for ≥95% of 100 synthetic scans spanning PWV ∈ [2, 30] mm.
+
+Always-on requirements: all unit tests pass; `ruff check`, `ruff format
+--check`, and `ty check src/tipopac` are clean.
 
 ---
 

@@ -308,6 +308,7 @@ def _build_dataset(
     weather_T = np.full((n_scan, n_time), np.nan, dtype=np.float32)
     weather_P = np.full((n_scan, n_time), np.nan, dtype=np.float32)
     weather_RH = np.full((n_scan, n_time), np.nan, dtype=np.float32)
+    exposure_time = np.full((n_scan, n_time), np.nan, dtype=np.float32)
     # flag is True for NaN-pad and missing-spw positions
     flag = np.ones((n_scan, n_ant, n_spw, 2, n_time), dtype=bool)
     time_utc = np.full((n_scan, n_time), np.nan, dtype=np.float64)
@@ -350,7 +351,24 @@ def _build_dataset(
         sp_spw = sub.getcol("SPECTRAL_WINDOW_ID")
         sp_diff = sub.getcol("SWITCHED_DIFF")  # (2, n_rows)
         sp_sum = sub.getcol("SWITCHED_SUM")  # (2, n_rows)
+        sp_interval = (
+            sub.getcol("INTERVAL")
+            if "INTERVAL" in sub.colnames()
+            else np.full(len(sp_times), np.nan, dtype=np.float64)
+        )
         sub.close()
+
+        # exposure_time per scan-local time slot: take median across all
+        # SYSPOWER rows at that timestamp (antennas+spws share the dump cycle)
+        if np.isfinite(sp_interval).any():
+            for j_t, t_val in enumerate(ts):
+                mask_t = sp_times == t_val
+                if mask_t.any():
+                    exposure_time[i, j_t] = np.nanmedian(sp_interval[mask_t])
+        # fallback: derive from time differences if INTERVAL missing or all-NaN
+        if not np.isfinite(exposure_time[i, :n_t]).any() and n_t >= 2:
+            dt = np.diff(ts)
+            exposure_time[i, :n_t] = float(np.median(dt))
 
         # build a time → scan-local index map for this scan
         t_to_idx: dict[float, int] = {float(t): j for j, t in enumerate(ts)}
@@ -401,6 +419,7 @@ def _build_dataset(
             "weather_T": (("scan", "time"), weather_T),
             "weather_P": (("scan", "time"), weather_P),
             "weather_RH": (("scan", "time"), weather_RH),
+            "exposure_time": (("scan", "time"), exposure_time),
             "flag": (
                 ("scan", "antenna", "spw", "polarization", "time"),
                 flag,
