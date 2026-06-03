@@ -246,12 +246,10 @@ Data variables — am extrapolation (filled by atmosphere.py)
   am_freq_grid                                            (frequency_dense,) Hz
   am_tau                                                  (frequency_dense,) nepers
 
-Data variables — Stage 2 PWV (filled by fit.py when mode ∈ {per_antenna_pwv,
-shared_pwv, tcal_solve})
-  pwv             (scan, antenna)                          float32  mm   per-antenna fitted PWV
-  pwv_err         (scan, antenna)                          float32  mm   1σ from covariance
-  pwv_outlier     (scan, antenna)                          bool          flagged by MAD criterion
-  pwv_scan_median (scan,)                                  float32  mm   robust consensus across antennas
+Data variables — per-antenna PWV (post-fit atmospheric anchor, not yet
+written by any code path; see design/independent_tau_fit.md)
+  pwv     (antenna,)                                        float32  mm   per-antenna fitted PWV across all scans
+  pwv_err (antenna,)                                        float32  mm   1σ from Cramér–Rao
 
 Attrs
   source_path        : str
@@ -261,8 +259,7 @@ Attrs
   software_versions  : dict[str, str]
   atm_profile_source : "open-meteo" | "afgl"
   afgl_climatology   : str
-  pwv_scaling        : float | None     (Stage-1 anchor-fit result; §7)
-  pwv_profile_source : dict[int, str] | None  (Stage-2: per-scan profile origin label)
+  pwv_scaling        : float | None     (anchor-fit result; §7)
   open_meteo_query   : dict | None      (provenance: lat, lon, time, endpoint)
 ```
 
@@ -336,36 +333,17 @@ single subtraction. No `astropy` dependency for this module.
 
 ### 6.3 Fit modes (`fit.py`)
 
-**Stage 2 (forward-model atmosphere) — default modes.** Atmospheric
-opacity at every spw is derived from a single per-antenna or per-scan PWV
-parameter via a precomputed grid (`tipopac.atmgrid.PwvGrid`; §7.2). The
-PWV grid is built once per scan by `TippingAnalysis.build_atm_grids()` and
-passed to `fit.fit_dataset(..., grids=...)`.
+The fit estimates per-spw zenith opacity directly; PWV is fitted post-hoc
+by the atmospheric anchor (§7, and see `design/independent_tau_fit.md` for
+the planned two-stage architecture).
 
-| `mode`              | Solved per       | Free parameters                                           |
-| ------------------- | ---------------- | --------------------------------------------------------- |
-| `"per_antenna_pwv"` | (scan, antenna)  | PWV, T0 for each (spw, pol)                                |
-| `"shared_pwv"`      | (scan,)          | one PWV (= median of per-antenna fits), T0 per (ant,spw,pol) |
-| `"tcal_solve"`      | (scan, antenna)  | PWV, T0 for each (spw, pol), c (Tcal multiplier) per (spw, pol) |
+| `mode`              | Solved per           | Free parameters                                          |
+| ------------------- | -------------------- | -------------------------------------------------------- |
+| `"tau_per_antenna"` | (scan, antenna, spw) | T0_R, T0_L, τ₀                                       |
+| `"global_tau"`      | (scan, spw)          | T0 for each (antenna, pol) plus a single τ₀              |
+| `"tcal_solve"`      | (scan, spw)          | T0 for each (antenna, pol), per-antenna Tcal correction, τ₀ |
 
-`shared_pwv` is implemented as a two-pass procedure: per-antenna PWV fit
-(`per_antenna_pwv`), then PWV frozen at the scan median, T0 refit per
-antenna. This avoids the ~417-parameter joint LM that a naive
-formulation would produce while matching the user-visible semantics.
-
-**Stage 1 (legacy per-spw τ) — opt-in for back-compat.** The pre-Stage-2
-fit code path remains accessible via these mode names. Aliases emit
-`DeprecationWarning` at call time.
-
-| `mode`                  | Solved per           | Free parameters                                          |
-| ----------------------- | -------------------- | -------------------------------------------------------- |
-| `"tau_per_antenna"`*    | (scan, antenna, spw) | T0_R, T0_L, τ₀                                       |
-| `"global_tau"`*         | (scan, spw)          | T0 for each (antenna, pol) plus a single τ₀              |
-| `"tcal_solve_legacy"`   | (scan, spw)          | T0 for each (antenna, pol), per-antenna Tcal correction, τ₀ |
-
-*starred names emit `DeprecationWarning`.
-
-`"tcal_solve_legacy"` corresponds to v2.6's `calcTcals=True` and (matching v2.6)
+`"tcal_solve"` corresponds to v2.6's `calcTcals=True` and (matching v2.6)
 forces per-antenna τ off — a single shared τ₀ is solved alongside the Tcal
 corrections.
 
@@ -385,10 +363,9 @@ SVD-based formula: `J̃ = U S Vᵀ → cov = σ² · V S⁻² Vᵀ` with `σ² =
 
 **Initialization.** `T0_init` for each polarization comes from the
 y-intercept of a linear `Tsys` vs. `airmass` fit per (antenna, spw, pol);
-this replaces v2.6's hard-coded `T0 = 50 K`. `τ_init = 0.05` is a placeholder
-for Stage 1 (provisional, but robust loss tolerates this) — Stage 2 replaces
-it with an am-derived value from the pre-computed PWV grid (forecast-PWV
-lookup, `design/model_refactor.md` §2.1).
+this replaces v2.6's hard-coded `T0 = 50 K`. `τ_init = 0.05` is a
+provisional default; the robust loss tolerates this initialisation across
+VLA bands.
 
 **`tau_per_antenna` fit flow** (single pass + iterative residual rejection):
 1. σ-weighted `soft_l1` `least_squares` with the bounds and initialization above.
@@ -430,75 +407,20 @@ identified scan) is now caught by the χ² + identifiability checks above.
 
 ## 7. Atmospheric model: am + open-meteo + AFGL fallback
 
-Two paths coexist:
+A single post-fit anchor flow: per-spw τ values from §6 are the
+observational ground truth; am is anchored to them via a single
+`pwv_scaling` scalar (`atmosphere.anchor`). am is run **once per
+analysis**, never inside the per-sample fit loop.
 
-- **§7.1 — Stage-2 default.** A per-scan `PwvGrid` of `τ_z(ν, PWV)` and
-  `Tb_z(ν, PWV)` is precomputed by running am over a 1–50 mm PWV axis
-  in step 0.5 mm. The fitter consumes this grid; PWV is the only free
-  atmospheric parameter. `tau_extrapolated` and the dense `am_tau` curve
-  are filled by evaluating the grid at the per-scan median PWV — no
-  separate anchor fit.
-- **§7.2 — Stage-1 legacy.** Anchors a single `pwv_scaling` scalar to
-  per-spw fitted τ values from the legacy fit modes (`tau_per_antenna`,
-  `global_tau`, `tcal_solve_legacy`). Triggered automatically when
-  `extrapolate()` is called without `grids=...` after a legacy fit.
+A helper module `tipopac.atmgrid` precomputes `(τ_z, Tb_z)` over a PWV
+axis once per scan and exposes a fast lookup. It is currently consumed
+only by tests; planned use is by the post-hoc PWV anchor described in
+`design/independent_tau_fit.md`. The dual-path Stage-2 forward-model fit
+that earlier versions of this document described has been reverted —
+see `design/model_refactor.md` (superseded) and
+`design/performance_refactor_considerations.md` for the reasoning.
 
-In both paths am is run **once per scan** (Stage 2) or **once per
-analysis** (Stage 1), never inside the per-sample fit loop.
-
-### 7.1 Stage-2: forward-model PWV grid (`atmgrid.py`)
-
-1. **Build per-scan atmospheric profile.** Same procedure as Stage 1
-   (open-meteo → AFGL fallback), refactored into
-   `atmosphere.fetch_profile(lat, lon, obs_time_mjd_s, source=..., ...)`
-   with retry/backoff (3 attempts at 0/5/15+45 s).
-
-2. **Precompute PWV grid.** For each scan, `build_pwv_grid` runs am over
-   a PWV axis [1.0, 50.0] mm step 0.5 mm (99 points). Each call uses
-   `troposphere_h2o_scaling = pwv_mm / pwv_unscaled_mm`, where
-   `pwv_unscaled_mm` is computed by hydrostatic integration of the
-   profile's H₂O VMR (`pwv_mm_from_profile`).
-
-   Parallelisation: `multiprocessing.Pool` with one worker per CPU (up to
-   40), each with its own `cache_dir`. The `am` binary is invoked with
-   `parallel=False` — the parallel OpenMP build has known performance
-   issues at this workload and is not used.
-
-3. **PwvGrid lookup.** The fitter calls
-   `grid.lookup_with_grad(pwv_mm, freq_per_spw_Hz)` → `(τ_z, T_mean,
-   ∂τ/∂PWV, ∂T_mean/∂PWV)`. Bilinear interpolation: linear in PWV (0.5 mm
-   step → ≲µ-mm accuracy on the smooth functions), linear in freq.
-   `T_mean(ν, PWV) = Tb_z(ν, PWV) / (1 − exp(−τ_z(ν, PWV)))` is cached as
-   a property. The critical consistency check
-   `T_sky(airmass=1, PWV) ≡ Tb_z(PWV)` is unit-tested.
-
-4. **Forward model in the fit.** For sample `(t, spw k, pol p)`:
-
-   ```
-   airmass(t) = 1/cos(z(t))
-   τ_slant   = τ_z(ν_k, PWV) · airmass(t)
-   T_sky     = T_mean(ν_k, PWV) · (1 − exp(−τ_slant))
-   Tsys_model = T0_{p,k} + T_sky                          [opacity-only]
-              = (T0_{p,k} + T_sky) / c_{p,k}              [tcal_solve]
-   ```
-
-5. **Extrapolation = grid evaluation at scan-median PWV.** No second
-   anchor fit; `tau_extrapolated[scan, spw]` and the dense
-   `am_freq_grid / am_tau` are filled by
-   `grid.lookup(pwv_scan_median[scan], …)`.
-
-6. **Known limitations.** v1 evaluates τ at the spw centre frequency.
-   For wide spws near steep features (especially K-band's 22 GHz H₂O
-   wing), the centre-frequency τ is not identical to the
-   bandwidth-weighted τ. Centring is consistent with the v2.6 reference
-   and acceptable at v1 precision; bandwidth integration is on the
-   deferred list (§12).
-
-### 7.2 Stage-1 legacy pipeline (anchor scalar)
-
-Retained for the legacy fit modes (`tau_per_antenna`, `global_tau`,
-`tcal_solve_legacy`). When `extrapolate()` is called after a legacy fit
-with no `grids` argument, this is the code path taken.
+### 7.1 Anchor flow
 
 1. **Fit per-spw τ from the data** (§6). These fitted τ values are the
    ground truth that the am model is anchored to.
@@ -718,8 +640,6 @@ explicit understanding that systematic deviations are now valid behaviour.
   noise scans return `poorly_identified`; high-leverage scans return `ok`
   with σ_τ / τ < 0.5. This is the regression test for the geometric-QA-gate
   removal.
-- (Stage 2) `test_recovery.py` — injected `(PWV, T0, c)` recovered within
-  reported 1σ for ≥95% of 100 synthetic scans spanning PWV ∈ [2, 30] mm.
 
 Always-on requirements: all unit tests pass; `ruff check`, `ruff format
 --check`, and `ty check src/tipopac` are clean.

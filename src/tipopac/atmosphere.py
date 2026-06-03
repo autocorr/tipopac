@@ -3,14 +3,12 @@
 Public entry points
 -------------------
 ``extrapolate(ds, *, atm_profile_source, afgl_climatology)``
-    Stage-1 / legacy path. Anchors a single ``troposphere_h2o_scaling`` to
-    the fitted τ values in ``ds`` and fills ``tau_extrapolated``,
-    ``am_freq_grid``, ``am_tau``. Will be reworked in Stage 2 (task #15) to
-    consume :class:`tipopac.atmgrid.PwvGrid` directly.
+    Anchors a single ``troposphere_h2o_scaling`` to the fitted τ values in
+    ``ds`` and fills ``tau_extrapolated``, ``am_freq_grid``, ``am_tau``.
 
 ``fetch_profile(lat, lon, obs_time_mjd_s, *, source, afgl_climatology, …)``
-    Returns ``(pressure, temperature, h2o_vmr, source_label)``. Used by both
-    ``extrapolate`` and Stage-2 :func:`tipopac.atmgrid.build_pwv_grid`.
+    Returns ``(pressure, temperature, h2o_vmr, source_label)``. Used by
+    ``extrapolate`` and by :func:`tipopac.atmgrid.build_pwv_grid`.
 
 Testable pure function
 ----------------------
@@ -154,7 +152,6 @@ def extrapolate(
     *,
     atm_profile_source: str = "open-meteo",
     afgl_climatology: str = "midlatitude_summer",
-    grids: dict | None = None,
 ) -> None:
     """Anchor an am model to fitted τ values and extrapolate to all spws.
 
@@ -163,20 +160,7 @@ def extrapolate(
     open_meteo_query to attrs.
 
     Requires tau_zenith, tau_err, fit_success in ds.
-
-    When called with ``grids={scan_id: PwvGrid, ...}`` after a Stage-2 fit
-    (``mode ∈ {per_antenna_pwv, shared_pwv, tcal_solve}``), uses the
-    precomputed PwvGrid directly: no scalar anchor fit, no extra am call.
-    ``tau_extrapolated`` is filled per-scan at the fitted ``pwv_scan_median``.
     """
-    if grids is not None and ds.attrs.get("mode") in (
-        "per_antenna_pwv",
-        "shared_pwv",
-        "tcal_solve",
-    ):
-        _extrapolate_from_grids(ds, grids)
-        return
-
     freqs_Hz = ds.coords["frequency"].values  # (spw,)
 
     # Representative observation time: median of scan start times (MJD seconds).
@@ -256,50 +240,6 @@ def extrapolate(
         pwv_scaling=pwv_scaling,
         open_meteo_query=open_meteo_query,
     )
-
-
-def _extrapolate_from_grids(ds: xr.Dataset, grids: dict) -> None:
-    """Stage-2 extrapolate: derive dense τ(ν) and per-spw τ from PwvGrid.
-
-    No anchor fit — the PWV recovered by the fitter IS the anchor. For each
-    scan, evaluates ``grid.lookup`` at ``pwv_scan_median[scan]`` and writes:
-
-    - ``tau_extrapolated[scan, spw]``: τ at the observed spw centre freqs.
-    - ``am_freq_grid``, ``am_tau``: dense curve from the first available scan's
-      grid evaluated at the median consensus PWV (informational).
-
-    ``ds.attrs["pwv_scaling"]`` is set to None (no anchor) so attr consumers
-    know this came from the Stage-2 path.
-    """
-    freqs_Hz = ds.coords["frequency"].values
-    scan_ids = ds.coords["scan"].values
-    pwv_median = ds["pwv_scan_median"].values  # (scan,)
-
-    n_scan = ds.sizes["scan"]
-    tau_ext = np.full((n_scan, freqs_Hz.size), np.nan, dtype=np.float32)
-    am_freq_first: np.ndarray | None = None
-    am_tau_first: np.ndarray | None = None
-    for i, scan_id in enumerate(scan_ids):
-        sid = int(scan_id)
-        grid = grids.get(sid)
-        if grid is None or not np.isfinite(pwv_median[i]):
-            continue
-        tau_at_spw, _ = grid.lookup(float(pwv_median[i]), freqs_Hz)
-        tau_ext[i, :] = tau_at_spw.astype(np.float32)
-        if am_freq_first is None:
-            am_freq_first = grid.freq_Hz.astype(np.float64)
-            am_tau_first, _ = grid.lookup(float(pwv_median[i]), am_freq_first)
-
-    ds["tau_extrapolated"] = (("scan", "spw"), tau_ext)
-    if am_freq_first is not None and am_tau_first is not None:
-        ds["am_freq_grid"] = (("frequency_dense",), am_freq_first)
-        ds["am_tau"] = (("frequency_dense",), am_tau_first.astype(np.float64))
-    ds.attrs["pwv_scaling"] = None
-    ds.attrs["pwv_scan_medians_mm"] = {
-        int(scan_ids[i]): float(pwv_median[i])
-        for i in range(n_scan)
-        if np.isfinite(pwv_median[i])
-    }
 
 
 def anchor(

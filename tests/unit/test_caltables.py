@@ -138,7 +138,7 @@ def _make_fitted_ds(**kwargs: object) -> xr.Dataset:
 
 def _make_tcalsolve_ds(**kwargs: object) -> xr.Dataset:
     ds = _make_tip_ds(**kwargs)  # type: ignore[arg-type]
-    fit_dataset(ds, "tcal_solve_legacy")
+    fit_dataset(ds, "tcal_solve")
     return ds
 
 

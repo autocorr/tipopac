@@ -1,12 +1,23 @@
 # Tipopac robustness redesign — staged plan
 
+> **SUPERSEDED.** Stage 2's joint forward-model fit was reverted in
+> favour of the two-stage architecture described in
+> `design/independent_tau_fit.md`. This document is retained as the
+> historical record of the Stage-1 + Stage-2 plan and the rationale
+> that was subsequently revised. See
+> `design/performance_refactor_considerations.md` for the empirical
+> findings that drove the redirection. Stage 1 is unchanged and active;
+> Stage 2 sections below describe code that is no longer in the tree.
+
 ## Implementation status
 
-- **Stage 1 (solver-side cleanup)** — landed in commit `0d1460c`. Single
-  physical bounds, σ-weighted `soft_l1` loss, iterative 4σ residual rejection,
-  identifiability gate via `σ_τ/τ`. v2.6 numerical-parity retired as a hard
-  acceptance gate (`design/initial_design.md` §11.3).
-- **Stage 2 (forward-model atmosphere)** — landed: `atmgrid.PwvGrid` builds
+- **Stage 1 (solver-side cleanup)** — landed in commit `0d1460c`, still
+  active. Single physical bounds, σ-weighted `soft_l1` loss, iterative
+  4σ residual rejection, identifiability gate via `σ_τ/τ`. v2.6
+  numerical-parity retired as a hard acceptance gate
+  (`design/initial_design.md` §11.3).
+- **Stage 2 (forward-model atmosphere)** — reverted (see banner above).
+  Original plan, retained as history: `atmgrid.PwvGrid` builds
   τ_z / Tb_z on a 1–50 mm × 0.5 mm PWV axis per scan via
   `multiprocessing.Pool` of am workers (per-worker `cache_dir`). Fit modes
   `per_antenna_pwv`, `shared_pwv` (median-then-refit-T0 implementation),

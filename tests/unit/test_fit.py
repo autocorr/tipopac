@@ -474,7 +474,7 @@ def test_fit_tcal_solve_recovers_params() -> None:
     c_L_true = [1.0, 0.98, 1.03]
 
     ds = _make_tcal_ds(tau0=tau_true, c_R=c_R_true, c_L=c_L_true, noise_K=0.002)
-    fit_dataset(ds, mode="tcal_solve_legacy")
+    fit_dataset(ds, mode="tcal_solve")
 
     assert ds["fit_success"].values.all(), ds["fit_reason"].values
 
@@ -503,14 +503,14 @@ def test_fit_tcal_solve_recovers_params() -> None:
 def test_fit_tcal_solve_schema_valid() -> None:
     """After tcal_solve fit, schema.validate passes."""
     ds = _make_tcal_ds()
-    fit_dataset(ds, mode="tcal_solve_legacy")
+    fit_dataset(ds, mode="tcal_solve")
     schema.validate(ds)
 
 
 def test_fit_tcal_solve_forces_global_tau() -> None:
     """tcal_solve: tau_zenith is equal across all antennas (forces global tau)."""
     ds = _make_tcal_ds()
-    fit_dataset(ds, mode="tcal_solve_legacy")
+    fit_dataset(ds, mode="tcal_solve")
     tau_arr = ds["tau_zenith"].values[0, :, 0]
     assert np.all(np.isclose(tau_arr, tau_arr[0]))
 

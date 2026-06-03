@@ -104,9 +104,6 @@ def ds_tcal_solve():
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
-    # tcal_solve is now a Stage-2 mode (forward-model PWV). Build the
-    # PwvGrid from AFGL profile for determinism (no network).
-    ta.build_atm_grids(atm_profile_source="afgl")
     ta.fit(mode="tcal_solve")
     ta.extrapolate(atm_profile_source="afgl")
     return ta.dataset

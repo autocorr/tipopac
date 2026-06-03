@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-import numpy as np
 import xarray as xr
 
 from tipopac.atmgrid import PwvGrid
@@ -88,9 +86,6 @@ class Result:
     software_versions: dict[str, str]
 
 
-_STAGE2_MODES = ("per_antenna_pwv", "shared_pwv", "tcal_solve")
-
-
 def tipopac(
     path: str | Path,
     *,
@@ -131,11 +126,6 @@ def tipopac(
     """
     ta = TippingAnalysis.from_path(path)
     ta.apply_flags(online=flags_online, file=None if flags_file is None else Path(flags_file))
-    if mode in _STAGE2_MODES:
-        ta.build_atm_grids(
-            atm_profile_source=atm_profile_source,
-            afgl_climatology=afgl_climatology,
-        )
     ta.fit(mode=mode)
     if atm_model:
         ta.extrapolate(
@@ -192,10 +182,12 @@ class TippingAnalysis:
         freq_step_Hz: float = 100e6,
         n_workers: int | None = None,
     ) -> None:
-        """Build per-scan :class:`PwvGrid` objects required for Stage 2 fits.
+        """Build per-scan :class:`PwvGrid` objects.
 
         Populates ``self._grids[scan_id] = PwvGrid`` for every scan and writes
-        ``ds.attrs["pwv_profile_source"][scan_id]`` for provenance.
+        ``ds.attrs["pwv_profile_source"][scan_id]`` for provenance. Used by
+        the post-fit atmospheric anchor (see ``design/independent_tau_fit.md``);
+        not consumed by :meth:`fit`.
         """
         from tipopac.atmgrid import build_pwv_grid
         from tipopac.atmosphere import fetch_profile
@@ -235,11 +227,7 @@ class TippingAnalysis:
     def fit(self, mode: str = "tcal_solve") -> None:
         from tipopac import fit
 
-        fit.fit_dataset(
-            self._ds,
-            mode=mode,
-            grids=self._grids if self._grids else None,
-        )
+        fit.fit_dataset(self._ds, mode=mode)
         self._mode = mode
 
     def extrapolate(
@@ -254,7 +242,6 @@ class TippingAnalysis:
             self._ds,
             atm_profile_source=atm_profile_source,
             afgl_climatology=afgl_climatology,
-            grids=self._grids if self._grids else None,
         )
 
     def plot(self, out_dir: str | Path) -> None:
