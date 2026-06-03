@@ -57,9 +57,7 @@ def _make_tip_ds(
     bandwidth_Hz = 2e9
     Tsys_typ = float(np.mean((tsys_R_clean + tsys_L_clean) / 2.0))
     sigma_eff = max(float(noise_K), 0.01)
-    expo_s = float(
-        2.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz)
-    )
+    expo_s = float(2.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz))
     # Tsys = (switched_sum/2) / switched_diff * tcal_ref
     # With switched_diff=1, switched_sum = 2 * tsys / tcal
     switched_diff = np.ones((n_scan, n_ant, n_spw, 2, n_time), dtype=np.float32)
@@ -385,9 +383,7 @@ def _make_tcal_ds(
     bandwidth_Hz = 2e9
     Tsys_typ = float(np.mean((tsys_R_clean + tsys_L_clean) / 2.0))
     sigma_eff = max(float(noise_K), 0.01)
-    expo_s = float(
-        2.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz)
-    )
+    expo_s = float(2.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz))
     switched_diff = np.ones((1, n_ant, 1, 2, n_time), dtype=np.float32)
     switched_sum = np.zeros((1, n_ant, 1, 2, n_time), dtype=np.float32)
     for ia in range(n_ant):
@@ -534,3 +530,128 @@ def test_fit_global_tau_multi_scan() -> None:
     for i_scan in range(2):
         tau_arr = ds["tau_zenith"].values[i_scan, :, 0]
         assert np.all(np.isclose(tau_arr, tau_arr[0]))
+
+
+# ---------------------------------------------------------------------------
+# Stage-A additions: t_mean override and process-pool dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_fit_t_mean_override_matches_default_on_matching_data() -> None:
+    """Passing an explicit `t_mean` equal to the Bevis form recovers the same fit.
+
+    Synthetic data is built against `Twmt = k2nt(weighted_mean_atm_T(280 K), ν)`.
+    Passing the same value as `t_mean` should produce a fit numerically
+    indistinguishable from the no-override default — proves the override path
+    threads through to `_screen_antenna` cleanly.
+    """
+    T_surf = 280.0
+    freq_Hz = 10e9
+    Twmt = float(physics.k2nt(physics.weighted_mean_atm_T(T_surf), freq_Hz))
+
+    ds_default = _make_tip_ds(n_scan=2, n_ant=3, freq_Hz=freq_Hz)
+    fit_dataset(ds_default, mode="tau_per_antenna")
+
+    ds_override = _make_tip_ds(n_scan=2, n_ant=3, freq_Hz=freq_Hz)
+    t_mean = np.full((ds_override.sizes["scan"], ds_override.sizes["spw"]), Twmt)
+    fit_dataset(ds_override, mode="tau_per_antenna", t_mean=t_mean)
+
+    np.testing.assert_allclose(
+        ds_default["tau_zenith"].values,
+        ds_override["tau_zenith"].values,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        ds_default["T0"].values,
+        ds_override["T0"].values,
+        rtol=1e-10,
+        atol=1e-10,
+    )
+
+
+def test_fit_t_mean_override_changes_tau_when_different() -> None:
+    """A wrong T_mean biases τ — sanity check that the override is actually consumed."""
+    ds_a = _make_tip_ds(n_ant=2)
+    fit_dataset(ds_a, mode="tau_per_antenna")
+    tau_a = float(ds_a["tau_zenith"].values[0, 0, 0])
+
+    ds_b = _make_tip_ds(n_ant=2)
+    # Halve T_mean → fit needs ~2× τ to reproduce the same Tsys swing.
+    t_mean = np.full((ds_b.sizes["scan"], ds_b.sizes["spw"]), 50.0)
+    fit_dataset(ds_b, mode="tau_per_antenna", t_mean=t_mean)
+    tau_b = float(ds_b["tau_zenith"].values[0, 0, 0])
+
+    assert abs(tau_a - tau_b) > 0.01, (
+        f"tau_a={tau_a:.4f}, tau_b={tau_b:.4f} — override appears inert"
+    )
+
+
+def test_fit_t_mean_shape_validation() -> None:
+    """Wrong-shaped `t_mean` raises ValueError before the fit runs."""
+    ds = _make_tip_ds(n_scan=2, n_spw=3)
+    bad = np.zeros((2, 4))  # n_spw=4, dataset has n_spw=3
+    with pytest.raises(ValueError, match="t_mean shape"):
+        fit_dataset(ds, mode="tau_per_antenna", t_mean=bad)
+
+
+def test_fit_t_mean_nan_falls_back_to_bevis() -> None:
+    """NaN cells in `t_mean` invoke the Bevis fallback for those cells.
+
+    Result should equal the no-override fit when every cell is NaN.
+    """
+    ds_default = _make_tip_ds(n_ant=2)
+    fit_dataset(ds_default, mode="tau_per_antenna")
+
+    ds_nan = _make_tip_ds(n_ant=2)
+    t_mean = np.full(
+        (ds_nan.sizes["scan"], ds_nan.sizes["spw"]), np.nan, dtype=np.float64
+    )
+    fit_dataset(ds_nan, mode="tau_per_antenna", t_mean=t_mean)
+
+    np.testing.assert_allclose(
+        ds_default["tau_zenith"].values,
+        ds_nan["tau_zenith"].values,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+
+
+def test_fit_n_workers_pool_matches_serial_opacity() -> None:
+    """Pool dispatch must produce identical results to the serial path (opacity)."""
+    ds_serial = _make_tip_ds(n_scan=2, n_ant=3, n_spw=2)
+    fit_dataset(ds_serial, mode="tau_per_antenna")
+
+    ds_pool = _make_tip_ds(n_scan=2, n_ant=3, n_spw=2)
+    fit_dataset(ds_pool, mode="tau_per_antenna", n_workers=2)
+
+    np.testing.assert_array_equal(
+        ds_serial["tau_zenith"].values,
+        ds_pool["tau_zenith"].values,
+    )
+    np.testing.assert_array_equal(ds_serial["T0"].values, ds_pool["T0"].values)
+    np.testing.assert_array_equal(
+        ds_serial["fit_success"].values, ds_pool["fit_success"].values
+    )
+
+
+def test_fit_n_workers_pool_matches_serial_tcal() -> None:
+    """Pool dispatch must produce identical results to the serial path (tcal_solve)."""
+    ds_serial = _make_tcal_ds(noise_K=0.002)
+    fit_dataset(ds_serial, mode="tcal_solve")
+
+    ds_pool = _make_tcal_ds(noise_K=0.002)
+    fit_dataset(ds_pool, mode="tcal_solve", n_workers=2)
+
+    np.testing.assert_allclose(
+        ds_serial["tau_zenith"].values,
+        ds_pool["tau_zenith"].values,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        ds_serial["tcal_fit"].values,
+        ds_pool["tcal_fit"].values,
+        rtol=1e-10,
+        atol=1e-10,
+    )

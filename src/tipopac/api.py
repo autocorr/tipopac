@@ -6,11 +6,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import xarray as xr
 
 from tipopac.atmgrid import PwvGrid
 
 _READERS: list = []  # populated on first call to avoid import-time casatools load
+
+# Public Stage A+B modes (independent τ fit + per-antenna PWV anchor;
+# `design/independent_tau_fit.md`). The values are the Stage-A backend
+# mode in :func:`tipopac.fit.fit_dataset`. The legacy modes
+# (``tau_per_antenna``, ``global_tau``, ``tcal_solve``) are still
+# exposed directly and skip Stage B.
+_INDEPENDENT_TO_BACKEND: dict[str, str] = {
+    "independent_tau": "tau_per_antenna",
+    "independent_tau_solve": "tcal_solve",
+}
 
 # VLA coordinates for open-meteo lookup. Repeated from atmosphere.py because the
 # api layer needs them too; harmless duplication for two lines.
@@ -62,7 +73,9 @@ def _software_versions() -> dict[str, str]:
         import subprocess
 
         r = subprocess.run(["am", "--version"], capture_output=True, text=True)
-        line = (r.stdout or r.stderr).splitlines()[0] if r.returncode == 0 else "unknown"
+        line = (
+            (r.stdout or r.stderr).splitlines()[0] if r.returncode == 0 else "unknown"
+        )
         versions["am"] = line
     except Exception:
         versions["am"] = "unavailable"
@@ -89,12 +102,13 @@ class Result:
 def tipopac(
     path: str | Path,
     *,
-    mode: str = "tcal_solve",
+    mode: str = "independent_tau_solve",
     flags_online: bool = True,
     flags_file: str | Path | None = None,
     atm_model: bool = True,
     atm_profile_source: str = "open-meteo",
     afgl_climatology: str = "midlatitude_summer",
+    n_workers: int | None = None,
     plot_dir: str | Path | None = None,
     caltable_opacity: str | Path | None = None,
     caltable_tcal: str | Path | None = None,
@@ -106,17 +120,28 @@ def tipopac(
     path:
         Path to an MS or SDM (auto-detected).
     mode:
-        Fit mode — ``"tau_per_antenna"``, ``"global_tau"``, or ``"tcal_solve"``.
+        Fit mode. Defaults to ``"independent_tau_solve"`` — per-(scan, spw)
+        Stage-A Tcal-solve fit followed by a per-antenna PWV anchor (Stage
+        B). Other Stage-A+B mode: ``"independent_tau"`` (per-(scan, ant,
+        spw) opacity). Legacy single-stage modes also exposed:
+        ``"tau_per_antenna"``, ``"global_tau"``, ``"tcal_solve"`` — these
+        use the v2.6 Bevis ``T_mean`` heuristic and skip Stage B.
     flags_online:
         Apply FLAG_CMD online flags (MS only; SDM has no equivalent).
     flags_file:
         Path to a user flag file (one ``antenna/spw/timerange`` line per row).
     atm_model:
-        Run am + open-meteo atmospheric extrapolation.
+        For legacy modes only: run am + open-meteo atmospheric
+        extrapolation. Ignored for the Stage-A+B modes — Stage B already
+        anchors against the precomputed am grid.
     atm_profile_source:
-        ``"open-meteo"`` (default) or ``"afgl"``.
+        ``"open-meteo"`` (default) or ``"afgl"``. Used by the grid build
+        (Stage A+B) and the legacy extrapolate.
     afgl_climatology:
         AFGL climatology name used as fallback or when ``atm_profile_source="afgl"``.
+    n_workers:
+        Stage-A fit parallelism. ``None`` runs serially. Higher values
+        dispatch via a process pool with single-threaded BLAS per worker.
     plot_dir:
         If set, write per-(scan, antenna, spw) diagnostic PNGs here.
     caltable_opacity:
@@ -125,13 +150,24 @@ def tipopac(
         If set, write a CALDEVICE-style Tcal caltable to this path.
     """
     ta = TippingAnalysis.from_path(path)
-    ta.apply_flags(online=flags_online, file=None if flags_file is None else Path(flags_file))
-    ta.fit(mode=mode)
-    if atm_model:
-        ta.extrapolate(
+    ta.apply_flags(
+        online=flags_online, file=None if flags_file is None else Path(flags_file)
+    )
+
+    if mode in _INDEPENDENT_TO_BACKEND:
+        ta.build_atm_grids(
             atm_profile_source=atm_profile_source,
             afgl_climatology=afgl_climatology,
         )
+        ta.fit(mode=mode, n_workers=n_workers)
+    else:
+        ta.fit(mode=mode, n_workers=n_workers)
+        if atm_model:
+            ta.extrapolate(
+                atm_profile_source=atm_profile_source,
+                afgl_climatology=afgl_climatology,
+            )
+
     if plot_dir is not None:
         ta.plot(out_dir=Path(plot_dir))
     if caltable_opacity is not None or caltable_tcal is not None:
@@ -224,10 +260,55 @@ class TippingAnalysis:
 
         self._ds.attrs["pwv_profile_source"] = sources
 
-    def fit(self, mode: str = "tcal_solve") -> None:
+    def fit(
+        self,
+        mode: str = "independent_tau_solve",
+        *,
+        n_workers: int | None = None,
+    ) -> None:
         from tipopac import fit
 
-        fit.fit_dataset(self._ds, mode=mode)
+        if mode in _INDEPENDENT_TO_BACKEND:
+            # Stage A + Stage B. Build grids if not done already; the
+            # grid drives both the Stage A T_mean input and the Stage B
+            # PWV anchor against τ_z(ν).
+            from tipopac.anchor import anchor_pwv, compute_t_mean_grid
+
+            if not self._grids:
+                self.build_atm_grids()
+
+            freqs_Hz = self._ds.coords["frequency"].values
+            # `_grids` is keyed by the scan_id *value* (matches the rest
+            # of the codebase); `anchor` and `compute_t_mean_grid` want
+            # positional indices aligned with array axes.  Remap here.
+            scan_ids = self._ds.coords["scan"].values
+            grids_by_pos = {
+                i: self._grids[int(sid)]
+                for i, sid in enumerate(scan_ids)
+                if int(sid) in self._grids
+            }
+            t_mean = compute_t_mean_grid(
+                grids_by_pos, freqs_Hz, n_scan=int(scan_ids.size)
+            )
+
+            fit.fit_dataset(
+                self._ds,
+                mode=_INDEPENDENT_TO_BACKEND[mode],
+                t_mean=t_mean,
+                n_workers=n_workers,
+            )
+
+            pwv, pwv_err = anchor_pwv(
+                self._ds["tau_zenith"].values,
+                self._ds["tau_err"].values,
+                grids_by_pos,
+                freqs_Hz,
+            )
+            self._ds["pwv"] = (("antenna",), pwv.astype(np.float32))
+            self._ds["pwv_err"] = (("antenna",), pwv_err.astype(np.float32))
+            self._ds.attrs["mode"] = mode  # public mode label, not backend
+        else:
+            fit.fit_dataset(self._ds, mode=mode, n_workers=n_workers)
         self._mode = mode
 
     def extrapolate(

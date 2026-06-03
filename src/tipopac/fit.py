@@ -12,12 +12,14 @@ Modes
   per-antenna (T0_R, c_R, T0_L, c_L). Sparse Jacobian.
 
 PWV is not a fit parameter at this layer — the atmospheric anchor lives in
-:mod:`tipopac.atmosphere` (post-hoc fit of PWV against τ_z(ν)). See
+:mod:`tipopac.anchor` (post-hoc fit of PWV against τ_z(ν)). See
 ``design/independent_tau_fit.md``.
 """
 
 from __future__ import annotations
 
+import multiprocessing as _mp
+import os as _os
 from typing import cast
 
 import numpy as np
@@ -42,7 +44,13 @@ _TAU_HI: float = 1.0  # zenith τ upper bound (physical prior across VLA bands)
 _ALLOWED_MODES = ("tau_per_antenna", "global_tau", "tcal_solve")
 
 
-def fit_dataset(ds: xr.Dataset, mode: str) -> None:
+def fit_dataset(
+    ds: xr.Dataset,
+    mode: str,
+    *,
+    t_mean: np.ndarray | None = None,
+    n_workers: int | None = None,
+) -> None:
     """Fit tipping curves and write result variables into *ds* in-place.
 
     Adds: ``Tsys``, ``sigma_Tsys``, ``tau_zenith``, ``tau_err``, ``T0``,
@@ -54,11 +62,27 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
         Canonical xarray.Dataset (schema §5).
     mode:
         One of the strings listed in the module docstring.
+    t_mean:
+        Optional ``(n_scan, n_spw)`` array of effective radiating
+        temperatures (noise K, already Rayleigh-Jeans-corrected via
+        :func:`tipopac.physics.k2nt`). When provided, the per-cell value
+        replaces the v2.6 ``k2nt(0.95·T_surface)`` Bevis heuristic for
+        Stage A. ``NaN`` entries fall back to the Bevis form on that
+        cell — see ``design/independent_tau_fit.md`` §1. ``T_mean`` from
+        :func:`tipopac.anchor.compute_t_mean_grid` is the recommended
+        feed.
+    n_workers:
+        If ``> 1``, dispatch Stage-A fit work via a
+        :class:`multiprocessing.Pool` with the ``spawn`` start method;
+        each worker exports single-threaded BLAS env vars. ``None`` or
+        ``≤ 1`` runs serially in the calling process. Stage-A
+        parallelism unit is ``(scan, ant, spw)`` for opacity mode and
+        ``(scan, spw)`` for global/tcal modes.
 
     Raises
     ------
     ValueError
-        On unrecognised mode.
+        On unrecognised mode or shape-mismatched ``t_mean``.
     """
     if mode not in _ALLOWED_MODES:
         raise ValueError(f"mode must be one of {_ALLOWED_MODES!r}, got {mode!r}")
@@ -77,6 +101,11 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
     n_spw = ds.sizes["spw"]
     n_pol = ds.sizes["polarization"]
 
+    if t_mean is not None and t_mean.shape != (n_scan, n_spw):
+        raise ValueError(
+            f"t_mean shape {t_mean.shape} != (n_scan={n_scan}, n_spw={n_spw})"
+        )
+
     tau_zenith = np.full((n_scan, n_ant, n_spw), np.nan, dtype=np.float32)
     tau_err = np.full((n_scan, n_ant, n_spw), np.nan, dtype=np.float32)
     T0_out = np.full((n_scan, n_ant, n_spw, n_pol), np.nan, dtype=np.float32)
@@ -91,123 +120,102 @@ def fit_dataset(ds: xr.Dataset, mode: str) -> None:
     sigma_vals = sigma_Tsys_arr  # (scan, ant, spw, pol, time)
     freq_vals = ds.coords["frequency"].values  # (spw,) Hz
 
-    for i_scan in range(n_scan):
-        for i_spw in range(n_spw):
-            freq_Hz = float(freq_vals[i_spw])
-            tau_upper = _TAU_HI  # uniform physical bound — no freq-dep cliff
+    if mode == "tau_per_antenna":
+        tasks = list(
+            _build_opacity_tasks(
+                n_scan,
+                n_ant,
+                n_spw,
+                zenith_vals,
+                Tsys_arr,
+                sigma_vals,
+                flag_vals,
+                weather_T_vals,
+                freq_vals,
+                t_mean,
+            )
+        )
+        for (i_scan, i_ant, i_spw), result in _dispatch(
+            tasks, _opacity_worker, n_workers
+        ):
+            reason = result["reason"]
+            fit_reason[i_scan, i_ant, i_spw] = reason
+            # "ok" → success; "poorly_identified" → values present but
+            # fit_success=False so downstream code can opt-in.
+            fit_success[i_scan, i_ant, i_spw] = reason == "ok"
+            if reason in ("ok", "poorly_identified"):
+                tau_zenith[i_scan, i_ant, i_spw] = result["tau0"]
+                tau_err[i_scan, i_ant, i_spw] = result["tau_err"]
+                T0_out[i_scan, i_ant, i_spw, 0] = result["T0_R"]
+                T0_out[i_scan, i_ant, i_spw, 1] = result["T0_L"]
+                tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[i_ant, i_spw, 0]
+                tcal_fit[i_scan, i_ant, i_spw, 1] = tcal_ref_vals[i_ant, i_spw, 1]
+    else:
+        # global_tau or tcal_solve: per-antenna screening then one global fit
+        # per (scan, spw). Bundle one task per (scan, spw) so the inner
+        # screening loop stays inside the worker.
+        tasks = list(
+            _build_global_tasks(
+                n_scan,
+                n_ant,
+                n_spw,
+                zenith_vals,
+                Tsys_arr,
+                sigma_vals,
+                flag_vals,
+                weather_T_vals,
+                freq_vals,
+                t_mean,
+                tcal_mode=(mode == "tcal_solve"),
+            )
+        )
+        for (i_scan, i_spw), packaged in _dispatch(tasks, _global_worker, n_workers):
+            screen_reasons = packaged["screen_reasons"]
+            passing_idx = packaged["passing_idx"]
+            global_result = packaged["global_result"]
 
-            if mode == "tau_per_antenna":
+            if global_result is None:
+                # No antenna passed screening; record per-ant screen reasons.
                 for i_ant in range(n_ant):
-                    result = _fit_tau_per_antenna(
-                        z_all=zenith_vals[i_scan, i_ant, :],
-                        tsys_R_all=Tsys_arr[i_scan, i_ant, i_spw, 0, :],
-                        tsys_L_all=Tsys_arr[i_scan, i_ant, i_spw, 1, :],
-                        sigma_R_all=sigma_vals[i_scan, i_ant, i_spw, 0, :],
-                        sigma_L_all=sigma_vals[i_scan, i_ant, i_spw, 1, :],
-                        flag_R=flag_vals[i_scan, i_ant, i_spw, 0, :],
-                        flag_L=flag_vals[i_scan, i_ant, i_spw, 1, :],
-                        weather_T=weather_T_vals[i_scan, :],
-                        freq_Hz=freq_Hz,
-                        tau_upper=tau_upper,
-                    )
-                    reason = result["reason"]
-                    fit_reason[i_scan, i_ant, i_spw] = reason
-                    # "ok" → success; "poorly_identified" → values present but
-                    # fit_success=False so downstream code can opt-in.
-                    fit_success[i_scan, i_ant, i_spw] = reason == "ok"
-                    if reason in ("ok", "poorly_identified"):
-                        tau_zenith[i_scan, i_ant, i_spw] = result["tau0"]
-                        tau_err[i_scan, i_ant, i_spw] = result["tau_err"]
-                        T0_out[i_scan, i_ant, i_spw, 0] = result["T0_R"]
-                        T0_out[i_scan, i_ant, i_spw, 1] = result["T0_L"]
-                        tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[
-                            i_ant, i_spw, 0
-                        ]
-                        tcal_fit[i_scan, i_ant, i_spw, 1] = tcal_ref_vals[
-                            i_ant, i_spw, 1
-                        ]
+                    fit_reason[i_scan, i_ant, i_spw] = screen_reasons[i_ant]
+                continue
 
-            else:
-                # global_tau or tcal_solve: per-antenna screening then one global fit
-                screens: list[dict | None] = []
-                screen_reasons: list[str] = []
+            global_reason = global_result["reason"]
+            if global_reason not in ("ok", "poorly_identified"):
                 for i_ant in range(n_ant):
-                    sc = _screen_antenna(
-                        z_all=zenith_vals[i_scan, i_ant, :],
-                        tsys_R_all=Tsys_arr[i_scan, i_ant, i_spw, 0, :],
-                        tsys_L_all=Tsys_arr[i_scan, i_ant, i_spw, 1, :],
-                        sigma_R_all=sigma_vals[i_scan, i_ant, i_spw, 0, :],
-                        sigma_L_all=sigma_vals[i_scan, i_ant, i_spw, 1, :],
-                        flag_R=flag_vals[i_scan, i_ant, i_spw, 0, :],
-                        flag_L=flag_vals[i_scan, i_ant, i_spw, 1, :],
-                        weather_T=weather_T_vals[i_scan, :],
-                        freq_Hz=freq_Hz,
-                        tau_upper=tau_upper,
-                    )
-                    screen_reasons.append(sc["reason"])
-                    # Use both "ok" and "poorly_identified" — the global fit
-                    # constrains τ better than a single antenna.
-                    screens.append(
-                        sc if sc["reason"] in ("ok", "poorly_identified") else None
-                    )
-
-                passing: list[tuple[int, dict]] = []
-                for i_ant in range(n_ant):
-                    sc_i = screens[i_ant]
-                    if sc_i is not None:
-                        passing.append((i_ant, sc_i))
-
-                if not passing:
-                    for i_ant in range(n_ant):
-                        fit_reason[i_scan, i_ant, i_spw] = screen_reasons[i_ant]
-                    continue  # fit_success stays False, tau_zenith stays NaN
-
-                passing_screens = [s for _, s in passing]
-                global_result = _fit_global(
-                    passing_screens,
-                    tcal_mode=(mode == "tcal_solve"),
-                )
-
-                global_reason = global_result["reason"]
-                if global_reason not in ("ok", "poorly_identified"):
-                    for i_ant in range(n_ant):
-                        if screens[i_ant] is None:
-                            fit_reason[i_scan, i_ant, i_spw] = screen_reasons[i_ant]
-                        else:
-                            fit_reason[i_scan, i_ant, i_spw] = "fit_failed"
-                    continue  # tau_zenith stays NaN
-
-                tau0 = global_result["tau0"]
-                tau_err_val = global_result["tau_err"]
-
-                # tau_zenith broadcasts equal across ALL antennas (schema §5)
-                tau_zenith[i_scan, :, i_spw] = tau0
-                tau_err[i_scan, :, i_spw] = tau_err_val
-
-                for i_ant in range(n_ant):
-                    if screens[i_ant] is None:
-                        fit_reason[i_scan, i_ant, i_spw] = screen_reasons[i_ant]
+                    if i_ant in passing_idx:
+                        fit_reason[i_scan, i_ant, i_spw] = "fit_failed"
                     else:
-                        fit_reason[i_scan, i_ant, i_spw] = global_reason
-                        fit_success[i_scan, i_ant, i_spw] = global_reason == "ok"
+                        fit_reason[i_scan, i_ant, i_spw] = screen_reasons[i_ant]
+                continue
 
-                for j, (i_ant, _) in enumerate(passing):
-                    T0_out[i_scan, i_ant, i_spw, 0] = global_result["T0_R"][j]
-                    T0_out[i_scan, i_ant, i_spw, 1] = global_result["T0_L"][j]
-                    if mode == "global_tau":
-                        tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[
-                            i_ant, i_spw, 0
-                        ]
-                        tcal_fit[i_scan, i_ant, i_spw, 1] = tcal_ref_vals[
-                            i_ant, i_spw, 1
-                        ]
-                    else:  # tcal_solve
-                        tcal_fit[i_scan, i_ant, i_spw, 0] = (
-                            global_result["c_R"][j] * tcal_ref_vals[i_ant, i_spw, 0]
-                        )
-                        tcal_fit[i_scan, i_ant, i_spw, 1] = (
-                            global_result["c_L"][j] * tcal_ref_vals[i_ant, i_spw, 1]
-                        )
+            tau0 = global_result["tau0"]
+            tau_err_val = global_result["tau_err"]
+
+            # tau_zenith broadcasts equal across ALL antennas (schema §5)
+            tau_zenith[i_scan, :, i_spw] = tau0
+            tau_err[i_scan, :, i_spw] = tau_err_val
+
+            for i_ant in range(n_ant):
+                if i_ant in passing_idx:
+                    fit_reason[i_scan, i_ant, i_spw] = global_reason
+                    fit_success[i_scan, i_ant, i_spw] = global_reason == "ok"
+                else:
+                    fit_reason[i_scan, i_ant, i_spw] = screen_reasons[i_ant]
+
+            for j, i_ant in enumerate(passing_idx):
+                T0_out[i_scan, i_ant, i_spw, 0] = global_result["T0_R"][j]
+                T0_out[i_scan, i_ant, i_spw, 1] = global_result["T0_L"][j]
+                if mode == "global_tau":
+                    tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[i_ant, i_spw, 0]
+                    tcal_fit[i_scan, i_ant, i_spw, 1] = tcal_ref_vals[i_ant, i_spw, 1]
+                else:  # tcal_solve
+                    tcal_fit[i_scan, i_ant, i_spw, 0] = (
+                        global_result["c_R"][j] * tcal_ref_vals[i_ant, i_spw, 0]
+                    )
+                    tcal_fit[i_scan, i_ant, i_spw, 1] = (
+                        global_result["c_L"][j] * tcal_ref_vals[i_ant, i_spw, 1]
+                    )
 
     ds["tau_zenith"] = (("scan", "antenna", "spw"), tau_zenith)
     ds["tau_err"] = (("scan", "antenna", "spw"), tau_err)
@@ -240,9 +248,7 @@ def _compute_tsys(ds: xr.Dataset) -> np.ndarray:
     return tsys.astype(np.float32)
 
 
-def _compute_sigma_tsys(
-    ds: xr.Dataset, tsys: np.ndarray
-) -> np.ndarray:
+def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
     """Per-sample σ_Tsys from radiometer-equation error propagation.
 
     Derivation. Tsys is formed from switched-power: with S = switched_sum,
@@ -480,6 +486,7 @@ def _screen_antenna(
     weather_T: np.ndarray,
     freq_Hz: float,
     tau_upper: float,
+    Twmt_override: float | None = None,
 ) -> dict:
     """σ-weighted robust per-antenna tipping fit (one scan, one spw).
 
@@ -518,8 +525,13 @@ def _screen_antenna(
     sigma_R_v = sigma_R_all[valid].astype(np.float64)
     sigma_L_v = sigma_L_all[valid].astype(np.float64)
 
-    T_surf_mean = float(np.mean(weather_T[valid]))
-    Twmt = float(k2nt(weighted_mean_atm_T(T_surf_mean), freq_Hz))
+    if Twmt_override is not None and np.isfinite(Twmt_override):
+        Twmt = float(Twmt_override)
+    else:
+        # Bevis fallback: surface-T proxy when no grid T_mean is available
+        # (e.g. legacy modes, or independent_tau with grid build failure).
+        T_surf_mean = float(np.mean(weather_T[valid]))
+        Twmt = float(k2nt(weighted_mean_atm_T(T_surf_mean), freq_Hz))
 
     # T0 init from Tsys-vs-airmass linear intercept (replaces v2.6 hard-coded
     # T0=50). Per-mode tau init upgrade lands in Task #4.
@@ -637,6 +649,7 @@ def _fit_tau_per_antenna(
     weather_T: np.ndarray,
     freq_Hz: float,
     tau_upper: float,
+    Twmt_override: float | None = None,
 ) -> dict:
     """Per-(scan, antenna, spw) σ-weighted robust fit. Thin wrapper around
     `_screen_antenna` — the fit and the screen are now the same call.
@@ -655,6 +668,7 @@ def _fit_tau_per_antenna(
         weather_T,
         freq_Hz,
         tau_upper,
+        Twmt_override=Twmt_override,
     )
     if sc["reason"] not in ("ok", "poorly_identified"):
         return sc
@@ -787,3 +801,177 @@ def _fit_global(
         "c_L": [float(res.x[4 * k + 3]) for k in range(N)],
     }
 
+
+# ---------------------------------------------------------------------------
+# Task builders and worker functions for serial / multiprocessing dispatch
+# ---------------------------------------------------------------------------
+
+
+def _build_opacity_tasks(
+    n_scan: int,
+    n_ant: int,
+    n_spw: int,
+    zenith_vals: np.ndarray,
+    Tsys_arr: np.ndarray,
+    sigma_vals: np.ndarray,
+    flag_vals: np.ndarray,
+    weather_T_vals: np.ndarray,
+    freq_vals: np.ndarray,
+    t_mean: np.ndarray | None,
+):
+    """Yield ``((i_scan, i_ant, i_spw), kwargs)`` for every opacity cell."""
+    for i_scan in range(n_scan):
+        for i_spw in range(n_spw):
+            freq_Hz = float(freq_vals[i_spw])
+            twmt = (
+                float(t_mean[i_scan, i_spw])
+                if t_mean is not None and np.isfinite(t_mean[i_scan, i_spw])
+                else None
+            )
+            for i_ant in range(n_ant):
+                kw = {
+                    "z_all": zenith_vals[i_scan, i_ant, :],
+                    "tsys_R_all": Tsys_arr[i_scan, i_ant, i_spw, 0, :],
+                    "tsys_L_all": Tsys_arr[i_scan, i_ant, i_spw, 1, :],
+                    "sigma_R_all": sigma_vals[i_scan, i_ant, i_spw, 0, :],
+                    "sigma_L_all": sigma_vals[i_scan, i_ant, i_spw, 1, :],
+                    "flag_R": flag_vals[i_scan, i_ant, i_spw, 0, :],
+                    "flag_L": flag_vals[i_scan, i_ant, i_spw, 1, :],
+                    "weather_T": weather_T_vals[i_scan, :],
+                    "freq_Hz": freq_Hz,
+                    "tau_upper": _TAU_HI,
+                    "Twmt_override": twmt,
+                }
+                yield ((i_scan, i_ant, i_spw), kw)
+
+
+def _build_global_tasks(
+    n_scan: int,
+    n_ant: int,
+    n_spw: int,
+    zenith_vals: np.ndarray,
+    Tsys_arr: np.ndarray,
+    sigma_vals: np.ndarray,
+    flag_vals: np.ndarray,
+    weather_T_vals: np.ndarray,
+    freq_vals: np.ndarray,
+    t_mean: np.ndarray | None,
+    *,
+    tcal_mode: bool,
+):
+    """Yield ``((i_scan, i_spw), kwargs)`` for every global/tcal cell.
+
+    Each task carries every antenna's screening inputs for this (scan, spw),
+    so the worker performs screening + the global fit without further
+    coordination.
+    """
+    for i_scan in range(n_scan):
+        for i_spw in range(n_spw):
+            freq_Hz = float(freq_vals[i_spw])
+            twmt = (
+                float(t_mean[i_scan, i_spw])
+                if t_mean is not None and np.isfinite(t_mean[i_scan, i_spw])
+                else None
+            )
+            per_ant: list[dict] = []
+            for i_ant in range(n_ant):
+                per_ant.append(
+                    {
+                        "z_all": zenith_vals[i_scan, i_ant, :],
+                        "tsys_R_all": Tsys_arr[i_scan, i_ant, i_spw, 0, :],
+                        "tsys_L_all": Tsys_arr[i_scan, i_ant, i_spw, 1, :],
+                        "sigma_R_all": sigma_vals[i_scan, i_ant, i_spw, 0, :],
+                        "sigma_L_all": sigma_vals[i_scan, i_ant, i_spw, 1, :],
+                        "flag_R": flag_vals[i_scan, i_ant, i_spw, 0, :],
+                        "flag_L": flag_vals[i_scan, i_ant, i_spw, 1, :],
+                    }
+                )
+            kw = {
+                "per_ant": per_ant,
+                "weather_T": weather_T_vals[i_scan, :],
+                "freq_Hz": freq_Hz,
+                "tau_upper": _TAU_HI,
+                "Twmt_override": twmt,
+                "tcal_mode": tcal_mode,
+            }
+            yield ((i_scan, i_spw), kw)
+
+
+def _opacity_worker(args: tuple) -> tuple:
+    """Module-level worker: invokes ``_fit_tau_per_antenna`` on one cell."""
+    key, kwargs = args
+    return key, _fit_tau_per_antenna(**kwargs)
+
+
+def _global_worker(args: tuple) -> tuple:
+    """Module-level worker: per-antenna screen + global fit for one cell."""
+    key, kwargs = args
+    per_ant = kwargs["per_ant"]
+    weather_T = kwargs["weather_T"]
+    freq_Hz = kwargs["freq_Hz"]
+    tau_upper = kwargs["tau_upper"]
+    Twmt_override = kwargs["Twmt_override"]
+    tcal_mode = kwargs["tcal_mode"]
+
+    screens: list[dict | None] = []
+    screen_reasons: list[str] = []
+    for ant_in in per_ant:
+        sc = _screen_antenna(
+            **ant_in,
+            weather_T=weather_T,
+            freq_Hz=freq_Hz,
+            tau_upper=tau_upper,
+            Twmt_override=Twmt_override,
+        )
+        screen_reasons.append(sc["reason"])
+        screens.append(sc if sc["reason"] in ("ok", "poorly_identified") else None)
+
+    passing: list[tuple[int, dict]] = [
+        (i, s) for i, s in enumerate(screens) if s is not None
+    ]
+    if not passing:
+        return key, {
+            "screen_reasons": screen_reasons,
+            "passing_idx": [],
+            "global_result": None,
+        }
+
+    passing_idx = [i for i, _ in passing]
+    passing_screens = [s for _, s in passing]
+    global_result = _fit_global(passing_screens, tcal_mode=tcal_mode)
+    return key, {
+        "screen_reasons": screen_reasons,
+        "passing_idx": passing_idx,
+        "global_result": global_result,
+    }
+
+
+def _pool_init() -> None:
+    """Pool initializer — single-threaded BLAS per worker.
+
+    Parent already sets these via ``tipopac/__init__.py``, but ``spawn``
+    workers inherit a clean environment by design — re-export here.
+    """
+    for k in ("OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "OMP_NUM_THREADS"):
+        _os.environ[k] = "1"
+
+
+def _dispatch(tasks: list, worker, n_workers: int | None):
+    """Run *worker* across *tasks* either serially or via a process pool.
+
+    Yields the worker's return values; ordering not guaranteed when a pool
+    is used. Callers must address output cells by the key the worker
+    returns, not by iteration order.
+    """
+    if n_workers is None or n_workers <= 1 or len(tasks) <= 1:
+        for t in tasks:
+            yield worker(t)
+        return
+
+    ctx = _mp.get_context("spawn")
+    with ctx.Pool(processes=int(n_workers), initializer=_pool_init) as pool:
+        # imap_unordered streams results as workers finish; chunksize tuned
+        # so each worker keeps busy on light per-cell work without
+        # round-tripping every task through the queue.
+        chunksize = max(1, len(tasks) // (int(n_workers) * 4))
+        yield from pool.imap_unordered(worker, tasks, chunksize=chunksize)

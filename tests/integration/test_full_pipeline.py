@@ -16,6 +16,7 @@ Acceptance thresholds (DESIGN.md §11.3):
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,19 @@ import pytest
 
 MS_PATH = Path(__file__).parents[2] / "data" / "tip_test.ms"
 REF_DIR = Path(__file__).parent / "reference" / "v26"
+
+
+def _n_workers() -> int | None:
+    """Read `TIPOPAC_TEST_WORKERS` env var to set Stage-A fit parallelism.
+
+    The legacy ``global_tau`` / ``tcal_solve`` modes have a per-(scan, spw)
+    Jacobian large enough that the serial path takes ~hours on the full
+    MS. CI / local runs can export this var to a sensible value
+    (e.g. ``min(16, cpu_count())``); unset → serial (the historical
+    default).
+    """
+    v = os.environ.get("TIPOPAC_TEST_WORKERS")
+    return int(v) if v else None
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +96,7 @@ def ds_tau_per_antenna():
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
-    ta.fit(mode="tau_per_antenna")
+    ta.fit(mode="tau_per_antenna", n_workers=_n_workers())
     ta.extrapolate(atm_profile_source="afgl")
     return ta.dataset
 
@@ -93,7 +107,7 @@ def ds_global_tau():
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
-    ta.fit(mode="global_tau")
+    ta.fit(mode="global_tau", n_workers=_n_workers())
     ta.extrapolate(atm_profile_source="afgl")
     return ta.dataset
 
@@ -104,7 +118,7 @@ def ds_tcal_solve():
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
-    ta.fit(mode="tcal_solve")
+    ta.fit(mode="tcal_solve", n_workers=_n_workers())
     ta.extrapolate(atm_profile_source="afgl")
     return ta.dataset
 
@@ -199,6 +213,67 @@ def test_tcal_solve_tau_vs_v26(ds_tcal_solve):
     _ = ds_tcal_solve
 
 
+# ---------------------------------------------------------------------------
+# Tests — independent_tau_solve (Stage A + B, design/independent_tau_fit.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ds_independent_tau_solve():
+    """Run the Stage-A + Stage-B path end-to-end on the validation MS.
+
+    AFGL profile (no network) so the test is reproducible; the grid is
+    built once and drives both Stage-A T_mean and Stage-B PWV anchor.
+    """
+    from tipopac import TippingAnalysis
+
+    ta = TippingAnalysis.from_path(MS_PATH)
+    ta.apply_flags(online=True)
+    ta.build_atm_grids(atm_profile_source="afgl")
+    ta.fit(mode="independent_tau_solve", n_workers=_n_workers())
+    return ta.dataset
+
+
+@pytest.mark.slow
+def test_independent_tau_solve_schema(ds_independent_tau_solve):
+    """Pipeline output (including pwv, pwv_err) must satisfy the schema."""
+    from tipopac import schema
+
+    schema.validate(ds_independent_tau_solve)
+
+
+@pytest.mark.slow
+def test_independent_tau_solve_outputs_populated(ds_independent_tau_solve):
+    """Stage A τ + Tcal and Stage B PWV must be finite for some antenna."""
+    ds = ds_independent_tau_solve
+
+    # Mode label is the *public* mode, not the Stage-A backend name.
+    assert ds.attrs["mode"] == "independent_tau_solve"
+
+    # Stage A wrote tau_zenith / tcal_fit.
+    for name in ("tau_zenith", "tau_err", "tcal_fit", "fit_success"):
+        assert name in ds.data_vars, f"missing Stage-A output: {name}"
+
+    # At least one (scan, antenna, spw) cell should have a successful fit.
+    assert bool(ds["fit_success"].values.any()), "no Stage-A fits succeeded"
+    assert np.isfinite(ds["tau_zenith"].values).any(), "all tau_zenith are NaN"
+
+    # Stage B wrote pwv + pwv_err per antenna.
+    assert "pwv" in ds.data_vars
+    assert "pwv_err" in ds.data_vars
+    assert ds["pwv"].dims == ("antenna",)
+    assert ds["pwv_err"].dims == ("antenna",)
+
+    # In tcal_solve backend, τ_z is broadcast equal across antennas, so
+    # the per-antenna PWV anchor returns identical values per antenna
+    # (the `shared_pwv` semantics in the design). At least one antenna
+    # must have produced a finite anchor.
+    finite_mask = np.isfinite(ds["pwv"].values) & np.isfinite(ds["pwv_err"].values)
+    assert finite_mask.any(), "Stage-B PWV anchor produced no finite values"
+    # σ_PWV must be positive where finite.
+    assert (ds["pwv_err"].values[finite_mask] > 0).all()
+
+
 @pytest.mark.slow
 def test_tcal_solve_tcal_vs_v26(ds_tcal_solve):
     """Fitted Tcal vs v2.6 — retired (see initial_design.md §11.3)."""
@@ -216,8 +291,8 @@ def test_tcal_solve_tcal_vs_v26(ds_tcal_solve):
     n_spw = len(ref["coords"]["spw"])
     n_ant = len(ref["coords"]["antenna"])
 
-    tcal_v26 = _ref_array(ref, "tcal_fit")          # (n_scan, n_ant, n_spw, 2)
-    tcal_v1 = ds_tcal_solve["tcal_fit"].values       # (n_scan, n_ant, n_spw, 2)
+    tcal_v26 = _ref_array(ref, "tcal_fit")  # (n_scan, n_ant, n_spw, 2)
+    tcal_v1 = ds_tcal_solve["tcal_fit"].values  # (n_scan, n_ant, n_spw, 2)
 
     failures: list[str] = []
     n_compared = 0
