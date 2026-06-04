@@ -20,16 +20,6 @@ Two follow-up design notes also live in `design/`:
 - `independent_tau_fit.md` — the active two-stage architecture
   (per-spw τ fit + post-hoc PWV anchor) that replaces the reverted
   Stage-2 joint forward-model fit. Spec for the next round of work.
-- `performance_refactor_considerations.md` — profiling findings that
-  drove the redirection, including the OpenBLAS thread-contention
-  result.
-- `model_refactor.md` — superseded; retained as historical record of the
-  Stage 1 + Stage 2 plan.
-
-Implementation order is in `initial_design.md` §13 (schema → MS reader → physics/fit →
-flags → other modes → caltables → atmosphere → plot → SDM reader → integration
-reference). As of writing, `src/tipopac/` is an empty skeleton — only the
-package directory exists.
 
 The `references/` directory contains other authoritative references. These
 include:
