@@ -32,6 +32,17 @@ from scipy.optimize import minimize_scalar
 
 __all__ = ["anchor", "extrapolate", "fetch_profile"]
 
+
+class _NoPressureLevelData(RuntimeError):
+    """open-meteo response was structurally valid but carried no upper-air data.
+
+    Raised when no pressure-level variables in the response have non-NaN
+    values — usually because the requested date predates the gfs_hrrr
+    pressure-level archive (≈ 2021-03-23). Deterministic, so the
+    :func:`fetch_profile` retry loop should *not* retry on this; it bails
+    straight to AFGL.
+    """
+
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -46,7 +57,13 @@ _VLA_LON: float = -107.6177  # degrees E
 # ---------------------------------------------------------------------------
 
 _OM_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
-_OM_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+# Historical archive of past *forecast* runs (not ERA5 reanalysis). The
+# regular `archive-api` ERA5 endpoint does not expose pressure-level
+# (upper-air) variables — units come back as "undefined" and all values are
+# null. Past forecasts from gfs_hrrr include pressure-level data for dates
+# >= ~2021-03-23.
+_OM_ARCHIVE_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
+_OM_MODEL = "gfs_hrrr"
 _OM_FORECAST_HORIZON_DAYS = 16  # beyond this age, use archive endpoint
 _OM_TIMEOUT_S = 5.0
 
@@ -99,6 +116,7 @@ def fetch_profile(
     *,
     source: str = "open-meteo",
     afgl_climatology: str = "midlatitude_summer",
+    surface_pressure: u.Quantity | None = None,
     retry_delays_s: tuple[float, ...] = (5.0, 15.0, 45.0),
 ) -> tuple[u.Quantity, u.Quantity, u.Quantity, str, dict | None]:
     """Return ``(pressure, temperature, h2o_vmr, source_label, query_meta)``.
@@ -111,9 +129,19 @@ def fetch_profile(
     ``source="afgl"`` skips the network call entirely. ``source_label`` in the
     returned tuple resolves the actual source used and is suitable for
     storing as ``pwv_profile_source`` per-scan provenance.
+
+    ``surface_pressure`` (pressure :class:`~astropy.units.Quantity`) clips the
+    profile so the lowest level corresponds to the antenna's surface — needed
+    at high-elevation sites (VLA ≈ 794 hPa) so the integrated PWV and dry-air
+    opacity reflect only the column above the antennas. Applied to both
+    open-meteo and AFGL profiles. If the requested base is outside the
+    profile's bounds the profile is returned unclipped (with a debug log).
     """
     if source not in ("open-meteo", "afgl"):
         raise ValueError(f"unknown atmospheric profile source: {source!r}")
+
+    if afgl_climatology == "auto":
+        afgl_climatology = _pick_climatology_for_date(obs_time_mjd_s)
 
     if source == "open-meteo":
         last_exc: Exception | None = None
@@ -127,8 +155,20 @@ def fetch_profile(
                 )
                 time.sleep(delay)
             try:
-                p, t, h, meta = _fetch_open_meteo(lat, lon, obs_time_mjd_s)
+                p, t, h, meta = _fetch_open_meteo(
+                    lat, lon, obs_time_mjd_s, surface_pressure=surface_pressure
+                )
                 return p, t, h, "open_meteo", meta
+            except _NoPressureLevelData as exc:
+                # Deterministic — retrying won't help. Bail to AFGL now.
+                _log.warning(
+                    "open-meteo has no upper-air data for this date "
+                    "(%s); falling back to AFGL %r",
+                    exc,
+                    afgl_climatology,
+                )
+                last_exc = exc
+                break
             except Exception as exc:
                 last_exc = exc
                 _log.warning(
@@ -136,15 +176,32 @@ def fetch_profile(
                     attempt + 1,
                     exc,
                 )
-        _log.warning(
-            "open-meteo exhausted %d attempts; falling back to AFGL %r (last: %s)",
-            len(retry_delays_s) + 1,
-            afgl_climatology,
-            last_exc,
-        )
+        else:
+            _log.warning(
+                "open-meteo exhausted %d attempts; falling back to AFGL %r (last: %s)",
+                len(retry_delays_s) + 1,
+                afgl_climatology,
+                last_exc,
+            )
 
-    pressure, temperature, h2o_vmr = _afgl_profile(afgl_climatology)
+    pressure, temperature, h2o_vmr = _afgl_profile(
+        afgl_climatology, surface_pressure=surface_pressure
+    )
     return pressure, temperature, h2o_vmr, f"afgl_{afgl_climatology}", None
+
+
+def _pick_climatology_for_date(obs_time_mjd_s: float) -> str:
+    """Return midlatitude_summer / midlatitude_winter based on N-hemisphere month.
+
+    Apr–Sep → midlatitude_summer; Oct–Mar → midlatitude_winter.
+    VLA (34° N) is well into the northern mid-latitudes so this is unambiguous.
+    """
+    obs_dt = datetime.fromtimestamp(
+        (obs_time_mjd_s / 86400.0 - 40587.0) * 86400.0, tz=timezone.utc
+    )
+    return (
+        "midlatitude_summer" if 4 <= obs_dt.month <= 9 else "midlatitude_winter"
+    )
 
 
 def extrapolate(
@@ -168,10 +225,20 @@ def extrapolate(
 
     open_meteo_query: dict | None = None
 
+    # Surface pressure (median of WEATHER table samples) — clips both
+    # open-meteo and AFGL profiles to the column above the antennas.
+    surface_pressure: u.Quantity | None = None
+    if "weather_P" in ds.data_vars:
+        wp = ds["weather_P"].values
+        wp_finite = wp[np.isfinite(wp)]
+        if wp_finite.size:
+            surface_pressure = (float(np.median(wp_finite)) / 100.0) * u.hPa
+
     if atm_profile_source == "open-meteo":
         try:
             pressure, temperature, h2o_vmr, open_meteo_query = _fetch_open_meteo(
-                _VLA_LAT, _VLA_LON, obs_time_mjd_s
+                _VLA_LAT, _VLA_LON, obs_time_mjd_s,
+                surface_pressure=surface_pressure,
             )
         except Exception:
             _log.warning(
@@ -182,7 +249,9 @@ def extrapolate(
             atm_profile_source = "afgl"
 
     if atm_profile_source == "afgl":
-        pressure, temperature, h2o_vmr = _afgl_profile(afgl_climatology)
+        pressure, temperature, h2o_vmr = _afgl_profile(
+            afgl_climatology, surface_pressure=surface_pressure
+        )
 
     freq_min_Hz = float(freqs_Hz.min()) * 0.95
     freq_max_Hz = float(freqs_Hz.max()) * 1.05
@@ -278,14 +347,19 @@ def _fetch_open_meteo(
     lat: float,
     lon: float,
     obs_time_mjd_s: float,
+    *,
+    surface_pressure: u.Quantity | None = None,
 ) -> tuple[u.Quantity, u.Quantity, u.Quantity, dict]:
     """Fetch a vertical atmospheric profile from open-meteo.
 
     Returns (pressure, temperature, h2o_vmr, query_meta).
     Raises on HTTP error or timeout (caller falls back to AFGL).
+
+    If ``surface_pressure`` is given, the returned profile is clipped (and
+    bottom values linearly interpolated) so the lowest level corresponds to
+    the site's actual surface — see :func:`amwrap.interp_by_pressure`.
     """
     import openmeteo_requests
-    from openmeteo_sdk.Variable import Variable as OmVar
 
     # MJD seconds → UTC datetime (MJD epoch = 1858-11-17; Unix epoch MJD = 40587 days)
     obs_dt = datetime.fromtimestamp(
@@ -297,20 +371,31 @@ def _fetch_open_meteo(
     age_days = (now - obs_dt).total_seconds() / 86400.0
     url = _OM_ARCHIVE_URL if age_days > _OM_FORECAST_HORIZON_DAYS else _OM_FORECAST_URL
 
-    hourly_vars = [
-        f"{v}_{p}hPa"
-        for p in _OM_PRESSURE_LEVELS
-        for v in ("temperature", "relative_humidity")
-    ]
+    # The SDK's `var.PressureLevel()` returns 0 for every variable in the
+    # response (at least with the current openmeteo_sdk wire format), so we
+    # cannot key by it. Instead pair variables by index — they come back in
+    # the same order we requested, alternating (T, RH) per level.
+    hourly_pairs: list[tuple[int, str]] = []
+    for p in _OM_PRESSURE_LEVELS:
+        hourly_pairs.append((p, "temperature"))
+        hourly_pairs.append((p, "relative_humidity"))
+    hourly_vars = [f"{v}_{p}hPa" for p, v in hourly_pairs]
     params: dict = {
         "latitude": lat,
         "longitude": lon,
         "hourly": hourly_vars,
         "start_date": date_str,
         "end_date": date_str,
+        "models": _OM_MODEL,
         "timezone": "UTC",
     }
-    query_meta = {"lat": lat, "lon": lon, "date": date_str, "endpoint": url}
+    query_meta = {
+        "lat": lat,
+        "lon": lon,
+        "date": date_str,
+        "endpoint": url,
+        "model": _OM_MODEL,
+    }
 
     client = openmeteo_requests.Client()
     responses = client.weather_api(url, params=params, timeout=_OM_TIMEOUT_S)
@@ -318,32 +403,41 @@ def _fetch_open_meteo(
     if hourly is None:
         raise RuntimeError("open-meteo response contained no hourly data")
 
+    n_vars = hourly.VariablesLength()
+    if n_vars != len(hourly_pairs):
+        raise RuntimeError(
+            f"open-meteo returned {n_vars} variables, expected {len(hourly_pairs)}"
+        )
+
     # Find the hourly index closest to the observation time.
     times = np.arange(hourly.Time(), hourly.TimeEnd(), hourly.Interval())
     t_idx = int(np.argmin(np.abs(times - obs_dt.timestamp())))
 
     temp_by_level: dict[int, float] = {}
     rh_by_level: dict[int, float] = {}
-    for i in range(hourly.VariablesLength()):
+    for i, (p_level, vname) in enumerate(hourly_pairs):
         var: Any = hourly.Variables(i)
         if var is None:
             continue
-        p_level = int(var.PressureLevel())
-        if p_level not in _OM_PRESSURE_LEVELS:
-            continue
-        var_type = var.Variable()
         vals = var.ValuesAsNumpy()
-        if var_type == OmVar.temperature:
-            temp_by_level[p_level] = float(vals[t_idx])
-        elif var_type == OmVar.relative_humidity:
-            rh_by_level[p_level] = float(vals[t_idx])
+        if t_idx >= vals.size:
+            continue
+        val = float(vals[t_idx])
+        if not np.isfinite(val):
+            continue
+        if vname == "temperature":
+            temp_by_level[p_level] = val
+        elif vname == "relative_humidity":
+            rh_by_level[p_level] = val
 
     # Build ordered arrays (surface → top of atmosphere).
     # Open-meteo omits pressure levels below the surface (e.g. 1000 hPa at
     # high-altitude sites like the VLA at 2115 m); skip missing levels silently.
     valid_levels = [p for p in _OM_PRESSURE_LEVELS if p in temp_by_level and p in rh_by_level]
     if not valid_levels:
-        raise RuntimeError("open-meteo returned no valid pressure levels")
+        raise _NoPressureLevelData(
+            f"no upper-air data from {_OM_MODEL} for {date_str} (endpoint={url})"
+        )
     pressure_hPa = np.array(valid_levels, dtype=np.float64)
     temperature_C = np.array(
         [temp_by_level[p] for p in valid_levels], dtype=np.float64
@@ -362,16 +456,56 @@ def _fetch_open_meteo(
         pressure_q, temperature_q, rh_q
     )
 
+    if surface_pressure is not None:
+        try:
+            pressure_clipped = _amwrap.interp_by_pressure(
+                pressure_q, pressure_q, surface_pressure
+            )
+            temperature_clipped = _amwrap.interp_by_pressure(
+                temperature_q, pressure_q, surface_pressure
+            )
+            h2o_vmr_clipped = _amwrap.interp_by_pressure(
+                h2o_vmr, pressure_q, surface_pressure
+            )
+            pressure_q = pressure_clipped
+            temperature_q = temperature_clipped
+            h2o_vmr = h2o_vmr_clipped
+            query_meta["surface_pressure_hPa"] = float(
+                surface_pressure.to(u.hPa).value
+            )
+        except ValueError as exc:
+            # surface_pressure outside the open-meteo profile bounds — return
+            # the un-clipped profile (the open-meteo response is already
+            # truncated to its station elevation).
+            _log.debug(
+                "open-meteo profile not clipped: surface_pressure %.1f hPa "
+                "outside response bounds [%.1f, %.1f] hPa (%s)",
+                surface_pressure.to(u.hPa).value,
+                pressure_q.to(u.hPa).value.min(),
+                pressure_q.to(u.hPa).value.max(),
+                exc,
+            )
+
     return pressure_q, temperature_q, h2o_vmr, query_meta
 
 
 def _afgl_profile(
     name: str,
+    *,
+    surface_pressure: u.Quantity | None = None,
 ) -> tuple[u.Quantity, u.Quantity, u.Quantity]:
-    """Return (pressure, temperature, h2o_vmr) from an AFGL climatology."""
+    """Return (pressure, temperature, h2o_vmr) from an AFGL climatology.
+
+    When ``surface_pressure`` is given, the climatology is clipped via
+    :class:`amwrap.Climatology`'s ``pressure_base`` so the lowest level
+    corresponds to the site's surface. AFGL profiles start at sea-level
+    (~1018 hPa); without this clip a high-elevation site like the VLA
+    (~794 hPa) gets ~3 mm of phantom sub-surface water vapour and a
+    correspondingly inflated dry-air column.
+    """
     import amwrap as _amwrap
 
-    clim = _amwrap.Climatology(name)
+    clim = _amwrap.Climatology(name, pressure_base=surface_pressure)
     return clim.pressure, clim.temperature, clim.mixing_ratio["h2o"]
 
 

@@ -225,6 +225,8 @@ class TippingAnalysis:
         the post-fit atmospheric anchor (see ``design/independent_tau_fit.md``);
         not consumed by :meth:`fit`.
         """
+        import astropy.units as u
+
         from tipopac.atmgrid import build_pwv_grid
         from tipopac.atmosphere import fetch_profile
 
@@ -234,15 +236,27 @@ class TippingAnalysis:
 
         scan_ids = self._ds.coords["scan"].values
         scan_times = self._ds.coords["scan_time_start"].values
+        # Per-scan surface pressure (Pa) from the WEATHER table. Median of
+        # finite samples; missing scans get NaN → no clipping (full column).
+        weather_P_Pa = self._ds["weather_P"].values  # (scan, time), Pa
         sources: dict[int, str] = {}
+        surface_pressures_hPa: dict[int, float] = {}
         for i, scan_id in enumerate(scan_ids):
             obs_time_mjd_s = float(scan_times[i])
+            p_samples = weather_P_Pa[i][np.isfinite(weather_P_Pa[i])]
+            if p_samples.size:
+                p_surf_hPa = float(np.median(p_samples)) / 100.0
+                surface_pressure: u.Quantity | None = p_surf_hPa * u.hPa
+                surface_pressures_hPa[int(scan_id)] = p_surf_hPa
+            else:
+                surface_pressure = None
             pressure, temperature, h2o_vmr, source_label, _meta = fetch_profile(
                 _VLA_LAT,
                 _VLA_LON,
                 obs_time_mjd_s,
                 source=atm_profile_source,
                 afgl_climatology=afgl_climatology,
+                surface_pressure=surface_pressure,
             )
             grid = build_pwv_grid(
                 pressure,
@@ -259,6 +273,8 @@ class TippingAnalysis:
             sources[int(scan_id)] = source_label
 
         self._ds.attrs["pwv_profile_source"] = sources
+        if surface_pressures_hPa:
+            self._ds.attrs["surface_pressure_hPa"] = surface_pressures_hPa
 
     def fit(
         self,
