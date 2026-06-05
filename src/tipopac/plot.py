@@ -11,23 +11,89 @@ no display is required and no global backend change is made.
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
-from matplotlib.figure import Figure
+from matplotlib import pyplot as plt
+from matplotlib import patheffects
+from matplotlib.ticker import AutoMinorLocator
 
 from tipopac.physics import k2nt, tsys_model, weighted_mean_atm_T
 
-__all__ = ["plot_dataset"]
+__all__ = ["plot_all_elevation_curves", "plot_elevation_curve"]
 
 _log = logging.getLogger(__name__)
 
 # Dense ZA grid for smooth model curves.
-_Z_GRID: np.ndarray = np.linspace(30.0, 90.0, 300)
+_Z_GRID: np.ndarray = np.linspace(30.0, 75.0, 300)
+
+plt.rc("text", usetex=False)
+plt.rc("font", size=10, family="cmu serif")
+plt.rc("mathtext", fontset="cm")
+plt.rc("xtick", direction="in", top=True)
+plt.rc("ytick", direction="in", right=True)
+plt.rc("axes", unicode_minus=False)
+plt.ioff()
+
+warnings.filterwarnings(
+    action="ignore",
+    category=UserWarning,
+    message="This figure includes Axes that are not compatible with tight_layout.*",
+)
+warnings.filterwarnings(
+    action="ignore",
+    category=UserWarning,
+    message="No artists with labels found to put in legend.*",
+)
 
 
-def plot_dataset(ds: xr.Dataset, out_dir: Path | str) -> None:
+def savefig(
+    path: Path, t_forecast=None, dpi=300, h_pad=0.3, w_pad=None, overwrite=True
+):
+    path.absolute().parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout(h_pad=h_pad, w_pad=w_pad)
+    if path.exists() and not overwrite:
+        _log.warning(f"Figure exists, continuing: {path}")
+    else:
+        for ext in ("pdf", "png", "svgz"):
+            filen = str(path) + f".{ext}"
+            plt.savefig(filen, dpi=dpi)
+        _log.info(f"Figure saved: {path}")
+        plt.close("all")
+
+
+def annotate_with_patheffects(
+    ax,
+    label,
+    xy=(0.1, 0.1),
+    xycoords="axes fraction",
+    linewidth=2,
+    color="black",
+    foreground="white",
+):
+    anno = ax.annotate(label, xy=xy, xycoords=xycoords, color=color)
+    anno.set_path_effects(
+        [
+            patheffects.withStroke(linewidth=linewidth, foreground=foreground),
+        ]
+    )
+    return anno
+
+
+def set_minor_ticks(ax, x=True, y=True, n_xticks=None, n_yticks=None):
+    if x:
+        ax.xaxis.set_minor_locator(AutoMinorLocator(n_xticks))
+    if y:
+        ax.yaxis.set_minor_locator(AutoMinorLocator(n_yticks))
+
+
+def set_grid(ax):
+    ax.grid(linestyle="dashed", color="0.3", linewidth=0.3)
+
+
+def plot_all_elevation_curves(ds: xr.Dataset, out_dir: Path | str) -> None:
     """Write one PNG per successful (scan, antenna, spw) fit under ``out_dir``.
 
     Requires in *ds*: Tsys, tau_zenith, tau_err, T0, tcal_fit, tcal_ref,
@@ -39,9 +105,6 @@ def plot_dataset(ds: xr.Dataset, out_dir: Path | str) -> None:
     The output directory is created with ``parents=True, exist_ok=True``.
     Skips cells where ``fit_success`` is False.
     """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     fit_success = ds["fit_success"].values  # (scan, ant, spw)
     if not fit_success.any():
         _log.warning("plot_dataset: no successful fits; nothing to plot")
@@ -51,14 +114,13 @@ def plot_dataset(ds: xr.Dataset, out_dir: Path | str) -> None:
     ant_names = ds.coords["antenna"].values
     spw_ids = ds.coords["spw"].values
     freq_vals = ds.coords["frequency"].values  # Hz (spw,)
-    has_am = "tau_extrapolated" in ds.data_vars
 
     for i_scan in range(ds.sizes["scan"]):
         for i_ant in range(ds.sizes["antenna"]):
             for i_spw in range(ds.sizes["spw"]):
                 if not fit_success[i_scan, i_ant, i_spw]:
                     continue
-                _plot_cell(
+                plot_elevation_curve(
                     ds,
                     i_scan,
                     i_ant,
@@ -67,12 +129,11 @@ def plot_dataset(ds: xr.Dataset, out_dir: Path | str) -> None:
                     ant_names,
                     spw_ids,
                     freq_vals,
-                    has_am,
                     out_dir,
                 )
 
 
-def _plot_cell(
+def plot_elevation_curve(
     ds: xr.Dataset,
     i_scan: int,
     i_ant: int,
@@ -81,7 +142,6 @@ def _plot_cell(
     ant_names: np.ndarray,
     spw_ids: np.ndarray,
     freq_vals: np.ndarray,
-    has_am: bool,
     out_dir: Path,
 ) -> None:
     scan_id = int(scan_ids[i_scan])
@@ -90,10 +150,10 @@ def _plot_cell(
     freq_Hz = float(freq_vals[i_spw])
 
     # Observed quantities
-    za = ds["zenith_angle"].values[i_scan, i_ant, :]           # (time,)
-    tsys_R = ds["Tsys"].values[i_scan, i_ant, i_spw, 0, :]    # (time,)
-    tsys_L = ds["Tsys"].values[i_scan, i_ant, i_spw, 1, :]    # (time,)
-    flag = ds["flag"].values[i_scan, i_ant, i_spw, :, :]      # (pol, time)
+    za = ds["zenith_angle"].values[i_scan, i_ant, :]  # (time,)
+    tsys_R = ds["Tsys"].values[i_scan, i_ant, i_spw, 0, :]  # (time,)
+    tsys_L = ds["Tsys"].values[i_scan, i_ant, i_spw, 1, :]  # (time,)
+    flag = ds["flag"].values[i_scan, i_ant, i_spw, :, :]  # (pol, time)
     good = ~(flag[0] | flag[1]) & np.isfinite(tsys_R) & np.isfinite(tsys_L)
 
     # Fitted parameters
@@ -118,47 +178,23 @@ def _plot_cell(
     fit_R = tsys_model(_Z_GRID, T0_R, tau0, Twmt) / c_R
     fit_L = tsys_model(_Z_GRID, T0_L, tau0, Twmt) / c_L
 
-    n_panels = 2 if has_am else 1
-    fig = Figure(figsize=(7, 4 * n_panels))
-
-    if has_am:
-        ax_top, ax_bot = fig.subplots(2, 1)
-    else:
-        ax_top = fig.subplots()
-        ax_bot = None
-
-    # --- top panel: observed Tsys + fitted curve ---
-    ax_top.scatter(za[good], tsys_R[good], color="steelblue", s=14, label="R pol", zorder=3)
-    ax_top.scatter(za[good], tsys_L[good], color="seagreen", s=14, label="L pol", zorder=3)
-    ax_top.plot(_Z_GRID, fit_R, color="tomato", lw=1.5, label="fit")
-    ax_top.plot(_Z_GRID, fit_L, color="tomato", lw=1.5)
-    ax_top.set_xlabel("Zenith angle (deg)")
-    ax_top.set_ylabel("Tsys (K)")
-    ax_top.set_xlim(30, 90)
-    ax_top.legend(loc="upper left", fontsize=8)
-    ax_top.set_title(
-        f"{ant_name}  spw {spw_id}  scan {scan_id}\n"
-        f"τ = {tau0:.3f} ± {tau_err_val:.3f}  |  "
-        f"T0_R = {T0_R:.1f} K  T0_L = {T0_L:.1f} K",
-        fontsize=9,
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.scatter(za[good], tsys_R[good], color="firebrick", s=4, label="R pol", zorder=3)
+    ax.scatter(za[good], tsys_L[good], color="dodgerblue", s=4, label="L pol", zorder=3)
+    ax.plot(_Z_GRID, fit_R, color="firebrick", lw=1.5, alpha=0.75)
+    ax.plot(_Z_GRID, fit_L, color="dodgerblue", lw=1.5, alpha=0.75)
+    set_grid(ax)
+    set_minor_ticks(ax)
+    ax.set_xlabel(r"Zenith angle [deg]")
+    ax.set_ylabel(r"$T_\mathrm{sys} [\mathrm{K}]$")
+    ax.set_xlim(_Z_GRID.min(), _Z_GRID.max())
+    ax.legend(loc="upper left", fontsize=7)
+    ax.set_title(
+        f"{ant_name}  spw {spw_id}  scan {scan_id} | "
+        rf"$\tau = {tau0:.3f} \pm {tau_err_val:.3f}$ | "
+        rf"$T_{{0, r}}$ = {T0_R:.1f} K  $T_{{0, l}}$ = {T0_L:.1f} K",
+        fontsize=7,
     )
 
-    # --- bottom panel: am cross-check ---
-    if ax_bot is not None:
-        tau_am = float(ds["tau_extrapolated"].values[i_scan, i_spw])
-        am_R = tsys_model(_Z_GRID, T0_R, tau_am, Twmt) / c_R
-        am_L = tsys_model(_Z_GRID, T0_L, tau_am, Twmt) / c_L
-        ax_bot.scatter(za[good], tsys_R[good], color="steelblue", s=14, label="R pol", zorder=3)
-        ax_bot.scatter(za[good], tsys_L[good], color="seagreen", s=14, label="L pol", zorder=3)
-        ax_bot.plot(_Z_GRID, am_R, color="darkorange", lw=1.5, label="am model")
-        ax_bot.plot(_Z_GRID, am_L, color="darkorange", lw=1.5)
-        ax_bot.set_xlabel("Zenith angle (deg)")
-        ax_bot.set_ylabel("Tsys (K)")
-        ax_bot.set_xlim(30, 90)
-        ax_bot.legend(loc="upper left", fontsize=8)
-        ax_bot.set_title(f"am cross-check  (τ_am = {tau_am:.3f})", fontsize=9)
-
-    fig.tight_layout()
-    fname = out_dir / f"tippingcurve_spw_{spw_id}_{ant_name}_scan_{scan_id}.png"
-    fig.savefig(fname, dpi=100)
-    _log.debug("wrote %s", fname)
+    out_path = out_dir / f"tippingcurve_spw_{spw_id}_{ant_name}_scan_{scan_id}"
+    savefig(out_path)

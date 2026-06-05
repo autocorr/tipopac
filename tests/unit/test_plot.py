@@ -8,7 +8,7 @@ import numpy as np
 import xarray as xr
 
 from tipopac import schema
-from tipopac.plot import plot_dataset
+from tipopac.plot import plot_all_elevation_curves
 
 
 # ---------------------------------------------------------------------------
@@ -131,21 +131,21 @@ def _make_plot_ds(
 
 def test_plot_writes_png(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
-    plot_dataset(ds, tmp_path)
+    plot_all_elevation_curves(ds,tmp_path)
     pngs = list(tmp_path.glob("*.png"))
     assert len(pngs) == 1
 
 
 def test_plot_filename_convention(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
-    plot_dataset(ds, tmp_path)
+    plot_all_elevation_curves(ds,tmp_path)
     pngs = list(tmp_path.glob("*.png"))
     assert pngs[0].name == "tippingcurve_spw_0_ea01_scan_1.png"
 
 
 def test_plot_skips_failures(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=False)
-    plot_dataset(ds, tmp_path)
+    plot_all_elevation_curves(ds,tmp_path)
     pngs = list(tmp_path.glob("*.png"))
     assert len(pngs) == 0
 
@@ -153,21 +153,21 @@ def test_plot_skips_failures(tmp_path: Path) -> None:
 def test_plot_creates_output_dir(tmp_path: Path) -> None:
     out = tmp_path / "new_subdir" / "plots"
     ds = _make_plot_ds(success=True)
-    plot_dataset(ds, out)
+    plot_all_elevation_curves(ds,out)
     assert out.is_dir()
     assert len(list(out.glob("*.png"))) == 1
 
 
 def test_plot_with_am_overlay(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True, with_am=True)
-    plot_dataset(ds, tmp_path)
+    plot_all_elevation_curves(ds,tmp_path)
     pngs = list(tmp_path.glob("*.png"))
     assert len(pngs) == 1
 
 
 def test_plot_multi_cell(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_scan=2, n_ant=3, n_spw=2, success=True)
-    plot_dataset(ds, tmp_path)
+    plot_all_elevation_curves(ds,tmp_path)
     pngs = list(tmp_path.glob("*.png"))
     assert len(pngs) == 2 * 3 * 2
 
@@ -176,6 +176,6 @@ def test_plot_partial_success(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_scan=1, n_ant=2, n_spw=1, success=True)
     # Flag one antenna as failed after construction
     ds["fit_success"].values[0, 1, 0] = False
-    plot_dataset(ds, tmp_path)
+    plot_all_elevation_curves(ds,tmp_path)
     pngs = list(tmp_path.glob("*.png"))
     assert len(pngs) == 1
