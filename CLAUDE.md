@@ -9,28 +9,18 @@ opacity / Tcal estimation). The new package is `tipopac` under `src/tipopac/`;
 the legacy reference implementation lives **read-only** at
 `tipopac_v2.6/lastversion/tipping/private/task_tipopac.py` (~1900 lines).
 
-**`design/initial_design.md` is the authoritative implementation contract** for
-v1. Anything ambiguous about API shape, data schema, fit modes,
-atmospheric-model anchoring, or acceptance criteria is answered there before
-you read the code. If the code and initial_design.md disagree, the bug is in
-the code unless a follow-up has been explicitly agreed.
-
-Two follow-up design notes also live in `design/`:
-
-- `independent_tau_fit.md` — the active two-stage architecture
-  (per-spw τ fit + post-hoc PWV anchor) that replaces the reverted
-  Stage-2 joint forward-model fit. Spec for the next round of work.
-
-The `references/` directory contains other authoritative references. These
-include:
-
+- `design/initial_design.md`: design and implementation plan for v1. Checker
+  there first for ambiguities concerning API shape, data schema, fit modes,
+  atmospheric-model anchoring, or acceptance criteria before you read the code.
+  Flag disagreements and raise them to the user. A follow-up design note lives
+  in `indepenent_tau_fit.md` for the two-stage fit (per-spw τ fit + post-hoc
+  PWV anchor).
 - `references/ms_v2_memo_299.html`: Specification for the MeasurementSet v2.
 
 ## Toolchain & commands
 
-The repo uses **`uv`** (Astral) with `pyproject.toml` + `uv.lock`. Python ≥
-3.13 (`.python-version` pins `3.13`). Always use `uv run python` and never run
-bare `python` commands.
+The repo uses **`uv`** with `pyproject.toml` + `uv.lock`. Python ≥ 3.13. Always
+use `uv run python` and never run bare `python` commands.
 
 ```bash
 # install / sync deps (creates .venv/, respects uv.lock)
@@ -94,8 +84,6 @@ purely to let notebook users inspect the dataset between stages.
 
 ## Conventions that aren't visible from any one file
 
-- **`ty`, not `mypy`.** `ty` is in the dev group and is the typechecker for
-  this project. Do not propose mypy commands or `[tool.mypy]` config.
 - **`tipopac_v2.6/` is reference, not a dependency.** Read it to understand
   what the rewrite must match numerically (initial_design.md §11.3 acceptance:
   opacity within `max(0.005, 0.05·τ_v26)`; Tcal corrections within 1%). Do not
