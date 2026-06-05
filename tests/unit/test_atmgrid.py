@@ -47,13 +47,23 @@ def test_pwv_from_profile_independent_of_ordering() -> None:
 # ---------------------------------------------------------------------------
 
 
+_T_ATM_TOY: float = 270.0
+_T_CMB_TOY: float = 2.725  # must match atmgrid._T_CMB
+
+
 def _toy_grid() -> PwvGrid:
-    """Analytic mock: τ(PWV, ν) = PWV · (1 + 0.01·ν/1 GHz),
-    Tb(PWV, ν) = 270 K · (1 − exp(−τ))."""
+    """Analytic mock with am-style brightness (atmosphere + attenuated CMB).
+
+    τ(PWV, ν) = PWV · (1 + 0.01·ν/1 GHz)
+    Tb(PWV, ν) = T_atm · (1 − exp(−τ)) + T_cmb · exp(−τ)
+
+    This matches what am.brightness_temperature actually returns (the
+    atmosphere-only formulation would skip the second term).
+    """
     pwv = np.linspace(1.0, 10.0, 10)
     freq = np.linspace(10e9, 30e9, 21)
     tau = pwv[:, None] * (1.0 + 0.01 * freq[None, :] / 1e9) * 0.01
-    tb = 270.0 * (1.0 - np.exp(-tau))
+    tb = _T_ATM_TOY * (1.0 - np.exp(-tau)) + _T_CMB_TOY * np.exp(-tau)
     return PwvGrid(pwv_mm=pwv, freq_Hz=freq, tau_z=tau, tb_z=tb)
 
 
@@ -112,8 +122,8 @@ def test_pwvgrid_tmean_finite_at_zero_tau() -> None:
     freq = np.array([10e9, 20e9])
     # τ = 0 row + finite rows
     tau = np.array([[0.0, 0.0], [0.05, 0.05], [0.10, 0.10]])
-    # Tb such that T_mean is well-defined for τ > 0
-    tb = 270.0 * (1.0 - np.exp(-tau))
+    # am-style Tb: atmosphere emission + attenuated CMB
+    tb = _T_ATM_TOY * (1.0 - np.exp(-tau)) + _T_CMB_TOY * np.exp(-tau)
     g = PwvGrid(pwv_mm=pwv, freq_Hz=freq, tau_z=tau, tb_z=tb)
     assert np.all(np.isfinite(g.tmean))
 
@@ -126,8 +136,11 @@ def test_pwvgrid_tmean_finite_at_zero_tau() -> None:
 def test_t_sky_at_zenith_equals_tb_z() -> None:
     """Critical: forward model at airmass=1 reproduces am's Tb_z exactly.
 
-    If this drifts, every per_antenna_pwv fit is biased — the bias would look
-    like a solver issue but it would be a coordinate mismatch between am's
+    am's Tb_z is total sky brightness (atmosphere + attenuated CMB).
+    Stage A's T_mean is atmosphere-only, so the reconstruction adds the
+    CMB term back: Tb_z = T_mean·(1−e^−τ) + T_cmb·e^−τ. If this drifts,
+    every per_antenna_pwv fit is biased — the bias would look like a
+    solver issue but it would be a coordinate mismatch between am's
     output and our reconstruction.
     """
     g = _toy_grid()
@@ -135,7 +148,10 @@ def test_t_sky_at_zenith_equals_tb_z() -> None:
     f = np.array([12e9, 18e9, 25e9])
     for pwv_mm in g.pwv_mm[1:-1:2]:  # off-the-end PWV values
         tau_z, tmean = g.lookup(pwv_mm, f)
-        t_sky = tmean * (1.0 - np.exp(-tau_z * airmass))
+        t_sky = (
+            tmean * (1.0 - np.exp(-tau_z * airmass))
+            + _T_CMB_TOY * np.exp(-tau_z * airmass)
+        )
         # Reconstruct Tb_z at the same PWV by direct lookup.
         i = int(np.where(g.pwv_mm == pwv_mm)[0][0])
         tb_expected = np.interp(f, g.freq_Hz, g.tb_z[i, :])

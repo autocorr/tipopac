@@ -42,6 +42,12 @@ _M_WATER_OVER_M_DRY: float = 18.015 / 28.9647
 _G_EARTH: float = 9.80665  # m s⁻²
 _RHO_LIQ_WATER: float = 1000.0  # kg m⁻³
 
+# am's brightness_temperature column includes the CMB attenuated through the
+# atmosphere (Tb = T_atm·(1−e^−τ) + T_cmb·e^−τ). Stage A's T_mean needs the
+# atmosphere-only mean, so the CMB term is subtracted before dividing by the
+# absorbed fraction.
+_T_CMB: float = 2.725  # K (Fixsen 2009)
+
 
 @dataclass(frozen=True)
 class PwvGrid:
@@ -91,17 +97,20 @@ class PwvGrid:
 
     @cached_property
     def tmean(self) -> np.ndarray:
-        """Effective radiating temperature: ``T_mean = Tb_z / (1 - exp(-τ_z))``.
+        """Atmosphere-only effective radiating temperature.
 
-        At τ → 0, ``(1 - exp(-τ)) → τ`` and ``Tb_z → 0`` at the same rate, so
-        the ratio has a finite limit (the radiating-layer temperature). We
-        guard the division with a small epsilon and accept that T_mean is
-        only sharply defined when there is measurable absorption; in the
-        forward-model the corresponding T_sky → 0 anyway.
+        ``T_mean = (Tb_z − T_cmb·exp(−τ_z)) / (1 − exp(−τ_z))``
+
+        am's ``brightness_temperature`` includes the CMB attenuated through
+        the atmosphere; the CMB term is subtracted so the returned value is
+        the kinetic mean of the atmospheric emission alone. Without the
+        subtraction, the second term ``T_cmb·exp(−τ)/(1−exp(−τ))`` diverges
+        at low τ and inflates T_mean by hundreds of K at low-opacity bands.
         """
         absorb = -np.expm1(-self.tau_z)  # = 1 − exp(−τ), accurate for small τ
         eps = 1e-8
-        return self.tb_z / np.maximum(absorb, eps)
+        tb_atm = self.tb_z - _T_CMB * np.exp(-self.tau_z)
+        return tb_atm / np.maximum(absorb, eps)
 
     def lookup(
         self,
