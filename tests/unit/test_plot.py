@@ -6,9 +6,10 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
+from matplotlib.figure import Figure
 
 from tipopac import schema
-from tipopac.plot import plot_all_elevation_curves
+from tipopac.plot import PlotData
 
 
 # ---------------------------------------------------------------------------
@@ -25,9 +26,11 @@ def _make_plot_ds(
     with_am: bool = False,
     freq_Hz: float = 22.2e9,
 ) -> xr.Dataset:
-    """Minimal dataset ready for plot_dataset.
+    """Minimal dataset ready for PlotData.
 
-    ZA values span 35–80 deg; Tsys is synthetic but positive.
+    ZA values span 35-80 deg; Tsys is synthetic but positive. When
+    *with_am* is True, ``tau_extrapolated``, ``am_freq_grid``, and
+    ``am_tau`` are populated so the am-overlay path runs.
     """
     n_time = 5
 
@@ -48,6 +51,10 @@ def _make_plot_ds(
     fit_reason = np.full(
         (n_scan, n_ant, n_spw), "ok" if success else "dz_too_small", dtype=object
     )
+
+    # spw centre frequencies spread around freq_Hz so tau_vs_frequency has
+    # multiple x positions to plot.
+    freqs = np.linspace(freq_Hz, freq_Hz * 1.05, n_spw, dtype=np.float64)
 
     data_vars: dict = {
         "switched_diff": (
@@ -94,6 +101,14 @@ def _make_plot_ds(
             ("scan", "spw"),
             np.full((n_scan, n_spw), tau0, dtype=np.float32),
         )
+        am_freq_grid = np.linspace(
+            freqs.min() * 0.95, freqs.max() * 1.05, 50, dtype=np.float64
+        )
+        data_vars["am_freq_grid"] = (("frequency_dense",), am_freq_grid)
+        data_vars["am_tau"] = (
+            ("frequency_dense",),
+            np.full(am_freq_grid.size, tau0, dtype=np.float64),
+        )
 
     coords = {
         "scan": np.arange(1, n_scan + 1, dtype=np.intp),
@@ -101,7 +116,7 @@ def _make_plot_ds(
         "spw": np.arange(n_spw, dtype=np.intp),
         "polarization": list(schema.POL_VALUES),
         "xyz": ["X", "Y", "Z"],
-        "frequency": (("spw",), np.full(n_spw, freq_Hz, dtype=np.float64)),
+        "frequency": (("spw",), freqs),
         "bandwidth": (("spw",), np.full(n_spw, 2e9, dtype=np.float64)),
         "antenna_position": (
             ("antenna", "xyz"),
@@ -109,11 +124,15 @@ def _make_plot_ds(
         ),
         "scan_time_start": (
             ("scan",),
-            np.linspace(5131296000.0, 5131296000.0 + 120.0 * n_scan, n_scan, dtype=np.float64),
+            np.linspace(
+                5131296000.0, 5131296000.0 + 120.0 * n_scan, n_scan, dtype=np.float64
+            ),
         ),
         "scan_time_end": (
             ("scan",),
-            np.linspace(5131296090.0, 5131296090.0 + 120.0 * n_scan, n_scan, dtype=np.float64),
+            np.linspace(
+                5131296090.0, 5131296090.0 + 120.0 * n_scan, n_scan, dtype=np.float64
+            ),
         ),
         "time_utc": (
             ("scan", "time"),
@@ -125,57 +144,224 @@ def _make_plot_ds(
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# save_all integration tests
 # ---------------------------------------------------------------------------
 
 
-def test_plot_writes_png(tmp_path: Path) -> None:
+def test_save_all_writes_tipping_curves(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
-    plot_all_elevation_curves(ds,tmp_path)
-    pngs = list(tmp_path.glob("*.png"))
+    PlotData(ds).save_all(tmp_path)
+    pngs = list(tmp_path.glob("tippingcurve_*.png"))
     assert len(pngs) == 1
 
 
-def test_plot_filename_convention(tmp_path: Path) -> None:
+def test_save_all_filename_convention(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
-    plot_all_elevation_curves(ds,tmp_path)
-    pngs = list(tmp_path.glob("*.png"))
+    PlotData(ds).save_all(tmp_path)
+    pngs = list(tmp_path.glob("tippingcurve_*.png"))
     assert pngs[0].name == "tippingcurve_spw_0_ea01_scan_1.png"
 
 
-def test_plot_skips_failures(tmp_path: Path) -> None:
+def test_save_all_skips_failed_cells(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=False)
-    plot_all_elevation_curves(ds,tmp_path)
-    pngs = list(tmp_path.glob("*.png"))
-    assert len(pngs) == 0
+    PlotData(ds).save_all(tmp_path)
+    assert list(tmp_path.glob("tippingcurve_*.png")) == []
+    assert list(tmp_path.glob("tau_vs_frequency_*.png")) == []
+    # weather/heatmap still emitted
+    assert (tmp_path / "weather.png").exists()
+    assert (tmp_path / "fit_success.png").exists()
 
 
-def test_plot_creates_output_dir(tmp_path: Path) -> None:
+def test_save_all_creates_output_dir(tmp_path: Path) -> None:
     out = tmp_path / "new_subdir" / "plots"
     ds = _make_plot_ds(success=True)
-    plot_all_elevation_curves(ds,out)
+    PlotData(ds).save_all(out)
     assert out.is_dir()
-    assert len(list(out.glob("*.png"))) == 1
+    assert len(list(out.glob("tippingcurve_*.png"))) == 1
 
 
-def test_plot_with_am_overlay(tmp_path: Path) -> None:
+def test_save_all_with_am_overlay(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True, with_am=True)
-    plot_all_elevation_curves(ds,tmp_path)
-    pngs = list(tmp_path.glob("*.png"))
-    assert len(pngs) == 1
+    PlotData(ds).save_all(tmp_path)
+    assert len(list(tmp_path.glob("tippingcurve_*.png"))) == 1
+    assert (tmp_path / "tau_vs_frequency_scan_1.png").exists()
 
 
-def test_plot_multi_cell(tmp_path: Path) -> None:
+def test_save_all_multi_cell(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_scan=2, n_ant=3, n_spw=2, success=True)
-    plot_all_elevation_curves(ds,tmp_path)
-    pngs = list(tmp_path.glob("*.png"))
-    assert len(pngs) == 2 * 3 * 2
+    PlotData(ds).save_all(tmp_path)
+    assert len(list(tmp_path.glob("tippingcurve_*.png"))) == 2 * 3 * 2
+    # one tau_vs_frequency per scan
+    assert len(list(tmp_path.glob("tau_vs_frequency_*.png"))) == 2
 
 
-def test_plot_partial_success(tmp_path: Path) -> None:
+def test_save_all_partial_success(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_scan=1, n_ant=2, n_spw=1, success=True)
-    # Flag one antenna as failed after construction
     ds["fit_success"].values[0, 1, 0] = False
-    plot_all_elevation_curves(ds,tmp_path)
-    pngs = list(tmp_path.glob("*.png"))
+    PlotData(ds).save_all(tmp_path)
+    pngs = list(tmp_path.glob("tippingcurve_*.png"))
     assert len(pngs) == 1
+
+
+def test_save_all_writes_all_output_formats(tmp_path: Path) -> None:
+    ds = _make_plot_ds(success=True, with_am=True)
+    PlotData(ds).save_all(tmp_path)
+    stem = "tippingcurve_spw_0_ea01_scan_1"
+    for ext in ("pdf", "png", "svgz"):
+        assert (tmp_path / f"{stem}.{ext}").exists()
+    for stem in ("weather", "fit_success", "tau_vs_frequency_scan_1"):
+        for ext in ("pdf", "png", "svgz"):
+            assert (tmp_path / f"{stem}.{ext}").exists()
+
+
+# ---------------------------------------------------------------------------
+# Per-method tests (return Figure, no file I/O)
+# ---------------------------------------------------------------------------
+
+
+def test_elevation_curve_returns_figure() -> None:
+    ds = _make_plot_ds(success=True)
+    fig = PlotData(ds).elevation_curve(scan=1, antenna="ea01", spw=0)
+    assert isinstance(fig, Figure)
+    assert len(fig.axes) == 1
+
+
+def test_tau_vs_frequency_with_am_overlay() -> None:
+    ds = _make_plot_ds(n_spw=4, success=True, with_am=True)
+    fig = PlotData(ds).tau_vs_frequency(scan=1)
+    assert isinstance(fig, Figure)
+    [ax] = fig.axes
+    # errorbar -> 1 Line2D point marker + 1 PathCollection for caps/bars is
+    # backend-dependent; what we care about is that the am overlay added an
+    # extra plain Line2D that scatter alone would not have.
+    lines = [ln for ln in ax.lines if ln.get_label() == "am model"]
+    assert len(lines) == 1
+
+
+def test_tau_vs_frequency_without_am() -> None:
+    ds = _make_plot_ds(n_spw=4, success=True, with_am=False)
+    fig = PlotData(ds).tau_vs_frequency(scan=1)
+    assert isinstance(fig, Figure)
+    [ax] = fig.axes
+    lines = [ln for ln in ax.lines if ln.get_label() == "am model"]
+    assert lines == []
+
+
+def test_tau_vs_frequency_uses_pwv_scaling_in_title() -> None:
+    ds = _make_plot_ds(success=True, with_am=True)
+    ds.attrs["pwv_scaling"] = 0.85
+    fig = PlotData(ds).tau_vs_frequency(scan=1)
+    [ax] = fig.axes
+    assert "0.85" in ax.get_title()
+
+
+def test_tcal_vs_frequency_returns_figure() -> None:
+    ds = _make_plot_ds(n_spw=3, success=True)
+    fig = PlotData(ds).tcal_vs_frequency(scan=1)
+    assert isinstance(fig, Figure)
+    [ax] = fig.axes
+    # Two pols × {ref, fit} = 4 scatter PathCollections.
+    assert len(ax.collections) == 4
+
+
+def test_save_all_skips_tcal_when_identical_to_ref(tmp_path: Path) -> None:
+    # _make_plot_ds sets tcal_fit == tcal_ref by default → no file.
+    ds = _make_plot_ds(success=True)
+    PlotData(ds).save_all(tmp_path)
+    assert list(tmp_path.glob("tcal_vs_frequency_*.png")) == []
+
+
+def test_save_all_emits_tcal_when_differs(tmp_path: Path) -> None:
+    ds = _make_plot_ds(n_scan=2, n_spw=3, success=True)
+    # Perturb tcal_fit so it no longer matches the broadcast reference.
+    ds["tcal_fit"].values *= 1.05
+    PlotData(ds).save_all(tmp_path)
+    assert (tmp_path / "tcal_vs_frequency_scan_1.png").exists()
+    assert (tmp_path / "tcal_vs_frequency_scan_2.png").exists()
+
+
+def test_c_vs_frequency_returns_figure() -> None:
+    ds = _make_plot_ds(n_spw=3, success=True)
+    # Push tcal_fit away from tcal_ref so c != 1 and the scatter is visible.
+    ds["tcal_fit"].values *= 1.1
+    fig = PlotData(ds).c_vs_frequency(scan=1)
+    assert isinstance(fig, Figure)
+    [ax] = fig.axes
+    # Two pols => 2 PathCollections for the scatter.
+    assert len(ax.collections) == 2
+    # axhline reference at c=1 produces one Line2D.
+    assert any(line.get_ydata()[0] == 1.0 for line in ax.lines)
+
+
+def test_save_all_emits_c_when_tcal_differs(tmp_path: Path) -> None:
+    ds = _make_plot_ds(n_scan=2, n_spw=2, success=True)
+    ds["tcal_fit"].values *= 1.05
+    PlotData(ds).save_all(tmp_path)
+    assert (tmp_path / "c_vs_frequency_scan_1.png").exists()
+    assert (tmp_path / "c_vs_frequency_scan_2.png").exists()
+
+
+def test_save_all_skips_c_when_identical_to_ref(tmp_path: Path) -> None:
+    ds = _make_plot_ds(success=True)  # tcal_fit == tcal_ref by default
+    PlotData(ds).save_all(tmp_path)
+    assert list(tmp_path.glob("c_vs_frequency_*.png")) == []
+
+
+def test_save_all_parallel_writes_all_plots(tmp_path: Path) -> None:
+    ds = _make_plot_ds(n_scan=2, n_ant=2, n_spw=2, success=True, with_am=True)
+    PlotData(ds).save_all(tmp_path, n_workers=2)
+    assert len(list(tmp_path.glob("tippingcurve_*.png"))) == 2 * 2 * 2
+    assert len(list(tmp_path.glob("tau_vs_frequency_*.png"))) == 2
+    assert (tmp_path / "weather.png").exists()
+    assert (tmp_path / "fit_success.png").exists()
+
+
+def test_save_all_parallel_matches_serial(tmp_path: Path) -> None:
+    ds = _make_plot_ds(n_scan=2, n_ant=2, n_spw=2, success=True, with_am=True)
+    serial_dir = tmp_path / "serial"
+    parallel_dir = tmp_path / "parallel"
+    PlotData(ds).save_all(serial_dir)
+    PlotData(ds).save_all(parallel_dir, n_workers=2)
+    serial_files = sorted(p.name for p in serial_dir.iterdir())
+    parallel_files = sorted(p.name for p in parallel_dir.iterdir())
+    assert serial_files == parallel_files
+
+
+def test_save_all_parallel_restores_mplbackend(tmp_path: Path) -> None:
+    import os
+
+    sentinel = os.environ.get("MPLBACKEND")
+    try:
+        os.environ["MPLBACKEND"] = "pdf"  # something other than Agg
+        ds = _make_plot_ds(success=True)
+        PlotData(ds).save_all(tmp_path, n_workers=2)
+        assert os.environ["MPLBACKEND"] == "pdf"
+    finally:
+        if sentinel is None:
+            os.environ.pop("MPLBACKEND", None)
+        else:
+            os.environ["MPLBACKEND"] = sentinel
+
+
+def test_weather_panel_basic() -> None:
+    ds = _make_plot_ds(n_scan=2, success=True)
+    fig = PlotData(ds).weather_panel()
+    assert isinstance(fig, Figure)
+    assert len(fig.axes) == 3
+
+
+def test_fit_success_heatmap_basic() -> None:
+    ds = _make_plot_ds(n_scan=2, n_ant=3, n_spw=2, success=True)
+    fig = PlotData(ds).fit_success_heatmap()
+    assert isinstance(fig, Figure)
+    # Two scans -> grid is (1 row, 2 cols); 2 active subplots, no hidden.
+    visible = [ax for ax in fig.axes if ax.get_visible() and ax.images]
+    assert len(visible) == 2
+
+
+def test_fit_success_heatmap_hides_unused_subplots() -> None:
+    # 4 scans -> grid is (2 rows, 3 cols) = 6 tiles, 2 unused/hidden.
+    ds = _make_plot_ds(n_scan=4, n_ant=2, n_spw=1, success=True)
+    fig = PlotData(ds).fit_success_heatmap()
+    with_imgs = [ax for ax in fig.axes if ax.images]
+    assert len(with_imgs) == 4

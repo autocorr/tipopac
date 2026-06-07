@@ -342,9 +342,9 @@ class TippingAnalysis:
         )
 
     def plot(self, out_dir: str | Path) -> None:
-        from tipopac import plot
+        from tipopac.plot import PlotData
 
-        plot.plot_dataset(self._ds, out_dir=Path(out_dir))
+        PlotData(self._ds).save_all(out_dir=Path(out_dir))
 
     def write_caltables(
         self,
