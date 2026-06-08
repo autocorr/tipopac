@@ -23,12 +23,6 @@ _INDEPENDENT_TO_BACKEND: dict[str, str] = {
     "independent_tau_solve": "tcal_solve",
 }
 
-# VLA coordinates for open-meteo lookup. Repeated from atmosphere.py because the
-# api layer needs them too; harmless duplication for two lines.
-_VLA_LAT: float = 34.0784
-_VLA_LON: float = -107.6177
-
-
 def _get_readers() -> list:
     global _READERS
     if not _READERS:
@@ -107,7 +101,7 @@ def tipopac(
     flags_file: str | Path | None = None,
     atm_model: bool = True,
     atm_profile_source: str = "open-meteo",
-    afgl_climatology: str = "midlatitude_summer",
+    afgl_climatology: str = "auto",
     n_workers: int | None = None,
     plot_dir: str | Path | None = None,
     caltable_opacity: str | Path | None = None,
@@ -135,10 +129,14 @@ def tipopac(
         extrapolation. Ignored for the Stage-A+B modes — Stage B already
         anchors against the precomputed am grid.
     atm_profile_source:
-        ``"open-meteo"`` (default) or ``"afgl"``. Used by the grid build
-        (Stage A+B) and the legacy extrapolate.
+        ``"open-meteo"`` (default) or ``"afgl"``. Drives the single
+        :meth:`TippingAnalysis.fetch_atm_profile` call; downstream
+        consumers read the profile off the dataset.
     afgl_climatology:
-        AFGL climatology name used as fallback or when ``atm_profile_source="afgl"``.
+        AFGL climatology name used on open-meteo fallback or when
+        ``atm_profile_source="afgl"``. Default ``"auto"`` picks
+        ``midlatitude_summer`` / ``midlatitude_winter`` from the
+        observation's month.
     n_workers:
         Stage-A fit parallelism. ``None`` runs serially. Higher values
         dispatch via a process pool with single-threaded BLAS per worker.
@@ -154,19 +152,20 @@ def tipopac(
         online=flags_online, file=None if flags_file is None else Path(flags_file)
     )
 
-    if mode in _INDEPENDENT_TO_BACKEND:
-        ta.build_atm_grids(
-            atm_profile_source=atm_profile_source,
+    needs_atm = mode in _INDEPENDENT_TO_BACKEND or atm_model
+    if needs_atm:
+        ta.fetch_atm_profile(
+            source=atm_profile_source,
             afgl_climatology=afgl_climatology,
         )
+
+    if mode in _INDEPENDENT_TO_BACKEND:
+        ta.build_atm_grids()
         ta.fit(mode=mode, n_workers=n_workers)
     else:
         ta.fit(mode=mode, n_workers=n_workers)
         if atm_model:
-            ta.extrapolate(
-                atm_profile_source=atm_profile_source,
-                afgl_climatology=afgl_climatology,
-            )
+            ta.extrapolate()
 
     if plot_dir is not None:
         ta.plot(out_dir=Path(plot_dir))
@@ -209,72 +208,90 @@ class TippingAnalysis:
 
         self._ds = flags.apply(self._ds, online=online, file=file)
 
+    def fetch_atm_profile(
+        self,
+        *,
+        source: str = "open-meteo",
+        afgl_climatology: str = "auto",
+    ) -> None:
+        """Fetch the atmospheric profile once and attach it to the dataset.
+
+        Idempotent: re-running on a dataset that already has
+        ``atm_pressure`` is a no-op.
+
+        Adds ``atm_pressure(atm_level)``, ``atm_temperature(scan,
+        atm_level)``, ``atm_h2o_vmr(scan, atm_level)``. Writes attrs
+        ``atm_profile_source``, ``open_meteo_query``,
+        ``surface_pressure_hPa``.
+
+        ``source``:
+            ``"open-meteo"`` (default) — one HTTP call covering the obs
+            date range, per-scan closest hourly slice; AFGL fallback on
+            error.  ``"afgl"`` — skip the network call entirely.
+        ``afgl_climatology``:
+            ``"auto"`` (default) picks summer/winter from the obs month.
+        """
+        if "atm_pressure" in self._ds.data_vars:
+            return
+        from tipopac.atmosphere import attach_profile
+
+        attach_profile(
+            self._ds, source=source, afgl_climatology=afgl_climatology
+        )
+
     def build_atm_grids(
         self,
         *,
-        atm_profile_source: str = "open-meteo",
-        afgl_climatology: str = "midlatitude_summer",
         pwv_step_mm: float = 0.5,
         freq_step_Hz: float = 100e6,
         n_workers: int | None = None,
     ) -> None:
         """Build per-scan :class:`PwvGrid` objects.
 
-        Populates ``self._grids[scan_id] = PwvGrid`` for every scan and writes
-        ``ds.attrs["pwv_profile_source"][scan_id]`` for provenance. Used by
-        the post-fit atmospheric anchor (see ``design/independent_tau_fit.md``);
-        not consumed by :meth:`fit`.
+        Auto-calls :meth:`fetch_atm_profile` with defaults if the profile
+        is not yet on the dataset. Populates ``self._grids[scan_id] =
+        PwvGrid`` for every scan and writes
+        ``ds.attrs["pwv_profile_source"][scan_id]`` for provenance. Used
+        by the post-fit atmospheric anchor (see
+        ``design/independent_tau_fit.md``); not consumed by :meth:`fit`.
         """
         import astropy.units as u
 
         from tipopac.atmgrid import build_pwv_grid
-        from tipopac.atmosphere import fetch_profile
+
+        if "atm_pressure" not in self._ds.data_vars:
+            self.fetch_atm_profile()
 
         freqs = self._ds.coords["frequency"].values
         freq_min_Hz = float(freqs.min()) * 0.95
         freq_max_Hz = float(freqs.max()) * 1.05
 
         scan_ids = self._ds.coords["scan"].values
-        scan_times = self._ds.coords["scan_time_start"].values
-        # Per-scan surface pressure (Pa) from the WEATHER table. Median of
-        # finite samples; missing scans get NaN → no clipping (full column).
-        weather_P_Pa = self._ds["weather_P"].values  # (scan, time), Pa
+        atm_source = str(self._ds.attrs.get("atm_profile_source", "unknown"))
+        pressure_Pa = self._ds["atm_pressure"].values  # (atm_level,)
+        pressure_q = pressure_Pa * u.Pa
+        temp_K = self._ds["atm_temperature"].values  # (scan, atm_level)
+        vmr = self._ds["atm_h2o_vmr"].values  # (scan, atm_level)
+
         sources: dict[int, str] = {}
-        surface_pressures_hPa: dict[int, float] = {}
         for i, scan_id in enumerate(scan_ids):
-            obs_time_mjd_s = float(scan_times[i])
-            p_samples = weather_P_Pa[i][np.isfinite(weather_P_Pa[i])]
-            if p_samples.size:
-                p_surf_hPa = float(np.median(p_samples)) / 100.0
-                surface_pressure: u.Quantity | None = p_surf_hPa * u.hPa
-                surface_pressures_hPa[int(scan_id)] = p_surf_hPa
-            else:
-                surface_pressure = None
-            pressure, temperature, h2o_vmr, source_label, _meta = fetch_profile(
-                _VLA_LAT,
-                _VLA_LON,
-                obs_time_mjd_s,
-                source=atm_profile_source,
-                afgl_climatology=afgl_climatology,
-                surface_pressure=surface_pressure,
-            )
+            temperature_q = temp_K[i].astype(np.float64) * u.K
+            h2o_q = vmr[i].astype(np.float64) * u.dimensionless_unscaled
             grid = build_pwv_grid(
-                pressure,
-                temperature,
-                h2o_vmr,
+                pressure_q,
+                temperature_q,
+                h2o_q,
                 freq_min_Hz=freq_min_Hz,
                 freq_max_Hz=freq_max_Hz,
-                profile_source=source_label,
+                profile_source=atm_source,
                 pwv_step_mm=pwv_step_mm,
                 freq_step_Hz=freq_step_Hz,
                 n_workers=n_workers,
             )
             self._grids[int(scan_id)] = grid
-            sources[int(scan_id)] = source_label
+            sources[int(scan_id)] = atm_source
 
         self._ds.attrs["pwv_profile_source"] = sources
-        if surface_pressures_hPa:
-            self._ds.attrs["surface_pressure_hPa"] = surface_pressures_hPa
 
     def fit(
         self,
@@ -328,19 +345,17 @@ class TippingAnalysis:
             fit.fit_dataset(self._ds, mode=mode, n_workers=n_workers)
         self._mode = mode
 
-    def extrapolate(
-        self,
-        *,
-        atm_profile_source: str = "open-meteo",
-        afgl_climatology: str = "midlatitude_summer",
-    ) -> None:
+    def extrapolate(self) -> None:
+        """Anchor the legacy single-curve am model to fitted τ values.
+
+        Pure consumer of the ``atm_*`` data vars on the dataset; auto-
+        calls :meth:`fetch_atm_profile` with defaults if needed.
+        """
         from tipopac import atmosphere
 
-        atmosphere.extrapolate(
-            self._ds,
-            atm_profile_source=atm_profile_source,
-            afgl_climatology=afgl_climatology,
-        )
+        if "atm_pressure" not in self._ds.data_vars:
+            self.fetch_atm_profile()
+        atmosphere.extrapolate(self._ds)
 
     def plot(self, out_dir: str | Path) -> None:
         from tipopac.plot import PlotData

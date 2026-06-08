@@ -96,8 +96,9 @@ def ds_tau_per_antenna():
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
+    ta.fetch_atm_profile(source="afgl")
     ta.fit(mode="tau_per_antenna", n_workers=_n_workers())
-    ta.extrapolate(atm_profile_source="afgl")
+    ta.extrapolate()
     return ta.dataset
 
 
@@ -107,8 +108,9 @@ def ds_global_tau():
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
+    ta.fetch_atm_profile(source="afgl")
     ta.fit(mode="global_tau", n_workers=_n_workers())
-    ta.extrapolate(atm_profile_source="afgl")
+    ta.extrapolate()
     return ta.dataset
 
 
@@ -118,8 +120,9 @@ def ds_tcal_solve():
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
+    ta.fetch_atm_profile(source="afgl")
     ta.fit(mode="tcal_solve", n_workers=_n_workers())
-    ta.extrapolate(atm_profile_source="afgl")
+    ta.extrapolate()
     return ta.dataset
 
 
@@ -229,7 +232,8 @@ def ds_independent_tau_solve():
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
-    ta.build_atm_grids(atm_profile_source="afgl")
+    ta.fetch_atm_profile(source="afgl")
+    ta.build_atm_grids()
     ta.fit(mode="independent_tau_solve", n_workers=_n_workers())
     return ta.dataset
 

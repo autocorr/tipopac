@@ -9,7 +9,13 @@ import pytest
 import xarray as xr
 
 from tipopac import schema
-from tipopac.atmosphere import _build_am_model, _tau_at_freqs, anchor, extrapolate
+from tipopac.atmosphere import (
+    _build_am_model,
+    _tau_at_freqs,
+    anchor,
+    attach_profile,
+    extrapolate,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -97,16 +103,16 @@ def _make_fitted_ds(
             # MJD seconds for 2024-01-15T12:00:00 UTC (~5.13e9)
             "scan_time_start": (
                 ("scan",),
-                np.array([5131296000.0, 5131296120.0], dtype=np.float64)[:n_scan],
+                np.array([5212036800.0, 5212036920.0], dtype=np.float64)[:n_scan],
             ),
             "scan_time_end": (
                 ("scan",),
-                np.array([5131296090.0, 5131296210.0], dtype=np.float64)[:n_scan],
+                np.array([5212036890.0, 5212037010.0], dtype=np.float64)[:n_scan],
             ),
             "time_utc": (
                 ("scan", "time"),
                 np.tile(np.linspace(0, 90, n_time), (n_scan, 1)).astype(np.float64)
-                + np.array([5131296000.0, 5131296120.0], dtype=np.float64)[
+                + np.array([5212036800.0, 5212036920.0], dtype=np.float64)[
                     :n_scan, None
                 ],
             ),
@@ -199,73 +205,103 @@ def test_anchor_bounds_respected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# extrapolate() — integration with AFGL (no HTTP)
+# attach_profile() — AFGL path (no HTTP)
 # ---------------------------------------------------------------------------
 
 
-def test_extrapolate_afgl_populates_vars() -> None:
-    """extrapolate() with AFGL source adds tau_extrapolated, am_freq_grid, am_tau."""
-    ds = _make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9])
-    extrapolate(ds, atm_profile_source="afgl")
+def _with_afgl_profile(ds: xr.Dataset) -> xr.Dataset:
+    """Run attach_profile(source='afgl') and return the same dataset."""
+    attach_profile(ds, source="afgl", afgl_climatology="midlatitude_summer")
+    return ds
+
+
+def test_attach_profile_afgl_writes_atm_vars() -> None:
+    ds = _make_fitted_ds(freqs_Hz=[22.2e9])
+    attach_profile(ds, source="afgl", afgl_climatology="midlatitude_summer")
+
+    assert "atm_pressure" in ds.data_vars
+    assert "atm_temperature" in ds.data_vars
+    assert "atm_h2o_vmr" in ds.data_vars
+    assert ds["atm_pressure"].dims == ("atm_level",)
+    assert ds["atm_temperature"].dims == ("scan", "atm_level")
+    assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_summer"
+
+
+def test_attach_profile_afgl_auto_picks_winter_in_winter() -> None:
+    """auto climatology picks midlatitude_winter for a Jan observation."""
+    ds = _make_fitted_ds(freqs_Hz=[22.2e9])
+    # _make_fitted_ds uses MJD ~5.13e9 = 2024-01-15 — January.
+    attach_profile(ds, source="afgl", afgl_climatology="auto")
+
+    assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_winter"
+
+
+# ---------------------------------------------------------------------------
+# extrapolate() — pure consumer of atm_* on the dataset
+# ---------------------------------------------------------------------------
+
+
+def test_extrapolate_populates_vars() -> None:
+    """extrapolate() adds tau_extrapolated, am_freq_grid, am_tau."""
+    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
+    extrapolate(ds)
 
     assert "tau_extrapolated" in ds
     assert "am_freq_grid" in ds
     assert "am_tau" in ds
 
 
-def test_extrapolate_afgl_tau_extrapolated_shape() -> None:
+def test_extrapolate_tau_extrapolated_shape() -> None:
     n_scan, n_spw = 2, 2
-    ds = _make_fitted_ds(n_scan=n_scan, freqs_Hz=[22.2e9, 43.3e9])
-    extrapolate(ds, atm_profile_source="afgl")
+    ds = _with_afgl_profile(_make_fitted_ds(n_scan=n_scan, freqs_Hz=[22.2e9, 43.3e9]))
+    extrapolate(ds)
 
     assert ds["tau_extrapolated"].dims == ("scan", "spw")
     assert ds["tau_extrapolated"].shape == (n_scan, n_spw)
 
 
-def test_extrapolate_afgl_tau_extrapolated_positive() -> None:
-    ds = _make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9])
-    extrapolate(ds, atm_profile_source="afgl")
+def test_extrapolate_tau_extrapolated_positive() -> None:
+    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
+    extrapolate(ds)
     assert (ds["tau_extrapolated"].values > 0).all()
 
 
-def test_extrapolate_afgl_am_freq_grid_covers_spws() -> None:
+def test_extrapolate_am_freq_grid_covers_spws() -> None:
     freqs_Hz = [22.2e9, 43.3e9]
-    ds = _make_fitted_ds(freqs_Hz=freqs_Hz)
-    extrapolate(ds, atm_profile_source="afgl")
+    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=freqs_Hz))
+    extrapolate(ds)
 
     grid = ds["am_freq_grid"].values
     assert grid.min() < min(freqs_Hz)
     assert grid.max() > max(freqs_Hz)
 
 
-def test_extrapolate_afgl_am_tau_same_length_as_grid() -> None:
-    ds = _make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9])
-    extrapolate(ds, atm_profile_source="afgl")
+def test_extrapolate_am_tau_same_length_as_grid() -> None:
+    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
+    extrapolate(ds)
     assert ds["am_freq_grid"].shape == ds["am_tau"].shape
 
 
-def test_extrapolate_afgl_attrs_set() -> None:
-    ds = _make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9])
-    extrapolate(ds, atm_profile_source="afgl", afgl_climatology="midlatitude_summer")
+def test_extrapolate_attrs_set() -> None:
+    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
+    extrapolate(ds)
 
-    assert ds.attrs["atm_profile_source"] == "afgl"
-    assert ds.attrs["afgl_climatology"] == "midlatitude_summer"
+    assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_summer"
     assert ds.attrs["pwv_scaling"] is not None
-    assert ds.attrs["open_meteo_query"] is None
 
 
-def test_extrapolate_afgl_pwv_scaling_in_bounds() -> None:
-    ds = _make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9])
-    extrapolate(ds, atm_profile_source="afgl")
+def test_extrapolate_pwv_scaling_in_bounds() -> None:
+    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
+    extrapolate(ds)
     assert 0.1 <= ds.attrs["pwv_scaling"] <= 5.0
 
 
 def test_extrapolate_no_successful_fits_skips_gracefully() -> None:
     """If all fits failed, extrapolate() should not raise and should still set attrs."""
-    ds = _make_fitted_ds(freqs_Hz=[22.2e9])
+    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9]))
     ds["fit_success"].values[:] = False
 
-    extrapolate(ds, atm_profile_source="afgl")
+    extrapolate(ds)
 
     # tau_extrapolated still written (from scaling=1.0 fallback)
     assert "tau_extrapolated" in ds
@@ -273,27 +309,68 @@ def test_extrapolate_no_successful_fits_skips_gracefully() -> None:
     assert ds.attrs["pwv_scaling"] is None
 
 
+def test_extrapolate_without_atm_pressure_raises() -> None:
+    """extrapolate() must error clearly if attach_profile hasn't run."""
+    ds = _make_fitted_ds(freqs_Hz=[22.2e9])
+    with pytest.raises(RuntimeError, match="atm_pressure"):
+        extrapolate(ds)
+
+
 # ---------------------------------------------------------------------------
 # _fetch_open_meteo — monkeypatching test
 # ---------------------------------------------------------------------------
 
 
-def test_extrapolate_falls_back_to_afgl_on_fetch_error(
+def test_attach_profile_falls_back_to_afgl_on_fetch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If _fetch_open_meteo raises, extrapolate() falls back to AFGL."""
+    """If _fetch_open_meteo raises, attach_profile() falls back to AFGL."""
     import tipopac.atmosphere as atm_mod
 
     def _fail(*args: object, **kwargs: object) -> object:
         raise RuntimeError("simulated network failure")
 
+    # Skip the retry-backoff sleep so the test stays fast.
     monkeypatch.setattr(atm_mod, "_fetch_open_meteo", _fail)
+    monkeypatch.setattr(atm_mod.time, "sleep", lambda _s: None)
 
     ds = _make_fitted_ds(freqs_Hz=[22.2e9])
-    extrapolate(ds, atm_profile_source="open-meteo")
+    attach_profile(ds, source="open-meteo", afgl_climatology="auto")
 
-    assert ds.attrs["atm_profile_source"] == "afgl"
-    assert "tau_extrapolated" in ds
+    # Jan obs → winter pick
+    assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_winter"
+    assert "atm_pressure" in ds.data_vars
+
+
+def test_attach_profile_open_meteo_called_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single open-meteo call regardless of scan count."""
+    import astropy.units as u
+
+    import tipopac.atmosphere as atm_mod
+
+    call_count = {"n": 0}
+
+    def _fake_fetch(lat, lon, date_start, date_end):
+        call_count["n"] += 1
+        # 2 hourly slices x 2 levels
+        pressure = np.array([800.0, 500.0]) * u.hPa
+        temperature = np.array([[280.0, 240.0], [281.0, 241.0]]) * u.K
+        h2o_vmr = (
+            np.array([[1e-3, 1e-5], [1.1e-3, 1.05e-5]]) * u.dimensionless_unscaled
+        )
+        hour_unix_s = np.array([0.0, 3600.0])
+        return pressure, temperature, h2o_vmr, hour_unix_s, {"endpoint": "fake"}
+
+    monkeypatch.setattr(atm_mod, "_fetch_open_meteo", _fake_fetch)
+
+    ds = _make_fitted_ds(n_scan=2, freqs_Hz=[22.2e9])
+    attach_profile(ds, source="open-meteo")
+
+    assert call_count["n"] == 1
+    assert ds.attrs["atm_profile_source"] == "open_meteo"
+    assert "atm_pressure" in ds.data_vars
 
 
 # ---------------------------------------------------------------------------
@@ -308,17 +385,16 @@ def test_fetch_open_meteo_live() -> None:
 
     from tipopac.atmosphere import _VLA_LAT, _VLA_LON, _fetch_open_meteo
 
-    # A historical date guaranteed to be in archive
-    # MJD seconds for 2024-01-15T12:00:00 UTC
-    obs_time_mjd_s = (
-        40587.0 + (datetime(2024, 1, 15, 12, tzinfo=timezone.utc).timestamp() / 86400.0)
-    ) * 86400.0
+    # A historical date guaranteed to be in archive.
+    date_str = datetime(2024, 1, 15, tzinfo=timezone.utc).strftime("%Y-%m-%d")
 
-    pressure, temperature, h2o_vmr, meta = _fetch_open_meteo(
-        _VLA_LAT, _VLA_LON, obs_time_mjd_s
+    pressure, temperature, h2o_vmr, hour_unix_s, meta = _fetch_open_meteo(
+        _VLA_LAT, _VLA_LON, date_str, date_str
     )
 
-    assert len(pressure) > 0
+    assert pressure.size > 0
+    assert temperature.shape == (hour_unix_s.size, pressure.size)
+    assert h2o_vmr.shape == temperature.shape
     assert (pressure.to(u.hPa).value > 0).all()
     assert (temperature.to(u.K).value > 0).all()
     assert (h2o_vmr.value >= 0).all()

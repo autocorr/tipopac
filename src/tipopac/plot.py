@@ -138,7 +138,7 @@ def _set_grid(ax) -> None:
     ax.grid(linestyle="dashed", color="0.3", linewidth=0.3)
 
 
-def _get_fig(use_wide: bool = False) -> (Figure, plt.Axes):
+def _get_fig(use_wide: bool = False) -> tuple[Figure, plt.Axes]:
     if use_wide:
         return plt.subplots(figsize=(8, 4.5))
     else:
@@ -266,7 +266,7 @@ class PlotData:
 
         fig, ax = _get_fig(is_wide)
 
-        ds.where(ds.fit_success).plot.scatter(
+        ds.where(ds.fit_success).plot.scatter(  # ty: ignore[no-matching-overload]
             ax=ax,
             x="frequency_GHz",
             y="tau_zenith",
@@ -274,7 +274,7 @@ class PlotData:
             facecolor="0.5",
             edgecolor="none",
         )
-        ds.where(~ds.fit_success).plot.scatter(
+        ds.where(~ds.fit_success).plot.scatter(  # ty: ignore[no-matching-overload]
             ax=ax,
             x="frequency_GHz",
             y="tau_zenith",
@@ -303,7 +303,10 @@ class PlotData:
         )
 
         ax.set_yscale("log")
-        ax.set_ylim(ds["tau_zenith"].min() / 1.1, ds["tau_zenith"].max() * 1.1)
+        ax.set_ylim(
+            float(ds["tau_zenith"].min()) / 1.1,
+            float(ds["tau_zenith"].max()) * 1.1,
+        )
         _set_grid(ax)
         _set_minor_ticks(ax, y=False)
         ax.set_xlabel(r"Frequency [GHz]")
@@ -323,7 +326,7 @@ class PlotData:
 
         fig, ax = _get_fig(is_wide)
 
-        ds.plot.scatter(
+        ds.plot.scatter(  # ty: ignore[no-matching-overload]
             ax=ax,
             x="frequency_GHz",
             y=f"tcal_{kind}",
@@ -332,7 +335,7 @@ class PlotData:
             edgecolor="none",
             zorder=3,
         )
-        ds.mean(dim=["polarization", "antenna"]).plot.scatter(
+        ds.mean(dim=["polarization", "antenna"]).plot.scatter(  # ty: ignore[no-matching-overload]
             ax=ax,
             x="frequency_GHz",
             y=f"tcal_{kind}",
@@ -370,7 +373,7 @@ class PlotData:
         fig, ax = plt.subplots(figsize=(5, 3.5))
 
         ax.axhline(1.0, color="0.5", lw=0.8, ls="--", zorder=1)
-        ds.plot.scatter(
+        ds.plot.scatter(  # ty: ignore[no-matching-overload]
             ax=ax,
             x="frequency_GHz",
             y="c_ratio",
@@ -379,7 +382,7 @@ class PlotData:
             edgecolor="none",
             zorder=3,
         )
-        ds.mean(dim=["polarization", "antenna"]).plot.scatter(
+        ds.mean(dim=["polarization", "antenna"]).plot.scatter(  # ty: ignore[no-matching-overload]
             ax=ax,
             x="frequency_GHz",
             y="c_ratio",
@@ -408,13 +411,13 @@ class PlotData:
             x="time_utc",
             add_legend=False,
         )
-        ds.assign(weather_P_scaled=ds.weather_P / 100).plot.scatter(
+        ds.assign(weather_P_scaled=ds.weather_P / 100).plot.scatter(  # ty: ignore[no-matching-overload]
             ax=axes[1],
             x="time_utc",
             y="weather_P_scaled",
             add_legend=False,
         )
-        ds.assign(weather_RH_scaled=ds.weather_RH * 100).plot.scatter(
+        ds.assign(weather_RH_scaled=ds.weather_RH * 100).plot.scatter(  # ty: ignore[no-matching-overload]
             ax=axes[2],
             x="time_utc",
             y="weather_RH_scaled",

@@ -82,6 +82,19 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     # per-spw fits across all scans. Not yet written by any code path.
     "pwv": (("antenna",), np.dtype(np.float32)),
     "pwv_err": (("antenna",), np.dtype(np.float32)),
+    # Atmospheric profile attached by the fetch_atm_profile stage.
+    #
+    # atm_pressure is 1-D: the open-meteo (or AFGL) pressure axis after a
+    # single surface-pressure clip (median of WEATHER-table surface
+    # pressure across scans). Per-scan surface variation is sub-2 hPa at
+    # the VLA, well below am modeling precision, so using a common axis
+    # keeps storage rectangular.
+    #
+    # Temperature and H₂O VMR vary per scan because they come from the
+    # closest open-meteo hourly slice to each scan's start time.
+    "atm_pressure": (("atm_level",), np.dtype(np.float64)),
+    "atm_temperature": (("scan", "atm_level"), np.dtype(np.float32)),
+    "atm_h2o_vmr": (("scan", "atm_level"), np.dtype(np.float32)),
 }
 
 POL_VALUES: tuple[str, ...] = ("R", "L")
