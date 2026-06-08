@@ -59,11 +59,6 @@ warnings.filterwarnings(
 )
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
-
-
 def _save_figure(
     fig: Figure,
     path: Path,
@@ -118,10 +113,6 @@ def _set_grid(ax) -> None:
     ax.grid(linestyle="dashed", color="0.3", linewidth=0.3)
 
 
-# ---------------------------------------------------------------------------
-# Worker hooks for parallel save_all (spawn pool)
-# ---------------------------------------------------------------------------
-#
 # Matplotlib's pyplot figure registry (Gcf) is process-local, so each spawn
 # worker has its own — plt.subplots / plt.close are safe across workers.
 # Figure objects themselves never cross process boundaries: the worker
@@ -152,11 +143,6 @@ def _plot_worker(task: tuple[str, tuple, str]) -> str:
     return stem
 
 
-# ---------------------------------------------------------------------------
-# PlotData
-# ---------------------------------------------------------------------------
-
-
 class PlotData:
     """Wrap the canonical tipopac ``xr.Dataset`` for plotting.
 
@@ -167,8 +153,6 @@ class PlotData:
 
     def __init__(self, ds: xr.Dataset) -> None:
         self.ds = ds
-
-    # --- elevation curve --------------------------------------------------
 
     def elevation_curve(self, scan: int, antenna: str, spw: int) -> Figure:
         """Tsys vs zenith angle for one ``(scan, antenna, spw)`` cell."""
@@ -222,8 +206,6 @@ class PlotData:
         )
         return fig
 
-    # --- tau vs frequency -------------------------------------------------
-
     def tau_vs_frequency(self, scan: int) -> Figure:
         """Zenith opacity vs spw centre frequency for all antennas at *scan*.
 
@@ -276,8 +258,6 @@ class PlotData:
         ax.set_title(title, fontsize=9)
         return fig
 
-    # --- tcal vs frequency ------------------------------------------------
-
     def tcal_vs_frequency(self, scan: int) -> Figure:
         """Fitted vs reference Tcal per polarization at *scan*.
 
@@ -325,8 +305,6 @@ class PlotData:
         ax.set_title(f"scan {int(scan)}", fontsize=9)
         return fig
 
-    # --- c (Tcal correction multiplier) vs frequency ----------------------
-
     def c_vs_frequency(self, scan: int) -> Figure:
         """Tcal correction multiplier ``c = tcal_fit / tcal_ref`` vs frequency.
 
@@ -366,8 +344,6 @@ class PlotData:
         ax.set_title(f"scan {int(scan)}", fontsize=9)
         return fig
 
-    # --- weather panel ----------------------------------------------------
-
     def weather_panel(self) -> Figure:
         """Surface T, P, RH vs time across all scans (one figure)."""
         ds = self.ds
@@ -400,8 +376,6 @@ class PlotData:
             _set_minor_ticks(ax)
         axes[0].set_title("Weather", fontsize=10)
         return fig
-
-    # --- fit success heatmap ----------------------------------------------
 
     def fit_success_heatmap(self) -> Figure:
         """Pass/fail gestalt over every ``(scan, antenna, spw)`` cell.
@@ -440,8 +414,6 @@ class PlotData:
             r, c = divmod(j, n_col)
             axes[r, c].axis("off")
         return fig
-
-    # --- save all ---------------------------------------------------------
 
     def save_all(self, out_dir: str | Path, *, n_workers: int = 1) -> None:
         """Write every plot to ``out_dir`` as PDF + PNG + SVGZ.
