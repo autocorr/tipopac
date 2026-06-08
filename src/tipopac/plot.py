@@ -40,8 +40,8 @@ _log = logging.getLogger(__name__)
 _Z_GRID: np.ndarray = np.linspace(30.0, 75.0, 300)
 
 plt.rc("text", usetex=False)
-plt.rc("font", size=10, family="cmu serif")
-plt.rc("mathtext", fontset="cm")
+plt.rc("font", size=10, family="serif")
+plt.rc("mathtext", fontset="dejavuserif")
 plt.rc("xtick", direction="in", top=True)
 plt.rc("ytick", direction="in", right=True)
 plt.rc("axes", unicode_minus=False)
@@ -84,6 +84,31 @@ def _save_figure(
     plt.close(fig)
 
 
+def _fix_minus_labels(ax, x=False, y=False):
+    if x:
+        ticks = ax.get_xticks().tolist()[1:-1]
+        labels = ax.xaxis.get_ticklabels()[1:-1]
+        ax.xaxis.set_ticks(ticks)
+        ax.xaxis.set_ticklabels(
+            [
+                label.get_text().replace(r"\mathdefault", "")
+                for label in labels
+                if label.get_visible()
+            ]
+        )
+    if y:
+        ticks = ax.get_yticks().tolist()[1:-1]
+        labels = ax.yaxis.get_ticklabels()[1:-1]
+        ax.yaxis.set_ticks(ticks)
+        ax.yaxis.set_ticklabels(
+            [
+                label.get_text().replace(r"\mathdefault", "")
+                for label in labels
+                if label.get_visible()
+            ]
+        )
+
+
 def _annotate_with_patheffects(
     ax,
     label: str,
@@ -111,6 +136,25 @@ def _set_minor_ticks(
 
 def _set_grid(ax) -> None:
     ax.grid(linestyle="dashed", color="0.3", linewidth=0.3)
+
+
+def _get_fig(use_wide: bool = False) -> (Figure, plt.Axes):
+    if use_wide:
+        return plt.subplots(figsize=(8, 4.5))
+    else:
+        return plt.subplots(figsize=(4, 3.5))
+
+
+# Matplotlib marker cycle used to distinguish scans when overlaying
+# multiple scans on a single tcal_vs_frequency / c_vs_frequency figure.
+_MARKER_CYCLE: tuple[str, ...] = ("o", "s", "^", "D", "v", "*", "X", "P")
+
+
+def _scan_title(scans: list[int]) -> str:
+    """Title prefix for one or more scan IDs: ``scan 3`` or ``scans 3, 5, 7``."""
+    if len(scans) == 1:
+        return f"scan {scans[0]}"
+    return f"scans {', '.join(str(s) for s in scans)}"
 
 
 # Matplotlib's pyplot figure registry (Gcf) is process-local, so each spawn
@@ -152,7 +196,13 @@ class PlotData:
     """
 
     def __init__(self, ds: xr.Dataset) -> None:
-        self.ds = ds
+        self.ds = ds.assign_coords(frequency_GHz=ds.frequency / 1e9)
+
+    def validate_scans(self, scans) -> list[int]:
+        if scans is None:
+            return self.ds["scan"].values.tolist()
+        else:
+            return [int(s) for s in np.atleast_1d(scans)]
 
     def elevation_curve(self, scan: int, antenna: str, spw: int) -> Figure:
         """Tsys vs zenith angle for one ``(scan, antenna, spw)`` cell."""
@@ -206,175 +256,177 @@ class PlotData:
         )
         return fig
 
-    def tau_vs_frequency(self, scan: int) -> Figure:
-        """Zenith opacity vs spw centre frequency for all antennas at *scan*.
-
-        Scatter of fitted ``tau_zenith`` with ``tau_err`` error bars, all
-        antennas overlaid in the same axes. When ``am_freq_grid`` /
-        ``am_tau`` are present in the dataset they are overlaid as a
-        continuous curve (the anchored am model).
+    def tau_vs_frequency(self, scan_ids: int | list[int] | None = None) -> Figure:
         """
-        slab = self.ds.sel(scan=scan)  # drops scan dim from fit vars
-        tau = slab["tau_zenith"].values  # (antenna, spw)
-        tau_err = slab["tau_err"].values  # (antenna, spw)
-        ok = slab["fit_success"].values  # (antenna, spw)
-        freq_GHz = slab["frequency"].values / 1e9  # (spw,)
-        x = np.broadcast_to(freq_GHz, tau.shape)
+        Zenith opacity vs spw centre frequency for one or more scans.
+        """
+        scans = self.validate_scans(scan_ids)
+        is_wide = len(scans) > 1
+        ds = self.ds.sel(scan=scans)
 
-        fig, ax = plt.subplots(figsize=(5, 3.5))
-        ax.errorbar(
-            x[ok],
-            tau[ok],
-            yerr=tau_err[ok],
-            fmt="o",
-            ms=3,
-            color="black",
-            elinewidth=0.6,
-            capsize=0,
-            alpha=0.5,
-            label="fitted",
-            zorder=3,
+        fig, ax = _get_fig(is_wide)
+
+        ds.where(ds.fit_success).plot.scatter(
+            ax=ax,
+            x="frequency_GHz",
+            y="tau_zenith",
+            marker=".",
+            facecolor="0.5",
+            edgecolor="none",
         )
-
-        if "am_freq_grid" in slab.data_vars and "am_tau" in slab.data_vars:
+        ds.where(~ds.fit_success).plot.scatter(
+            ax=ax,
+            x="frequency_GHz",
+            y="tau_zenith",
+            marker=".",
+            facecolor="orangered",
+            edgecolor="none",
+        )
+        if "am_freq_grid" in ds.data_vars and "am_tau" in ds.data_vars:
             ax.plot(
-                slab["am_freq_grid"].values / 1e9,
-                slab["am_tau"].values,
-                color="tab:blue",
-                lw=1.2,
-                alpha=0.8,
+                ds["am_freq_grid"].values / 1e9,
+                ds["am_tau"].values,
+                color="black",
+                lw=1.5,
                 label="am model",
-            )
-            ax.legend(loc="best", fontsize=8)
-
-        _set_grid(ax)
-        _set_minor_ticks(ax)
-        ax.set_xlabel(r"Frequency [GHz]")
-        ax.set_ylabel(r"$\tau_z$ [nepers]")
-        title = f"scan {int(scan)}"
-        pwv_scaling = self.ds.attrs.get("pwv_scaling")
-        if pwv_scaling is not None and np.isfinite(float(pwv_scaling)):
-            title += rf" | pwv$_\mathrm{{scaling}}$ = {float(pwv_scaling):.3f}"
-        ax.set_title(title, fontsize=9)
-        return fig
-
-    def tcal_vs_frequency(self, scan: int) -> Figure:
-        """Fitted vs reference Tcal per polarization at *scan*.
-
-        For each successful ``(antenna, spw)`` cell, plot ``tcal_fit`` (filled
-        markers) and ``tcal_ref`` (open markers) at the spw centre frequency,
-        with R and L polarizations in separate colors. Only meaningful when
-        the fit mode is ``tcal_solve`` — in other modes ``tcal_fit`` equals
-        ``tcal_ref`` by construction and the two series stack.
-        """
-        slab = self.ds.sel(scan=scan)
-        ok = slab["fit_success"].values  # (antenna, spw)
-        freq_GHz = slab["frequency"].values / 1e9
-        x = np.broadcast_to(freq_GHz, ok.shape)
-
-        fig, ax = plt.subplots(figsize=(5, 3.5))
-        for pol, color in (("R", "firebrick"), ("L", "dodgerblue")):
-            ref = slab["tcal_ref"].sel(polarization=pol).values
-            fit = slab["tcal_fit"].sel(polarization=pol).values
-            ax.scatter(
-                x[ok],
-                ref[ok],
-                facecolors="none",
-                edgecolors=color,
-                s=18,
-                lw=0.8,
-                alpha=0.7,
-                label=f"{pol} ref",
                 zorder=3,
             )
-            ax.scatter(
-                x[ok],
-                fit[ok],
-                color=color,
-                s=12,
-                alpha=0.7,
-                label=f"{pol} fit",
-                zorder=4,
-            )
+        weights = (1 / ds.tau_err**2).fillna(0)
+        ds.tau_zenith.weighted(weights).mean(dim=["antenna"]).plot.scatter(
+            ax=ax,
+            x="frequency_GHz",
+            marker=".",
+            facecolor="firebrick",
+            edgecolor="firebrick",
+            linewidth=4,
+            zorder=4,
+        )
 
+        ax.set_yscale("log")
+        ax.set_ylim(ds["tau_zenith"].min() / 1.1, ds["tau_zenith"].max() * 1.1)
+        _set_grid(ax)
+        _set_minor_ticks(ax, y=False)
+        ax.set_xlabel(r"Frequency [GHz]")
+        ax.set_ylabel(r"$\tau_z$ [nepers]")
+        return fig
+
+    def tcal_vs_frequency(
+        self, scan: int | list[int] | None = None, kind: str = "fit"
+    ) -> Figure:
+        """
+        Fitted vs reference Tcal per polarization for one or more scans.
+        Only meaningful for modes that solve for the Tcals.
+        """
+        scans = self.validate_scans(scan)
+        is_wide = len(scans) > 1
+        ds = self.ds.sel(scan=scans)
+
+        fig, ax = _get_fig(is_wide)
+
+        ds.plot.scatter(
+            ax=ax,
+            x="frequency_GHz",
+            y=f"tcal_{kind}",
+            marker=".",
+            facecolor="0.5",
+            edgecolor="none",
+            zorder=3,
+        )
+        ds.mean(dim=["polarization", "antenna"]).plot.scatter(
+            ax=ax,
+            x="frequency_GHz",
+            y=f"tcal_{kind}",
+            marker=".",
+            facecolor="firebrick",
+            edgecolor="firebrick",
+            linewidth=4,
+            zorder=4,
+        )
+
+        _annotate_with_patheffects(ax, label=_scan_title(scans), xy=(0.02, 0.94))
         _set_grid(ax)
         _set_minor_ticks(ax)
         ax.set_xlabel(r"Frequency [GHz]")
         ax.set_ylabel(r"$T_\mathrm{cal}$ [K]")
-        ax.legend(loc="best", fontsize=7, ncol=2)
-        ax.set_title(f"scan {int(scan)}", fontsize=9)
         return fig
 
-    def c_vs_frequency(self, scan: int) -> Figure:
+    def c_vs_frequency(self, scan: int | list[int] | None = None) -> Figure:
         """Tcal correction multiplier ``c = tcal_fit / tcal_ref`` vs frequency.
 
         ``c`` is the per-(antenna, spw, pol) correction the fit applies on
         top of the lab-measured ``tcal_ref`` (same factor used to scale the
         elevation-curve model in :meth:`elevation_curve`). Identically 1 in
-        non-``tcal_solve`` modes by construction. Successful cells only;
-        R and L pols overlaid in distinct colors, with a dashed reference
-        line at ``c = 1``.
+        non-``tcal_solve`` modes by construction. ``scan`` accepts a single
+        scan ID or a list — R/L pols by color (firebrick/dodgerblue),
+        per-scan distinction by marker shape. Dashed reference line at
+        ``c = 1``.
         """
-        slab = self.ds.sel(scan=scan)
-        ok = slab["fit_success"].values  # (antenna, spw)
-        freq_GHz = slab["frequency"].values / 1e9
-        x = np.broadcast_to(freq_GHz, ok.shape)
+        scans = self.validate_scans(scan)
+        is_wide = len(scans) > 1
+        ds = self.ds.sel(scan=scans)
+        ds = ds.assign(c_ratio=(ds.tcal_fit / ds.tcal_ref))
 
+        fig, ax = _get_fig(is_wide)
         fig, ax = plt.subplots(figsize=(5, 3.5))
+
         ax.axhline(1.0, color="0.5", lw=0.8, ls="--", zorder=1)
-        for pol, color in (("R", "firebrick"), ("L", "dodgerblue")):
-            ref = slab["tcal_ref"].sel(polarization=pol)
-            fit = slab["tcal_fit"].sel(polarization=pol)
-            c = (fit / ref).where(ref > 0).values
-            ax.scatter(
-                x[ok],
-                c[ok],
-                color=color,
-                s=12,
-                alpha=0.7,
-                label=pol,
-                zorder=3,
-            )
+        ds.plot.scatter(
+            ax=ax,
+            x="frequency_GHz",
+            y="c_ratio",
+            marker=".",
+            facecolor="0.5",
+            edgecolor="none",
+            zorder=3,
+        )
+        ds.mean(dim=["polarization", "antenna"]).plot.scatter(
+            ax=ax,
+            x="frequency_GHz",
+            y="c_ratio",
+            marker=".",
+            facecolor="firebrick",
+            edgecolor="firebrick",
+            linewidth=4,
+            zorder=4,
+        )
 
         _set_grid(ax)
         _set_minor_ticks(ax)
         ax.set_xlabel(r"Frequency [GHz]")
         ax.set_ylabel(r"$c = T_\mathrm{cal,fit} / T_\mathrm{cal,ref}$")
-        ax.legend(loc="best", fontsize=7)
-        ax.set_title(f"scan {int(scan)}", fontsize=9)
+        ax.set_title(_scan_title(scans), fontsize=9)
         return fig
 
     def weather_panel(self) -> Figure:
         """Surface T, P, RH vs time across all scans (one figure)."""
         ds = self.ds
-        T = schema.apply_flags(ds, "weather_T")  # (scan, time) K
-        P = schema.apply_flags(ds, "weather_P") / 100.0  # hPa
-        RH = schema.apply_flags(ds, "weather_RH") * 100.0  # %
-        t = ds["time_utc"]  # (scan, time) MJD seconds
 
-        # Pad each scan with a trailing NaN sample so the line plot shows
-        # gaps between scans rather than straight interpolated jumps.
-        n_scan = ds.sizes["scan"]
-        sep = np.full((n_scan, 1), np.nan)
-        t_flat = np.concatenate([t.values, sep], axis=1).ravel()
-        T_flat = np.concatenate([T.values, sep], axis=1).ravel()
-        P_flat = np.concatenate([P.values, sep], axis=1).ravel()
-        RH_flat = np.concatenate([RH.values, sep], axis=1).ravel()
-        t0 = float(np.nanmin(t_flat))
-        x = (t_flat - t0) / 3600.0  # hours since first sample
+        fig, axes = plt.subplots(3, 1, figsize=(4, 5), sharex=True)
 
-        fig, axes = plt.subplots(3, 1, figsize=(6, 5), sharex=True)
-        axes[0].plot(x, T_flat, color="firebrick", lw=1.0)
-        axes[0].set_ylabel(r"T [K]")
-        axes[1].plot(x, P_flat, color="forestgreen", lw=1.0)
-        axes[1].set_ylabel(r"P [hPa]")
-        axes[2].plot(x, RH_flat, color="dodgerblue", lw=1.0)
-        axes[2].set_ylabel(r"RH [%]")
-        axes[2].set_xlabel(r"Time since first sample [h]")
+        ds.weather_T.plot.scatter(
+            ax=axes[0],
+            x="time_utc",
+            add_legend=False,
+        )
+        ds.assign(weather_P_scaled=ds.weather_P / 100).plot.scatter(
+            ax=axes[1],
+            x="time_utc",
+            y="weather_P_scaled",
+            add_legend=False,
+        )
+        ds.assign(weather_RH_scaled=ds.weather_RH * 100).plot.scatter(
+            ax=axes[2],
+            x="time_utc",
+            y="weather_RH_scaled",
+            add_legend=False,
+        )
+        axes[0].set_ylabel("T [K]")
+        axes[1].set_ylabel("P [hPa]")
+        axes[2].set_ylabel("RH [%]")
+        axes[2].set_xlabel("UTC Time")
         for ax in axes:
             _set_grid(ax)
             _set_minor_ticks(ax)
-        axes[0].set_title("Weather", fontsize=10)
         return fig
 
     def fit_success_heatmap(self) -> Figure:

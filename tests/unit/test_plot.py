@@ -343,6 +343,53 @@ def test_save_all_parallel_restores_mplbackend(tmp_path: Path) -> None:
             os.environ["MPLBACKEND"] = sentinel
 
 
+def test_tau_vs_frequency_accepts_scan_list() -> None:
+    ds = _make_plot_ds(n_scan=3, n_spw=2, success=True, with_am=True)
+    fig = PlotData(ds).tau_vs_frequency(scan=[1, 2, 3])
+    [ax] = fig.axes
+    # Three scans -> three errorbar series (each as a "container" added to
+    # ax.containers in modern matplotlib) plus one am-model Line2D.
+    labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "scan 1" in labels
+    assert "scan 2" in labels
+    assert "scan 3" in labels
+    assert "am model" in labels
+    assert "scans 1, 2, 3" in ax.get_title()
+
+
+def test_tau_vs_frequency_single_scan_via_list() -> None:
+    ds = _make_plot_ds(success=True)
+    fig = PlotData(ds).tau_vs_frequency(scan=[1])
+    [ax] = fig.axes
+    # Single-element list keeps the "fitted" label (not "scan 1").
+    labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "fitted" in labels
+
+
+def test_tcal_vs_frequency_accepts_scan_list() -> None:
+    ds = _make_plot_ds(n_scan=2, n_spw=2, success=True)
+    ds["tcal_fit"].values *= 1.1
+    fig = PlotData(ds).tcal_vs_frequency(scan=[1, 2])
+    [ax] = fig.axes
+    labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    # 2 ref series (R, L, scan-invariant) + 2 scans × 2 pols = 6 entries.
+    assert "R ref" in labels
+    assert "L ref" in labels
+    assert "scan 1 R fit" in labels
+    assert "scan 2 L fit" in labels
+    assert "scans 1, 2" in ax.get_title()
+
+
+def test_c_vs_frequency_accepts_scan_list() -> None:
+    ds = _make_plot_ds(n_scan=2, n_spw=2, success=True)
+    ds["tcal_fit"].values *= 1.05
+    fig = PlotData(ds).c_vs_frequency(scan=[1, 2])
+    [ax] = fig.axes
+    labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "scan 1 R" in labels
+    assert "scan 2 L" in labels
+
+
 def test_weather_panel_basic() -> None:
     ds = _make_plot_ds(n_scan=2, success=True)
     fig = PlotData(ds).weather_panel()
