@@ -288,7 +288,7 @@ class TippingAnalysis:
             # Stage A + Stage B. Build grids if not done already; the
             # grid drives both the Stage A T_mean input and the Stage B
             # PWV anchor against τ_z(ν).
-            from tipopac.anchor import anchor_pwv, compute_t_mean_grid
+            from tipopac.anchor import anchor_pwv, compute_t_mean_grid, write_am_curve
 
             if not self._grids:
                 self.build_atm_grids()
@@ -322,6 +322,7 @@ class TippingAnalysis:
             )
             self._ds["pwv"] = (("antenna",), pwv.astype(np.float32))
             self._ds["pwv_err"] = (("antenna",), pwv_err.astype(np.float32))
+            write_am_curve(self._ds, grids_by_pos, pwv)
             self._ds.attrs["mode"] = mode  # public mode label, not backend
         else:
             fit.fit_dataset(self._ds, mode=mode, n_workers=n_workers)

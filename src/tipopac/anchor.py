@@ -17,12 +17,13 @@ v2.6 ``0.95·T_surface`` Bevis form.
 from __future__ import annotations
 
 import numpy as np
+import xarray as xr
 from scipy.optimize import minimize_scalar
 
 from tipopac.atmgrid import PwvGrid
 from tipopac.physics import k2nt
 
-__all__ = ["anchor_pwv", "compute_t_mean_grid"]
+__all__ = ["anchor_pwv", "compute_t_mean_grid", "write_am_curve"]
 
 
 # Default PWV search range. The grid axis caps the actual search; these
@@ -131,6 +132,57 @@ def anchor_pwv(
             pwv_err_ant[i_ant] = 1.0 / np.sqrt(inv_var)
 
     return pwv_ant, pwv_err_ant
+
+
+def write_am_curve(
+    ds: xr.Dataset,
+    grids: dict[int, PwvGrid],
+    pwv: np.ndarray,
+) -> None:
+    """Populate ``ds['am_freq_grid']`` and ``ds['am_tau']`` from Stage-B artifacts.
+
+    Stage A+B reuses the per-scan :class:`PwvGrid` and the fitted per-antenna
+    PWV — no second am run, no second open-meteo fetch. The dense curve is
+    sampled at the median fitted PWV (falling back to a reference grid's
+    ``pwv_unscaled_mm`` if every antenna is NaN), on the shared grid frequency
+    axis. The result is a single 1-D ``frequency_dense`` slice suitable for the
+    plotting overlay at ``plot.py:286–293``.
+
+    Parameters
+    ----------
+    ds:
+        Mutated in place. ``am_freq_grid`` / ``am_tau`` are added or
+        overwritten with shape ``(n_freq,)`` and dtype ``float64`` matching
+        the schema.
+    grids:
+        Per-scan :class:`PwvGrid` — same dict passed to :func:`anchor_pwv`.
+        Must contain at least one grid, and all grids must share an identical
+        ``freq_Hz`` axis (true by construction in
+        :meth:`tipopac.api.TippingAnalysis.build_atm_grids`, which uses the
+        same ``freq_min_Hz``/``freq_max_Hz``/``freq_step_Hz`` for every scan).
+    pwv:
+        Per-antenna PWV (mm) from :func:`anchor_pwv`. NaN values are ignored
+        when picking the representative PWV.
+    """
+    if not grids:
+        raise ValueError("write_am_curve requires at least one PwvGrid")
+
+    grid_iter = iter(grids.values())
+    ref_grid = next(grid_iter)
+    for other in grid_iter:
+        if not np.array_equal(other.freq_Hz, ref_grid.freq_Hz):
+            raise ValueError(
+                "PwvGrid freq_Hz axes disagree across scans — "
+                "write_am_curve assumes a single shared frequency grid"
+            )
+
+    pwv_repr = float(np.nanmedian(pwv)) if np.any(np.isfinite(pwv)) else float(
+        ref_grid.pwv_unscaled_mm
+    )
+    tau, _ = ref_grid.lookup(pwv_repr, ref_grid.freq_Hz)
+
+    ds["am_freq_grid"] = (("frequency_dense",), ref_grid.freq_Hz.astype(np.float64))
+    ds["am_tau"] = (("frequency_dense",), tau.astype(np.float64))
 
 
 def compute_t_mean_grid(

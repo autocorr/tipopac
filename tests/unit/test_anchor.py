@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import xarray as xr
 
-from tipopac.anchor import anchor_pwv, compute_t_mean_grid
+from tipopac.anchor import anchor_pwv, compute_t_mean_grid, write_am_curve
 from tipopac.atmgrid import PwvGrid
 from tipopac.physics import k2nt
 
@@ -198,3 +199,60 @@ def test_compute_t_mean_grid_infers_n_scan() -> None:
     freqs = np.array([15e9])
     t_mean = compute_t_mean_grid({0: grid, 2: grid}, freqs)
     assert t_mean.shape == (3, 1)
+
+
+# ---------------------------------------------------------------------------
+# write_am_curve
+# ---------------------------------------------------------------------------
+
+
+def test_write_am_curve_writes_expected_dims_and_values() -> None:
+    """am_freq_grid/am_tau land on the dataset with the right dims, dtype, and values."""
+    grid = _toy_grid()
+    ds = xr.Dataset()
+    pwv = np.array([4.0, 6.0, np.nan, 8.0])  # median of finite = 6.0
+    write_am_curve(ds, {0: grid, 1: grid}, pwv)
+
+    assert "am_freq_grid" in ds.data_vars
+    assert "am_tau" in ds.data_vars
+    assert ds["am_freq_grid"].dims == ("frequency_dense",)
+    assert ds["am_tau"].dims == ("frequency_dense",)
+    assert ds["am_freq_grid"].dtype == np.float64
+    assert ds["am_tau"].dtype == np.float64
+    assert ds["am_freq_grid"].size == grid.freq_Hz.size
+
+    np.testing.assert_array_equal(ds["am_freq_grid"].values, grid.freq_Hz)
+    expected_tau, _ = grid.lookup(6.0, grid.freq_Hz)
+    np.testing.assert_allclose(ds["am_tau"].values, expected_tau)
+
+
+def test_write_am_curve_falls_back_to_pwv_unscaled_when_all_nan() -> None:
+    """If every antenna PWV is NaN, sample at the reference grid's pwv_unscaled_mm."""
+    grid = _toy_grid(pwv_unscaled_mm=5.5)
+    ds = xr.Dataset()
+    pwv = np.array([np.nan, np.nan])
+    write_am_curve(ds, {0: grid}, pwv)
+
+    expected_tau, _ = grid.lookup(5.5, grid.freq_Hz)
+    np.testing.assert_allclose(ds["am_tau"].values, expected_tau)
+
+
+def test_write_am_curve_rejects_empty_grids() -> None:
+    with pytest.raises(ValueError, match="at least one PwvGrid"):
+        write_am_curve(xr.Dataset(), {}, np.array([3.0]))
+
+
+def test_write_am_curve_rejects_mismatched_freq_axes() -> None:
+    """If two scans' grids disagree on freq_Hz, fail loudly rather than silently mix."""
+    g1 = _toy_grid()
+    # Build a second grid with a shifted freq axis but otherwise valid.
+    freq2 = g1.freq_Hz + 1e6
+    g2 = PwvGrid(
+        pwv_mm=g1.pwv_mm,
+        freq_Hz=freq2,
+        tau_z=g1.tau_z,
+        tb_z=g1.tb_z,
+        pwv_unscaled_mm=g1.pwv_unscaled_mm,
+    )
+    with pytest.raises(ValueError, match="freq_Hz axes disagree"):
+        write_am_curve(xr.Dataset(), {0: g1, 1: g2}, np.array([5.0]))
