@@ -74,7 +74,6 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     ),
     "fit_success": (("scan", "antenna", "spw"), np.dtype(np.bool_)),
     "fit_reason": (("scan", "antenna", "spw"), np.dtype("O")),
-    "tau_extrapolated": (("scan", "spw"), np.dtype(np.float32)),
     "am_freq_grid": (("frequency_dense",), np.dtype(np.float64)),
     "am_tau": (("frequency_dense",), np.dtype(np.float64)),
     # Post-fit atmospheric anchor (see design/independent_tau_fit.md):

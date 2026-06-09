@@ -1,7 +1,7 @@
 """Atmospheric opacity model: am + open-meteo or AFGL fallback (DESIGN.md §7).
 
-Public entry points
--------------------
+Public entry point
+------------------
 ``attach_profile(ds, *, source, afgl_climatology, …)``
     The single network-touching stage. Runs open-meteo once (full hourly
     grid for the observation date range) or builds an AFGL profile, picks
@@ -9,33 +9,20 @@ Public entry points
     writes ``atm_pressure``, ``atm_temperature``, ``atm_h2o_vmr`` to *ds*.
     Provenance lands in ``ds.attrs`` (``atm_profile_source``,
     ``open_meteo_query``, ``surface_pressure_hPa``).
-
-``extrapolate(ds)``
-    Pure consumer. Anchors a single ``troposphere_h2o_scaling`` to the
-    fitted τ values in *ds* and fills ``tau_extrapolated``,
-    ``am_freq_grid``, ``am_tau``. Requires ``attach_profile`` to have run.
-
-Testable pure function
-----------------------
-``anchor(tau_obs, tau_err, freqs_Hz, tau_am_fn)``
-    Fits a single PWV scaling scalar; takes a callable so tests can drive it
-    without a real amwrap.Model or HTTP call.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
 import astropy.units as u
 import numpy as np
 import xarray as xr
-from scipy.optimize import minimize_scalar
 
-__all__ = ["anchor", "attach_profile", "extrapolate"]
+__all__ = ["attach_profile"]
 
 
 class _NoPressureLevelData(RuntimeError):
@@ -105,10 +92,6 @@ _OM_PRESSURE_LEVELS: list[int] = [
     20,
     10,
 ]
-
-# am grid step for the output (dense) curve; anchor runs over the same model.
-_AM_FREQ_STEP_HZ = 50e6  # 50 MHz
-
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -381,116 +364,6 @@ def _pick_climatology_for_date(obs_time_mjd_s: float) -> str:
     return "midlatitude_summer" if 4 <= obs_dt.month <= 9 else "midlatitude_winter"
 
 
-def extrapolate(ds: xr.Dataset) -> None:
-    """Anchor an am model to fitted τ values and extrapolate to all spws.
-
-    Pure consumer of ``atm_pressure``, ``atm_temperature``, ``atm_h2o_vmr``
-    on *ds* (must be set by :func:`attach_profile`). Mutates *ds* in place:
-    adds ``tau_extrapolated``, ``am_freq_grid``, ``am_tau`` and writes
-    ``pwv_scaling`` to attrs.
-
-    Requires ``tau_zenith``, ``tau_err``, ``fit_success`` in *ds*.
-    """
-    if "atm_pressure" not in ds.data_vars:
-        raise RuntimeError(
-            "extrapolate() requires atm_pressure on the dataset; "
-            "call attach_profile() (or TippingAnalysis.fetch_atm_profile()) first."
-        )
-
-    freqs_Hz = ds.coords["frequency"].values  # (spw,)
-
-    # Use the median scan's profile slice for the am anchor — extrapolate
-    # is the legacy single-anchor path; per-scan variation already washes
-    # out at the (scan, antenna, spw) tau sum the anchor minimises over.
-    n_scan = ds.sizes["scan"]
-    median_scan_idx = int(np.median(np.arange(n_scan)))
-
-    pressure_Pa = ds["atm_pressure"].values  # (atm_level,)
-    pressure = pressure_Pa * u.Pa
-    temperature = ds["atm_temperature"].values[median_scan_idx] * u.K
-    h2o_vmr = ds["atm_h2o_vmr"].values[median_scan_idx] * u.dimensionless_unscaled
-
-    freq_min_Hz = float(freqs_Hz.min()) * 0.95
-    freq_max_Hz = float(freqs_Hz.max()) * 1.05
-    model = _build_am_model(pressure, temperature, h2o_vmr, freq_min_Hz, freq_max_Hz)
-
-    # Collect valid (scan, antenna, spw) triples for the anchor cost function.
-    tau_fit = ds["tau_zenith"].values  # (scan, antenna, spw)
-    tau_err_vals = ds["tau_err"].values  # (scan, antenna, spw)
-    success = ds["fit_success"].values  # (scan, antenna, spw)
-
-    n_scan, n_ant, n_spw = tau_fit.shape
-    freq_3d = np.broadcast_to(freqs_Hz[None, None, :], (n_scan, n_ant, n_spw))
-
-    mask = (
-        success & np.isfinite(tau_fit) & np.isfinite(tau_err_vals) & (tau_err_vals > 0)
-    )
-    tau_obs_flat = tau_fit[mask]
-    tau_err_flat = tau_err_vals[mask]
-    freqs_flat = freq_3d[mask]
-
-    pwv_scaling: float | None = None
-    atm_source = ds.attrs.get("atm_profile_source", "unknown")
-
-    if mask.sum() == 0:
-        _log.warning("No successful fits available for am anchor; skipping.")
-    else:
-
-        def _tau_am(scaling: float) -> np.ndarray:
-            return _tau_at_freqs(model, freqs_flat, scaling)
-
-        pwv_scaling = anchor(tau_obs_flat, tau_err_flat, freqs_flat, _tau_am)
-        _log.info(
-            "am anchor: pwv_scaling=%.4f (source=%s, n_pts=%d)",
-            pwv_scaling,
-            atm_source,
-            int(mask.sum()),
-        )
-
-    # Final am run with anchored scaling (or scaling=1 if anchor failed).
-    model.troposphere_h2o_scaling = pwv_scaling if pwv_scaling is not None else 1.0
-    dense_df = model.run()
-    am_freqs_Hz = dense_df["frequency"].values * 1e9  # GHz → Hz
-    am_opacity = dense_df["opacity"].values
-
-    # tau_extrapolated: am opacity interpolated to each spw centre frequency.
-    tau_ext = np.interp(freqs_Hz, am_freqs_Hz, am_opacity).astype(np.float32)
-    tau_extrapolated = np.tile(tau_ext, (n_scan, 1))  # (scan, spw)
-
-    ds["tau_extrapolated"] = (("scan", "spw"), tau_extrapolated)
-    ds["am_freq_grid"] = (("frequency_dense",), am_freqs_Hz)
-    ds["am_tau"] = (("frequency_dense",), am_opacity)
-
-    ds.attrs["pwv_scaling"] = pwv_scaling
-
-
-def anchor(
-    tau_obs: np.ndarray,
-    tau_err: np.ndarray,
-    freqs_Hz: np.ndarray,
-    tau_am_fn: Callable[[float], np.ndarray],
-) -> float:
-    """Fit a single PWV scaling scalar against observed zenith opacities.
-
-    Args:
-        tau_obs:   Flat array of observed τ values (nepers).
-        tau_err:   Matching τ uncertainties (nepers, positive).
-        freqs_Hz:  Matching frequencies (Hz).
-        tau_am_fn: Callable (scaling) → τ_am at freqs_Hz; must accept a float
-                   and return an ndarray of the same shape as tau_obs.
-
-    Returns:
-        Fitted pwv_scaling scalar (dimensionless).
-    """
-
-    def _cost(scaling: float) -> float:
-        residuals = (tau_obs - tau_am_fn(scaling)) / tau_err
-        return float(np.dot(residuals, residuals))
-
-    result = minimize_scalar(_cost, bounds=(0.1, 5.0), method="bounded")
-    return float(result.x)
-
-
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
@@ -643,32 +516,3 @@ def _afgl_profile(
 
     clim = _amwrap.Climatology(name, pressure_base=surface_pressure)
     return clim.pressure, clim.temperature, clim.mixing_ratio["h2o"]
-
-
-def _build_am_model(
-    pressure: u.Quantity,
-    temperature: u.Quantity,
-    h2o_vmr: u.Quantity,
-    freq_min_Hz: float,
-    freq_max_Hz: float,
-) -> Any:
-    """Construct an amwrap.Model spanning [freq_min_Hz, freq_max_Hz]."""
-    import amwrap as _amwrap
-
-    return _amwrap.Model(
-        pressure=pressure,
-        temperature=temperature,
-        mixing_ratio={"h2o": h2o_vmr},
-        freq_min=freq_min_Hz * u.Hz,
-        freq_max=freq_max_Hz * u.Hz,
-        freq_step=_AM_FREQ_STEP_HZ * u.Hz,
-    )
-
-
-def _tau_at_freqs(model: Any, freqs_Hz: np.ndarray, scaling: float) -> np.ndarray:
-    """Run am model with *scaling* and interpolate τ to *freqs_Hz*."""
-    model.troposphere_h2o_scaling = scaling
-    df = model.run()
-    am_freqs = df["frequency"].values * 1e9  # GHz → Hz
-    am_opacity = df["opacity"].values
-    return np.interp(freqs_Hz, am_freqs, am_opacity)

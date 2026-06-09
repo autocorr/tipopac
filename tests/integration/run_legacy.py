@@ -41,7 +41,6 @@ DEFAULT_OUT = REPO_ROOT / "tests" / "integration" / "reference" / "v26"
 
 MODES: dict[str, dict[str, bool]] = {
     "tau_per_antenna": {"tauPerAnt": True, "calcTcals": False},
-    "global_tau": {"tauPerAnt": False, "calcTcals": False},
     "tcal_solve": {"tauPerAnt": False, "calcTcals": True},
 }
 

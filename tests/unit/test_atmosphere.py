@@ -9,13 +9,7 @@ import pytest
 import xarray as xr
 
 from tipopac import schema
-from tipopac.atmosphere import (
-    _build_am_model,
-    _tau_at_freqs,
-    anchor,
-    attach_profile,
-    extrapolate,
-)
+from tipopac.atmosphere import attach_profile
 
 
 # ---------------------------------------------------------------------------
@@ -121,98 +115,14 @@ def _make_fitted_ds(
             "source_path": "fake.ms",
             "source_format": "ms",
             "observatory": "VLA",
-            "mode": "global_tau",
+            "mode": "tcal_solve",
         },
     )
 
 
 # ---------------------------------------------------------------------------
-# anchor() — pure function tests
-# ---------------------------------------------------------------------------
-
-
-def test_anchor_recovers_known_scaling() -> None:
-    """anchor() must recover the true PWV scaling to within 1% (DESIGN.md §11.1)."""
-    import amwrap
-
-    true_scaling = 1.3
-    freqs_Hz = np.array([22.2e9, 43.3e9])
-
-    clim = amwrap.Climatology("midlatitude_summer")
-    model = _build_am_model(
-        clim.pressure,
-        clim.temperature,
-        clim.mixing_ratio["h2o"],
-        freqs_Hz.min() * 0.95,
-        freqs_Hz.max() * 1.05,
-    )
-
-    # Generate synthetic τ_fit at the true scaling (no noise for a perfect test).
-    tau_truth = _tau_at_freqs(model, freqs_Hz, true_scaling)
-    # Small but nonzero error so the χ² denominator is valid.
-    tau_err = np.full_like(tau_truth, 0.001)
-
-    def tau_am_fn(scaling: float) -> np.ndarray:
-        return _tau_at_freqs(model, freqs_Hz, scaling)
-
-    recovered = anchor(tau_truth, tau_err, freqs_Hz, tau_am_fn)
-    assert abs(recovered - true_scaling) / true_scaling < 0.01, (
-        f"anchor recovered {recovered:.4f}, expected {true_scaling:.4f} (within 1%)"
-    )
-
-
-def test_anchor_with_noise_within_1pct() -> None:
-    """anchor() should stay within 1% even with small noise on τ_fit."""
-    import amwrap
-
-    true_scaling = 0.8
-    freqs_Hz = np.array([8.4e9, 22.2e9, 43.3e9])
-
-    clim = amwrap.Climatology("midlatitude_summer")
-    model = _build_am_model(
-        clim.pressure,
-        clim.temperature,
-        clim.mixing_ratio["h2o"],
-        freqs_Hz.min() * 0.95,
-        freqs_Hz.max() * 1.05,
-    )
-
-    tau_truth = _tau_at_freqs(model, freqs_Hz, true_scaling)
-    rng = np.random.default_rng(7)
-    noise = rng.normal(0, 1e-4, tau_truth.shape)
-    tau_obs = tau_truth + noise
-    tau_err = np.full_like(tau_truth, 2e-4)
-
-    def tau_am_fn(scaling: float) -> np.ndarray:
-        return _tau_at_freqs(model, freqs_Hz, scaling)
-
-    recovered = anchor(tau_obs, tau_err, freqs_Hz, tau_am_fn)
-    assert abs(recovered - true_scaling) / true_scaling < 0.01
-
-
-def test_anchor_bounds_respected() -> None:
-    """anchor() must return a value in (0.1, 5.0) regardless of data."""
-    # Garbage data that can't be fit — just check bounds.
-    tau_obs = np.array([10.0, 10.0])  # unrealistically large
-    tau_err = np.array([0.01, 0.01])
-    freqs_Hz = np.array([22e9, 43e9])
-
-    def tau_am_fn(scaling: float) -> np.ndarray:
-        return np.array([scaling * 0.05, scaling * 0.03])
-
-    result = anchor(tau_obs, tau_err, freqs_Hz, tau_am_fn)
-    assert 0.1 <= result <= 5.0
-
-
-# ---------------------------------------------------------------------------
 # attach_profile() — AFGL path (no HTTP)
 # ---------------------------------------------------------------------------
-
-
-def _with_afgl_profile(ds: xr.Dataset) -> xr.Dataset:
-    """Run attach_profile(source='afgl') and return the same dataset."""
-    attach_profile(ds, source="afgl", afgl_climatology="midlatitude_summer")
-    return ds
 
 
 def test_attach_profile_afgl_writes_atm_vars() -> None:
@@ -234,86 +144,6 @@ def test_attach_profile_afgl_auto_picks_winter_in_winter() -> None:
     attach_profile(ds, source="afgl", afgl_climatology="auto")
 
     assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_winter"
-
-
-# ---------------------------------------------------------------------------
-# extrapolate() — pure consumer of atm_* on the dataset
-# ---------------------------------------------------------------------------
-
-
-def test_extrapolate_populates_vars() -> None:
-    """extrapolate() adds tau_extrapolated, am_freq_grid, am_tau."""
-    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
-    extrapolate(ds)
-
-    assert "tau_extrapolated" in ds
-    assert "am_freq_grid" in ds
-    assert "am_tau" in ds
-
-
-def test_extrapolate_tau_extrapolated_shape() -> None:
-    n_scan, n_spw = 2, 2
-    ds = _with_afgl_profile(_make_fitted_ds(n_scan=n_scan, freqs_Hz=[22.2e9, 43.3e9]))
-    extrapolate(ds)
-
-    assert ds["tau_extrapolated"].dims == ("scan", "spw")
-    assert ds["tau_extrapolated"].shape == (n_scan, n_spw)
-
-
-def test_extrapolate_tau_extrapolated_positive() -> None:
-    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
-    extrapolate(ds)
-    assert (ds["tau_extrapolated"].values > 0).all()
-
-
-def test_extrapolate_am_freq_grid_covers_spws() -> None:
-    freqs_Hz = [22.2e9, 43.3e9]
-    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=freqs_Hz))
-    extrapolate(ds)
-
-    grid = ds["am_freq_grid"].values
-    assert grid.min() < min(freqs_Hz)
-    assert grid.max() > max(freqs_Hz)
-
-
-def test_extrapolate_am_tau_same_length_as_grid() -> None:
-    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
-    extrapolate(ds)
-    assert ds["am_freq_grid"].shape == ds["am_tau"].shape
-
-
-def test_extrapolate_attrs_set() -> None:
-    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
-    extrapolate(ds)
-
-    assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_summer"
-    assert ds.attrs["pwv_scaling"] is not None
-
-
-def test_extrapolate_pwv_scaling_in_bounds() -> None:
-    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9, 43.3e9]))
-    extrapolate(ds)
-    assert 0.1 <= ds.attrs["pwv_scaling"] <= 5.0
-
-
-def test_extrapolate_no_successful_fits_skips_gracefully() -> None:
-    """If all fits failed, extrapolate() should not raise and should still set attrs."""
-    ds = _with_afgl_profile(_make_fitted_ds(freqs_Hz=[22.2e9]))
-    ds["fit_success"].values[:] = False
-
-    extrapolate(ds)
-
-    # tau_extrapolated still written (from scaling=1.0 fallback)
-    assert "tau_extrapolated" in ds
-    # pwv_scaling is None since anchor couldn't run
-    assert ds.attrs["pwv_scaling"] is None
-
-
-def test_extrapolate_without_atm_pressure_raises() -> None:
-    """extrapolate() must error clearly if attach_profile hasn't run."""
-    ds = _make_fitted_ds(freqs_Hz=[22.2e9])
-    with pytest.raises(RuntimeError, match="atm_pressure"):
-        extrapolate(ds)
 
 
 # ---------------------------------------------------------------------------

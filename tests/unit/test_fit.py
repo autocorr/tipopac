@@ -248,103 +248,11 @@ def test_fit_invalid_mode_raises() -> None:
         fit_dataset(ds, mode="banana")
 
 
-def test_fit_global_tau_recovers_params() -> None:
-    """global_tau: recover shared tau0 across three antennas within tolerance."""
-    tau_true = 0.06
-    ds = _make_tip_ds(tau0=tau_true, n_ant=3)
-
-    fit_dataset(ds, mode="global_tau")
-
-    # All antennas must succeed
-    assert ds["fit_success"].values.all(), ds["fit_reason"].values
-
-    # tau_zenith is the same for all antennas (broadcast equal)
-    tau_fits = ds["tau_zenith"].values[0, :, 0]
-    assert np.all(np.isclose(tau_fits, tau_fits[0])), (
-        f"tau_zenith not equal across antennas: {tau_fits}"
-    )
-
-    tol = max(0.005, 0.05 * tau_true)
-    assert abs(float(tau_fits[0]) - tau_true) < tol, (
-        f"tau recovered {tau_fits[0]:.4f}, true {tau_true:.4f}, tol {tol:.4f}"
-    )
-
-
 def test_fit_mode_stored_in_attrs() -> None:
     """ds.attrs['mode'] is set to the mode string after fitting."""
     ds = _make_tip_ds()
     fit_dataset(ds, mode="tau_per_antenna")
     assert ds.attrs["mode"] == "tau_per_antenna"
-
-
-def test_fit_global_tau_schema_valid() -> None:
-    """After global_tau fit, schema.validate passes."""
-    ds = _make_tip_ds(n_ant=3)
-    fit_dataset(ds, mode="global_tau")
-    schema.validate(ds)
-
-
-def test_fit_global_tau_tcal_fit_equals_tcal_ref() -> None:
-    """global_tau: no Tcal correction — tcal_fit equals tcal_ref for passing antennas."""
-    ds = _make_tip_ds(n_ant=2)
-    fit_dataset(ds, mode="global_tau")
-    for i_ant in range(2):
-        np.testing.assert_array_equal(
-            ds["tcal_fit"].values[0, i_ant, 0, :],
-            ds["tcal_ref"].values[i_ant, 0, :],
-        )
-
-
-def test_fit_global_tau_all_antennas_poorly_identified() -> None:
-    """Flat ZA across all antennas → fit_success=False with poorly_identified reason.
-
-    Under the post-refactor identifiability check, the global fit still
-    produces τ values (so users can inspect them) but flags them via
-    fit_success=False and fit_reason="poorly_identified". This replaces the
-    legacy `dz_too_small` hard gate.
-    """
-    ds = _make_tip_ds(flat_za=True, n_ant=3)
-    fit_dataset(ds, mode="global_tau")
-    assert not ds["fit_success"].values.any()
-    assert (ds["fit_reason"].values == "poorly_identified").all()
-
-
-def test_fit_global_tau_excluded_antenna_gets_global_tau() -> None:
-    """Antenna excluded by screening still gets the global tau in tau_zenith."""
-    rng = np.random.default_rng(7)
-    ds = _make_tip_ds(tau0=0.06, n_ant=3, rng=rng)
-    # Antenna 0: flat ZA → will fail screening
-    ds["zenith_angle"].values[:, 0, :] = 45.0
-
-    fit_dataset(ds, mode="global_tau")
-
-    # Antennas 1 and 2 pass; antenna 0 is excluded
-    assert not bool(ds["fit_success"].values[0, 0, 0]), (
-        "excluded ant should have success=False"
-    )
-    assert bool(ds["fit_success"].values[0, 1, 0]), (
-        "included ant should have success=True"
-    )
-    assert bool(ds["fit_success"].values[0, 2, 0]), (
-        "included ant should have success=True"
-    )
-    # Antenna 0 has Tsys varying with airmass embedded in switched_sum but
-    # zenith_angle forced flat → model can't fit, screening returns either
-    # high_chi2 (post-fit) or poorly_identified (degenerate Jacobian).
-    assert ds["fit_reason"].values[0, 0, 0] in ("high_chi2", "poorly_identified")
-
-    # All three antennas share the same tau_zenith (broadcast equal)
-    tau_arr = ds["tau_zenith"].values[0, :, 0]
-    assert not np.isnan(tau_arr).any(), (
-        "tau_zenith must be set even for excluded antenna"
-    )
-    assert np.all(np.isclose(tau_arr, tau_arr[0])), (
-        "tau_zenith must be equal across all antennas"
-    )
-
-    # Excluded antenna's T0 and tcal_fit are NaN
-    assert np.isnan(ds["T0"].values[0, 0, 0, 0])
-    assert np.isnan(ds["tcal_fit"].values[0, 0, 0, 0])
 
 
 def _make_tcal_ds(
@@ -518,18 +426,6 @@ def test_fit_multi_scan_multi_ant() -> None:
     assert ds["fit_success"].shape == (2, 3, 2)
     # All cells should succeed (clean synthetic data)
     assert ds["fit_success"].values.all()
-
-
-def test_fit_global_tau_multi_scan() -> None:
-    """global_tau: multi-scan dataset produces per-scan tau without state leakage."""
-    ds = _make_tip_ds(n_scan=2, n_ant=3)
-    fit_dataset(ds, mode="global_tau")
-    assert ds["fit_success"].shape == (2, 3, 1)
-    assert ds["fit_success"].values.all()
-    # Tau values are equal across antennas in each scan
-    for i_scan in range(2):
-        tau_arr = ds["tau_zenith"].values[i_scan, :, 0]
-        assert np.all(np.isclose(tau_arr, tau_arr[0]))
 
 
 # ---------------------------------------------------------------------------

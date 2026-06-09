@@ -6,8 +6,6 @@ Modes
 -----
 - ``tau_per_antenna``: per-(scan, ant, spw) opacity fit; 3-param LM
   (τ_z, T0_R, T0_L) per fit.
-- ``global_tau``: per-(scan, spw) joint-across-antennas fit; shared τ_z,
-  per-antenna T0_R, T0_L. Sparse Jacobian.
 - ``tcal_solve``: per-(scan, spw) joint-across-antennas fit; shared τ_z,
   per-antenna (T0_R, c_R, T0_L, c_L). Sparse Jacobian.
 
@@ -41,7 +39,7 @@ _C_LO: float = 0.5  # Tcal correction multiplier lower bound (physical prior)
 _C_HI: float = 2.0  # Tcal correction multiplier upper bound (physical prior)
 _TAU_HI: float = 1.0  # zenith τ upper bound (physical prior across VLA bands)
 
-_ALLOWED_MODES = ("tau_per_antenna", "global_tau", "tcal_solve")
+_ALLOWED_MODES = ("tau_per_antenna", "tcal_solve")
 
 
 def fit_dataset(
@@ -151,8 +149,8 @@ def fit_dataset(
                 tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[i_ant, i_spw, 0]
                 tcal_fit[i_scan, i_ant, i_spw, 1] = tcal_ref_vals[i_ant, i_spw, 1]
     else:
-        # global_tau or tcal_solve: per-antenna screening then one global fit
-        # per (scan, spw). Bundle one task per (scan, spw) so the inner
+        # tcal_solve: per-antenna screening then one global fit per
+        # (scan, spw). Bundle one task per (scan, spw) so the inner
         # screening loop stays inside the worker.
         tasks = list(
             _build_global_tasks(
@@ -166,7 +164,6 @@ def fit_dataset(
                 weather_T_vals,
                 freq_vals,
                 t_mean,
-                tcal_mode=(mode == "tcal_solve"),
             )
         )
         for (i_scan, i_spw), packaged in _dispatch(tasks, _global_worker, n_workers):
@@ -206,16 +203,12 @@ def fit_dataset(
             for j, i_ant in enumerate(passing_idx):
                 T0_out[i_scan, i_ant, i_spw, 0] = global_result["T0_R"][j]
                 T0_out[i_scan, i_ant, i_spw, 1] = global_result["T0_L"][j]
-                if mode == "global_tau":
-                    tcal_fit[i_scan, i_ant, i_spw, 0] = tcal_ref_vals[i_ant, i_spw, 0]
-                    tcal_fit[i_scan, i_ant, i_spw, 1] = tcal_ref_vals[i_ant, i_spw, 1]
-                else:  # tcal_solve
-                    tcal_fit[i_scan, i_ant, i_spw, 0] = (
-                        global_result["c_R"][j] * tcal_ref_vals[i_ant, i_spw, 0]
-                    )
-                    tcal_fit[i_scan, i_ant, i_spw, 1] = (
-                        global_result["c_L"][j] * tcal_ref_vals[i_ant, i_spw, 1]
-                    )
+                tcal_fit[i_scan, i_ant, i_spw, 0] = (
+                    global_result["c_R"][j] * tcal_ref_vals[i_ant, i_spw, 0]
+                )
+                tcal_fit[i_scan, i_ant, i_spw, 1] = (
+                    global_result["c_L"][j] * tcal_ref_vals[i_ant, i_spw, 1]
+                )
 
     ds["tau_zenith"] = (("scan", "antenna", "spw"), tau_zenith)
     ds["tau_err"] = (("scan", "antenna", "spw"), tau_err)
@@ -301,65 +294,6 @@ def _residuals(
     return np.concatenate(
         [(tsys_R - (T0_R + pred)) / sigma_R, (tsys_L - (T0_L + pred)) / sigma_L]
     )
-
-
-def _residuals_global(
-    p: np.ndarray,
-    z_list: list[np.ndarray],
-    tsys_R_list: list[np.ndarray],
-    tsys_L_list: list[np.ndarray],
-    sigma_R_list: list[np.ndarray],
-    sigma_L_list: list[np.ndarray],
-    Twmt: float,
-) -> np.ndarray:
-    """σ-weighted global_tau residuals.
-
-    p = [T0_R_0, T0_L_0, ..., T0_R_{N-1}, T0_L_{N-1}, tau0].
-    """
-    tau0 = p[-1]
-    parts = []
-    for k in range(len(z_list)):
-        T0_R = p[2 * k]
-        T0_L = p[2 * k + 1]
-        pred = Twmt * (1.0 - np.exp(-tau0 / np.cos(np.deg2rad(z_list[k]))))
-        parts.append((tsys_R_list[k] - (T0_R + pred)) / sigma_R_list[k])
-        parts.append((tsys_L_list[k] - (T0_L + pred)) / sigma_L_list[k])
-    return np.concatenate(parts)
-
-
-def _jac_global(
-    p: np.ndarray,
-    z_list: list[np.ndarray],
-    tsys_R_list: list[np.ndarray],
-    tsys_L_list: list[np.ndarray],
-    sigma_R_list: list[np.ndarray],
-    sigma_L_list: list[np.ndarray],
-    Twmt: float,
-) -> _sp.csr_matrix:
-    """σ-weighted analytical Jacobian for _residuals_global.
-
-    Each row is divided by the corresponding σ so that JᵀJ → inverse covariance.
-    """
-    tau0 = p[-1]
-    N = len(z_list)
-    n_total = sum(2 * len(z) for z in z_list)
-    J = np.zeros((n_total, 2 * N + 1))
-    row = 0
-    for k in range(N):
-        n_k = len(z_list[k])
-        cos_z = np.cos(np.deg2rad(z_list[k]))
-        dpred_dtau = Twmt * np.exp(-tau0 / cos_z) / cos_z
-        inv_sR = 1.0 / sigma_R_list[k]
-        inv_sL = 1.0 / sigma_L_list[k]
-        # R rows
-        J[row : row + n_k, 2 * k] = -inv_sR
-        J[row : row + n_k, -1] = -dpred_dtau * inv_sR
-        row += n_k
-        # L rows
-        J[row : row + n_k, 2 * k + 1] = -inv_sL
-        J[row : row + n_k, -1] = -dpred_dtau * inv_sL
-        row += n_k
-    return _sp.csr_matrix(J)
 
 
 def _residuals_tcal(
@@ -681,11 +615,7 @@ def _fit_tau_per_antenna(
     }
 
 
-def _fit_global(
-    screens: list[dict],
-    *,
-    tcal_mode: bool = False,
-) -> dict:
+def _fit_global(screens: list[dict]) -> dict:
     """σ-weighted robust global fit over all passing antennas for one (scan, spw).
 
     Single-pass `soft_l1` loss; one physical bound set (no escalation ladder).
@@ -708,52 +638,6 @@ def _fit_global(
     T0_R_init = [float(s["T0_R"]) for s in screens]
     T0_L_init = [float(s["T0_L"]) for s in screens]
 
-    if not tcal_mode:
-        n_params = 2 * N + 1
-        p0 = []
-        for k in range(N):
-            p0.extend([T0_R_init[k], T0_L_init[k]])
-        p0.append(min(tau_init, _TAU_HI * 0.9))
-        lb = [0.0, 0.0] * N + [0.0]
-        ub = [_TR_UPPER, _TR_UPPER] * N + [_TAU_HI]
-        try:
-            res = least_squares(
-                _residuals_global,
-                p0,
-                args=(
-                    z_list,
-                    tsys_R_list,
-                    tsys_L_list,
-                    sigma_R_list,
-                    sigma_L_list,
-                    Twmt,
-                ),
-                bounds=(lb, ub),
-                jac=_jac_global,
-                loss="soft_l1",
-                f_scale=_SOFT_L1_FSCALE,
-            )
-        except Exception:
-            return {"reason": "fit_failed"}
-        tau0 = float(res.x[-1])
-        tau_err_val = _tau_err_from_jac(res.jac, res.fun, n_params)
-        dof = max(1, len(res.fun) - n_params)
-        reduced_chi2 = float(np.sum(res.fun**2)) / dof
-        poorly_identified = (
-            not np.isfinite(tau_err_val)
-            or tau0 <= 0.0
-            or tau_err_val / max(tau0, 1e-9) > _TAU_REL_ERR_MAX
-        )
-        return {
-            "reason": "poorly_identified" if poorly_identified else "ok",
-            "tau0": tau0,
-            "tau_err": tau_err_val,
-            "reduced_chi2": reduced_chi2,
-            "T0_R": [float(res.x[2 * k]) for k in range(N)],
-            "T0_L": [float(res.x[2 * k + 1]) for k in range(N)],
-        }
-
-    # tcal_mode: single physical bound set, no escalation ladder.
     n_params = 4 * N + 1
     p0 = []
     for k in range(N):
@@ -856,10 +740,8 @@ def _build_global_tasks(
     weather_T_vals: np.ndarray,
     freq_vals: np.ndarray,
     t_mean: np.ndarray | None,
-    *,
-    tcal_mode: bool,
 ):
-    """Yield ``((i_scan, i_spw), kwargs)`` for every global/tcal cell.
+    """Yield ``((i_scan, i_spw), kwargs)`` for every tcal_solve cell.
 
     Each task carries every antenna's screening inputs for this (scan, spw),
     so the worker performs screening + the global fit without further
@@ -892,7 +774,6 @@ def _build_global_tasks(
                 "freq_Hz": freq_Hz,
                 "tau_upper": _TAU_HI,
                 "Twmt_override": twmt,
-                "tcal_mode": tcal_mode,
             }
             yield ((i_scan, i_spw), kw)
 
@@ -911,7 +792,6 @@ def _global_worker(args: tuple) -> tuple:
     freq_Hz = kwargs["freq_Hz"]
     tau_upper = kwargs["tau_upper"]
     Twmt_override = kwargs["Twmt_override"]
-    tcal_mode = kwargs["tcal_mode"]
 
     screens: list[dict | None] = []
     screen_reasons: list[str] = []
@@ -938,7 +818,7 @@ def _global_worker(args: tuple) -> tuple:
 
     passing_idx = [i for i, _ in passing]
     passing_screens = [s for _, s in passing]
-    global_result = _fit_global(passing_screens, tcal_mode=tcal_mode)
+    global_result = _fit_global(passing_screens)
     return key, {
         "screen_reasons": screen_reasons,
         "passing_idx": passing_idx,

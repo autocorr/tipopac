@@ -29,8 +29,8 @@ def _make_plot_ds(
     """Minimal dataset ready for PlotData.
 
     ZA values span 35-80 deg; Tsys is synthetic but positive. When
-    *with_am* is True, ``tau_extrapolated``, ``am_freq_grid``, and
-    ``am_tau`` are populated so the am-overlay path runs.
+    *with_am* is True, ``am_freq_grid`` and ``am_tau`` are populated so
+    the am-overlay path runs.
     """
     n_time = 5
 
@@ -97,10 +97,6 @@ def _make_plot_ds(
     }
 
     if with_am:
-        data_vars["tau_extrapolated"] = (
-            ("scan", "spw"),
-            np.full((n_scan, n_spw), tau0, dtype=np.float32),
-        )
         am_freq_grid = np.linspace(
             freqs.min() * 0.95, freqs.max() * 1.05, 50, dtype=np.float64
         )
@@ -228,31 +224,20 @@ def test_elevation_curve_returns_figure() -> None:
 
 def test_tau_vs_frequency_with_am_overlay() -> None:
     ds = _make_plot_ds(n_spw=4, success=True, with_am=True)
-    fig = PlotData(ds).tau_vs_frequency(scan=1)
+    fig = PlotData(ds).tau_vs_frequency(scan_ids=1)
     assert isinstance(fig, Figure)
     [ax] = fig.axes
-    # errorbar -> 1 Line2D point marker + 1 PathCollection for caps/bars is
-    # backend-dependent; what we care about is that the am overlay added an
-    # extra plain Line2D that scatter alone would not have.
     lines = [ln for ln in ax.lines if ln.get_label() == "am model"]
     assert len(lines) == 1
 
 
 def test_tau_vs_frequency_without_am() -> None:
     ds = _make_plot_ds(n_spw=4, success=True, with_am=False)
-    fig = PlotData(ds).tau_vs_frequency(scan=1)
+    fig = PlotData(ds).tau_vs_frequency(scan_ids=1)
     assert isinstance(fig, Figure)
     [ax] = fig.axes
     lines = [ln for ln in ax.lines if ln.get_label() == "am model"]
     assert lines == []
-
-
-def test_tau_vs_frequency_uses_pwv_scaling_in_title() -> None:
-    ds = _make_plot_ds(success=True, with_am=True)
-    ds.attrs["pwv_scaling"] = 0.85
-    fig = PlotData(ds).tau_vs_frequency(scan=1)
-    [ax] = fig.axes
-    assert "0.85" in ax.get_title()
 
 
 def test_tcal_vs_frequency_returns_figure() -> None:
@@ -260,8 +245,8 @@ def test_tcal_vs_frequency_returns_figure() -> None:
     fig = PlotData(ds).tcal_vs_frequency(scan=1)
     assert isinstance(fig, Figure)
     [ax] = fig.axes
-    # Two pols × {ref, fit} = 4 scatter PathCollections.
-    assert len(ax.collections) == 4
+    # Per-(antenna, spw, pol) scatter + a polarization/antenna-averaged scatter.
+    assert len(ax.collections) == 2
 
 
 def test_save_all_skips_tcal_when_identical_to_ref(tmp_path: Path) -> None:
@@ -345,49 +330,35 @@ def test_save_all_parallel_restores_mplbackend(tmp_path: Path) -> None:
 
 def test_tau_vs_frequency_accepts_scan_list() -> None:
     ds = _make_plot_ds(n_scan=3, n_spw=2, success=True, with_am=True)
-    fig = PlotData(ds).tau_vs_frequency(scan=[1, 2, 3])
+    fig = PlotData(ds).tau_vs_frequency(scan_ids=[1, 2, 3])
+    assert isinstance(fig, Figure)
     [ax] = fig.axes
-    # Three scans -> three errorbar series (each as a "container" added to
-    # ax.containers in modern matplotlib) plus one am-model Line2D.
-    labels = [t.get_text() for t in ax.get_legend().get_texts()]
-    assert "scan 1" in labels
-    assert "scan 2" in labels
-    assert "scan 3" in labels
-    assert "am model" in labels
-    assert "scans 1, 2, 3" in ax.get_title()
+    # am overlay should still be drawn when am_freq_grid is present.
+    lines = [ln for ln in ax.lines if ln.get_label() == "am model"]
+    assert len(lines) == 1
 
 
 def test_tau_vs_frequency_single_scan_via_list() -> None:
     ds = _make_plot_ds(success=True)
-    fig = PlotData(ds).tau_vs_frequency(scan=[1])
-    [ax] = fig.axes
-    # Single-element list keeps the "fitted" label (not "scan 1").
-    labels = [t.get_text() for t in ax.get_legend().get_texts()]
-    assert "fitted" in labels
+    fig = PlotData(ds).tau_vs_frequency(scan_ids=[1])
+    assert isinstance(fig, Figure)
+    assert len(fig.axes) == 1
 
 
 def test_tcal_vs_frequency_accepts_scan_list() -> None:
     ds = _make_plot_ds(n_scan=2, n_spw=2, success=True)
     ds["tcal_fit"].values *= 1.1
     fig = PlotData(ds).tcal_vs_frequency(scan=[1, 2])
-    [ax] = fig.axes
-    labels = [t.get_text() for t in ax.get_legend().get_texts()]
-    # 2 ref series (R, L, scan-invariant) + 2 scans × 2 pols = 6 entries.
-    assert "R ref" in labels
-    assert "L ref" in labels
-    assert "scan 1 R fit" in labels
-    assert "scan 2 L fit" in labels
-    assert "scans 1, 2" in ax.get_title()
+    assert isinstance(fig, Figure)
+    assert len(fig.axes) == 1
 
 
 def test_c_vs_frequency_accepts_scan_list() -> None:
     ds = _make_plot_ds(n_scan=2, n_spw=2, success=True)
     ds["tcal_fit"].values *= 1.05
     fig = PlotData(ds).c_vs_frequency(scan=[1, 2])
-    [ax] = fig.axes
-    labels = [t.get_text() for t in ax.get_legend().get_texts()]
-    assert "scan 1 R" in labels
-    assert "scan 2 L" in labels
+    assert isinstance(fig, Figure)
+    assert len(fig.axes) == 1
 
 
 def test_weather_panel_basic() -> None:

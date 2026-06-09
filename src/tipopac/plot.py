@@ -29,7 +29,6 @@ from matplotlib.colors import ListedColormap
 from matplotlib.figure import Figure
 from matplotlib.ticker import AutoMinorLocator
 
-from tipopac import schema
 from tipopac.physics import k2nt, tsys_model, weighted_mean_atm_T
 
 __all__ = ["PlotData"]
@@ -559,9 +558,9 @@ class PlotData:
                 )
             )
 
-        # Tcal plot only when fit and reference actually differ — in legacy
-        # modes (tau_per_antenna, global_tau) tcal_fit is broadcast from
-        # tcal_ref so the plot would be redundant.
+        # Tcal plot only when fit and reference actually differ — in
+        # tau_per_antenna mode tcal_fit is broadcast from tcal_ref so the
+        # plot would be redundant.
         fit_b, ref_b = xr.broadcast(self.ds["tcal_fit"], self.ds["tcal_ref"])
         if not np.allclose(fit_b.values, ref_b.values, equal_nan=True):
             for scan_id in scan_ids:

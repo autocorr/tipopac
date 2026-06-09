@@ -291,7 +291,7 @@ def test_write_opacity_roundtrip(tmp_path: Path) -> None:
 
     assert MSReader.supports(MS_PATH), f"tip_test.ms not found at {MS_PATH}"
     ds = MSReader(MS_PATH).read()
-    fit_dataset(ds, "global_tau")
+    fit_dataset(ds, "tau_per_antenna")
     out = tmp_path / "test_opacity.cal"
     write_opacity(ds, out)
 
