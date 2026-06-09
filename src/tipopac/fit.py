@@ -242,25 +242,44 @@ def _compute_tsys(ds: xr.Dataset) -> np.ndarray:
 
 
 def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
-    """Per-sample σ_Tsys from radiometer-equation error propagation.
-
-    Derivation. Tsys is formed from switched-power: with S = switched_sum,
-    D = switched_diff, T_c = tcal_ref:
-        Tsys = (S / 2) · T_c / D
-    In steady state D ≈ T_c, so ∂Tsys/∂D ≈ -Tsys / D ≈ -Tsys / T_c. The
-    switched-difference noise from a Dicke-style accumulation over total
-    integration time τ_int is σ_D ≈ √2 · Tsys / √(Δν · τ_int) (per-state
-    contributions add in quadrature). Dropping the S-side correlation term
-    (it cancels in steady state) and the σ_S contribution (sub-dominant
-    when Tsys ≫ T_c), the dominant propagation gives:
+    """Per-sample σ_Tsys from switched-power error propagation.
 
         σ_Tsys ≈ √2 · Tsys² / (T_c · √(Δν · τ_int))
 
-    The Tsys/T_c amplification factor (~10–60× for VLA bands) is the
-    physically essential part — dropping it would mis-scale σ by that
-    factor and cause 4σ residual rejection to trip on most samples.
-    Δν: per-spw bandwidth (coord). τ_int: per-sample exposure_time. T_c:
-    tcal_ref per (antenna, spw, pol). See plan: design/model_refactor.md §1.1.
+    Why Tsys² and not the usual radiometer-equation Tsys. VLA switched
+    power forms Tsys = (S/2) · T_c / D from two correlator accumulators
+    (S = switched_sum, D = switched_diff). Unlike a total-power
+    measurement where the receiver gain G is calibrated externally,
+    here G is derived from D itself via G ≈ D/T_c. The noise diode is
+    the on-line calibrator, and its SNR — D over σ_D ≈ T_c · √(Δν τ) /
+    Tsys — sets the floor. The fractional error in D therefore
+    propagates one-for-one into Tsys, with a Tsys/T_c amplification
+    over the naive σ = Tsys/√(Δν τ). For VLA Tsys/T_c spans 10–50
+    across bands, so σ_Tsys runs 10–70× the naive value; dropping the
+    amplification trips the 4σ residual rejection on most samples.
+
+    The full propagation drops the σ_S contribution (sub-dominant by
+    ~(2 Tsys/T_c)²) and uses Cov(S, D) ≈ 0 in steady state, giving the
+    expression above. Empirically (``run/sigma_tsys``), a multiple
+    regression of detrended-Tsys MAD scatter over ~6000 cells gives
+    (log Tsys, log T_c) exponents (+1.82, −0.89) vs the predicted
+    (+2, −1) and the naive (+1, 0). The absolute normalization comes
+    out ~1.8× low; about √2 of that is the per-state-vs-total-interval
+    ambiguity in ``exposure_time`` for the Dicke accumulation, the
+    rest residual gain drift and 3-bit quantization noise.
+
+    T_c is ``tcal_ref`` rather than the solve-mode ``tcal_fit``:
+    empirically that choice gives the cleaner σ, since ``tcal_fit``
+    carries trajectory noise from the near-degenerate (T_0, c, τ)
+    fit ridge. Computing σ here, pre-fit, also makes the noise model
+    identical across fit modes.
+
+    Inputs:
+        Δν      — ``bandwidth`` coord (per spw), Hz
+        τ_int   — ``exposure_time`` (per scan, time), s
+        T_c     — ``tcal_ref`` (per antenna, spw, pol), K
+
+    See ``design/design.md`` §5.3.
     """
     n_scan, n_ant, n_spw, n_pol, n_time = tsys.shape
     tcal = ds["tcal_ref"].values  # (ant, spw, pol)
