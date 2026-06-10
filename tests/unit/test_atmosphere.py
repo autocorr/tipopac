@@ -9,7 +9,7 @@ import pytest
 import xarray as xr
 
 from tipopac import schema
-from tipopac.atmosphere import attach_profile
+from tipopac.atmosphere import _MJD_UNIX_EPOCH, _mjd_s_to_unix_s, attach_profile
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +118,36 @@ def _make_fitted_ds(
             "mode": "tcal_solve",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# _mjd_s_to_unix_s
+# ---------------------------------------------------------------------------
+
+
+def test_mjd_s_to_unix_s_at_unix_epoch() -> None:
+    """MJD of the Unix epoch must map to Unix second 0."""
+    assert _mjd_s_to_unix_s(_MJD_UNIX_EPOCH * 86400.0) == 0.0
+
+
+def test_mjd_s_to_unix_s_one_day_after_epoch() -> None:
+    """One MJD day after the Unix epoch is exactly 86400 Unix seconds."""
+    assert _mjd_s_to_unix_s((_MJD_UNIX_EPOCH + 1.0) * 86400.0) == 86400.0
+
+
+def test_mjd_s_to_unix_s_known_datetime() -> None:
+    """Round-trip through datetime for a known observation timestamp."""
+    # 5212036800.0 MJD-s is used in _make_fitted_ds with comment 2024-01-15T12:00:00 UTC.
+    unix_s = _mjd_s_to_unix_s(5212036800.0)
+    dt = datetime.fromtimestamp(unix_s, tz=timezone.utc)
+    assert dt == datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_mjd_s_to_unix_s_array() -> None:
+    """Vectorised call works element-wise on a numpy array."""
+    mjd_s = np.array([_MJD_UNIX_EPOCH * 86400.0, (_MJD_UNIX_EPOCH + 1.0) * 86400.0])
+    result = _mjd_s_to_unix_s(mjd_s)
+    np.testing.assert_array_equal(result, [0.0, 86400.0])
 
 
 # ---------------------------------------------------------------------------

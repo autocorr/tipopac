@@ -39,6 +39,19 @@ class _NoPressureLevelData(RuntimeError):
 _log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Time constants and helpers
+# ---------------------------------------------------------------------------
+
+# MJD value of the Unix epoch 1970-01-01 00:00:00 UTC.
+_MJD_UNIX_EPOCH: float = 40587.0
+
+
+def _mjd_s_to_unix_s(mjd_s: float | np.ndarray) -> float | np.ndarray:
+    """Convert MJD seconds to Unix seconds."""
+    return mjd_s - _MJD_UNIX_EPOCH * 86400.0
+
+
+# ---------------------------------------------------------------------------
 # VLA site constants
 # ---------------------------------------------------------------------------
 
@@ -287,12 +300,8 @@ def _utc_date_range(
     """UTC date span covering all scans, as ``("YYYY-MM-DD", "YYYY-MM-DD")``."""
     t_min = float(np.nanmin(scan_starts_mjd_s))
     t_max = float(np.nanmax(scan_ends_mjd_s))
-    dt_min = datetime.fromtimestamp(
-        (t_min / 86400.0 - 40587.0) * 86400.0, tz=timezone.utc
-    )
-    dt_max = datetime.fromtimestamp(
-        (t_max / 86400.0 - 40587.0) * 86400.0, tz=timezone.utc
-    )
+    dt_min = datetime.fromtimestamp(_mjd_s_to_unix_s(t_min), tz=timezone.utc)
+    dt_max = datetime.fromtimestamp(_mjd_s_to_unix_s(t_max), tz=timezone.utc)
     return dt_min.strftime("%Y-%m-%d"), dt_max.strftime("%Y-%m-%d")
 
 
@@ -313,7 +322,7 @@ def _pick_hourly_per_scan_and_clip(
     import amwrap as _amwrap
 
     # MJD seconds → Unix seconds.
-    scan_unix_s = (scan_starts_mjd_s / 86400.0 - 40587.0) * 86400.0
+    scan_unix_s = _mjd_s_to_unix_s(scan_starts_mjd_s)
     # For each scan, find closest hour. (n_scan, n_hour) abs-diff matrix.
     diff = np.abs(scan_unix_s[:, None] - hour_unix_s[None, :])
     hour_idx = np.argmin(diff, axis=1)  # (n_scan,)
@@ -373,9 +382,7 @@ def _pick_climatology_for_date(obs_time_mjd_s: float) -> str:
     Apr–Sep → midlatitude_summer; Oct–Mar → midlatitude_winter.
     VLA (34° N) is well into the northern mid-latitudes so this is unambiguous.
     """
-    obs_dt = datetime.fromtimestamp(
-        (obs_time_mjd_s / 86400.0 - 40587.0) * 86400.0, tz=timezone.utc
-    )
+    obs_dt = datetime.fromtimestamp(_mjd_s_to_unix_s(obs_time_mjd_s), tz=timezone.utc)
     return "midlatitude_summer" if 4 <= obs_dt.month <= 9 else "midlatitude_winter"
 
 
