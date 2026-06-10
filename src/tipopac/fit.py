@@ -242,37 +242,24 @@ def _compute_tsys(ds: xr.Dataset) -> np.ndarray:
 
 
 def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
-    """Per-sample σ_Tsys from switched-power error propagation.
+    """Per-sample σ_Tsys from error propagation on the switched-power.
+
+    The system temperature (Tsys) is calculated from the VLA switched power as:
+
+        Tsys = (S/2) · T_c / D
+
+    for the switched sum "S" (P_on + P_off), the switched difference "D" (P_on
+    - P_off), and "T_c" is the calibration device temperature. Unlike a
+    total-power measurement where the receiver gain G is calibrated externally,
+    here G is derived from D via G = D/T_c. Propagating the uncertainties in S
+    and D and dropping second order terms it can be shown that:
 
         σ_Tsys ≈ √2 · Tsys² / (T_c · √(Δν · τ_int))
 
-    Why Tsys² and not the usual radiometer-equation Tsys. VLA switched
-    power forms Tsys = (S/2) · T_c / D from two correlator accumulators
-    (S = switched_sum, D = switched_diff). Unlike a total-power
-    measurement where the receiver gain G is calibrated externally,
-    here G is derived from D itself via G ≈ D/T_c. The noise diode is
-    the on-line calibrator, and its SNR — D over σ_D ≈ T_c · √(Δν τ) /
-    Tsys — sets the floor. The fractional error in D therefore
-    propagates one-for-one into Tsys, with a Tsys/T_c amplification
-    over the naive σ = Tsys/√(Δν τ). For VLA Tsys/T_c spans 10–50
-    across bands, so σ_Tsys runs 10–70× the naive value; dropping the
-    amplification trips the 4σ residual rejection on most samples.
-
-    The full propagation drops the σ_S contribution (sub-dominant by
-    ~(2 Tsys/T_c)²) and uses Cov(S, D) ≈ 0 in steady state, giving the
-    expression above. Empirically (``run/sigma_tsys``), a multiple
-    regression of detrended-Tsys MAD scatter over ~6000 cells gives
-    (log Tsys, log T_c) exponents (+1.82, −0.89) vs the predicted
-    (+2, −1) and the naive (+1, 0). The absolute normalization comes
-    out ~1.8× low; about √2 of that is the per-state-vs-total-interval
-    ambiguity in ``exposure_time`` for the Dicke accumulation, the
-    rest residual gain drift and 3-bit quantization noise.
-
-    T_c is ``tcal_ref`` rather than the solve-mode ``tcal_fit``:
-    empirically that choice gives the cleaner σ, since ``tcal_fit``
-    carries trajectory noise from the near-degenerate (T_0, c, τ)
-    fit ridge. Computing σ here, pre-fit, also makes the noise model
-    identical across fit modes.
+    T_c is ``tcal_ref`` rather than the solve-mode ``tcal_fit``: empirically
+    that choice gives the cleaner σ, since ``tcal_fit`` carries trajectory
+    noise from the near-degenerate (T_0, c, τ) fit ridge. Computing σ here,
+    pre-fit, also makes the noise model identical across fit modes.
 
     Inputs:
         Δν      — ``bandwidth`` coord (per spw), Hz
