@@ -22,6 +22,8 @@ import astropy.units as u
 import numpy as np
 import xarray as xr
 
+from tipopac.timeutils import mjd_s_to_unix_s as _mjd_s_to_unix_s
+
 __all__ = ["attach_profile"]
 
 
@@ -37,19 +39,6 @@ class _NoPressureLevelData(RuntimeError):
 
 
 _log = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Time constants and helpers
-# ---------------------------------------------------------------------------
-
-# MJD value of the Unix epoch 1970-01-01 00:00:00 UTC.
-_MJD_UNIX_EPOCH: float = 40587.0
-
-
-def _mjd_s_to_unix_s(mjd_s: float | np.ndarray) -> float | np.ndarray:
-    """Convert MJD seconds to Unix seconds."""
-    return mjd_s - _MJD_UNIX_EPOCH * 86400.0
-
 
 # ---------------------------------------------------------------------------
 # VLA site constants

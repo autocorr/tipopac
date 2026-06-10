@@ -11,8 +11,7 @@ import numpy as np
 import xarray as xr
 
 from tipopac.atmgrid import PwvGrid
-
-_READERS: list = []  # populated on first call to avoid import-time casatools load
+from tipopac.readers import detect_reader as _detect_reader
 
 # Public Stage A+B modes (independent τ fit + per-antenna PWV anchor;
 # `design/independent_tau_fit.md`). The values are the Stage-A backend
@@ -21,26 +20,6 @@ _INDEPENDENT_TO_BACKEND: dict[str, str] = {
     "independent_tau": "tau_per_antenna",
     "independent_tau_solve": "tcal_solve",
 }
-
-
-def _get_readers() -> list:
-    global _READERS
-    if not _READERS:
-        from tipopac.readers.ms import MSReader
-        from tipopac.readers.sdm import SDMReader
-
-        _READERS = [MSReader, SDMReader]
-    return _READERS
-
-
-def _detect_reader(path: Path):
-    for R in _get_readers():
-        if R.supports(path):
-            return R
-    raise ValueError(
-        f"{path} is not a recognised MS or SDM path "
-        f"(no reader's supports() returned True)"
-    )
 
 
 def _software_versions() -> dict[str, str]:

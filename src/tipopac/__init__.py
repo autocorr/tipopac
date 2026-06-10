@@ -15,4 +15,15 @@ del _os, _k
 
 from tipopac.api import Result, TippingAnalysis, tipopac  # noqa: E402
 
-__all__ = ["Result", "TippingAnalysis", "tipopac"]
+__all__ = ["Result", "TippingAnalysis", "summarize_skydip_scans", "tipopac"]
+
+
+# Lazy: defer `tipopac.summary` import until first attribute access so
+# `python -m tipopac.summary` does not double-load the module via the
+# package's eager import path.
+def __getattr__(name: str):
+    if name == "summarize_skydip_scans":
+        from tipopac.summary import summarize_skydip_scans
+
+        return summarize_skydip_scans
+    raise AttributeError(f"module 'tipopac' has no attribute {name!r}")

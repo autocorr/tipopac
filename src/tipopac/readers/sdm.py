@@ -31,6 +31,7 @@ from tipopac.bands import (
     select_spws_by_band,
     validate_scan_selection,
 )
+from tipopac.readers.base import SkydipScanInfo
 
 
 class SDMReader:
@@ -65,6 +66,37 @@ class SDMReader:
         bands: Sequence[str] | None = None,
     ) -> "SDMReader":
         return cls(path, scans=scans, bands=bands)
+
+    @classmethod
+    def list_skydip_scans(cls, path: Path) -> list[SkydipScanInfo]:
+        """Return scan-level metadata for every DO_SKYDIP scan in `path`.
+
+        Lightweight: opens the SDM and reads Scan / SpectralWindow /
+        SysPower (the same tables the full read uses to derive scan
+        metadata), without any pointing / weather / caldevice load. Used
+        by ``tipopac.summary``.
+        """
+        import sdmpy
+
+        sdm = sdmpy.SDM(str(Path(path)), use_xsd=False)
+        spw_freq, _, _ = _read_spectral_window(sdm)
+        scan_ids, scan_spws, scan_t_start, _ = _read_scan_meta(sdm)
+
+        out: list[SkydipScanInfo] = []
+        for sc in scan_ids:
+            spws = tuple(scan_spws[sc])
+            bands = tuple(
+                sorted({band_for_frequency(float(spw_freq[s])) for s in spws})
+            )
+            out.append(
+                SkydipScanInfo(
+                    scan_id=sc,
+                    start_mjd_s=scan_t_start[sc],
+                    spw_ids=spws,
+                    bands=bands,
+                )
+            )
+        return out
 
     def read(self) -> xr.Dataset:
         import sdmpy

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -18,3 +19,18 @@ class TippingReader(Protocol):
     def from_path(cls, path: Path) -> "TippingReader": ...
 
     def read(self) -> xr.Dataset: ...
+
+
+@dataclass(frozen=True)
+class SkydipScanInfo:
+    """Lightweight DO_SKYDIP scan record used by `summarize_skydip_scans`.
+
+    Populated by ``MSReader.list_skydip_scans`` /
+    ``SDMReader.list_skydip_scans`` without invoking the full dataset
+    read.
+    """
+
+    scan_id: int
+    start_mjd_s: float
+    spw_ids: tuple[int, ...]
+    bands: tuple[str, ...]

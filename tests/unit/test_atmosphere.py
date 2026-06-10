@@ -9,7 +9,9 @@ import pytest
 import xarray as xr
 
 from tipopac import schema
-from tipopac.atmosphere import _MJD_UNIX_EPOCH, _mjd_s_to_unix_s, attach_profile
+from tipopac.atmosphere import attach_profile
+from tipopac.timeutils import MJD_UNIX_EPOCH as _MJD_UNIX_EPOCH
+from tipopac.timeutils import mjd_s_to_unix_s as _mjd_s_to_unix_s
 
 
 # ---------------------------------------------------------------------------

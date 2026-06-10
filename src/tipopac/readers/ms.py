@@ -27,6 +27,7 @@ from tipopac.bands import (
     select_spws_by_band,
     validate_scan_selection,
 )
+from tipopac.readers.base import SkydipScanInfo
 
 
 class MSReader:
@@ -62,6 +63,34 @@ class MSReader:
         bands: Sequence[str] | None = None,
     ) -> "MSReader":
         return cls(path, scans=scans, bands=bands)
+
+    @classmethod
+    def list_skydip_scans(cls, path: Path) -> list[SkydipScanInfo]:
+        """Return scan-level metadata for every DO_SKYDIP scan in `path`.
+
+        Lightweight: reads SPECTRAL_WINDOW and MS-metadata only — no
+        pointing / weather / syspower / caldevice load. Used by
+        ``tipopac.summary``.
+        """
+        p = Path(path)
+        spw_freq, _ = _read_spectral_window(p)
+        scan_ids, scan_spws, scan_t_start, _ = _read_scan_meta(p)
+
+        out: list[SkydipScanInfo] = []
+        for sc in scan_ids:
+            spws = tuple(scan_spws[sc])
+            bands = tuple(
+                sorted({band_for_frequency(float(spw_freq[s])) for s in spws})
+            )
+            out.append(
+                SkydipScanInfo(
+                    scan_id=sc,
+                    start_mjd_s=scan_t_start[sc],
+                    spw_ids=spws,
+                    bands=bands,
+                )
+            )
+        return out
 
     def read(self) -> xr.Dataset:
         path = self._path
