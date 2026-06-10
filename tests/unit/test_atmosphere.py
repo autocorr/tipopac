@@ -172,6 +172,45 @@ def test_attach_profile_falls_back_to_afgl_on_fetch_error(
     assert "atm_pressure" in ds.data_vars
 
 
+def test_attach_profile_pre_2021_skips_open_meteo_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Observations before the gfs_hrrr archive cutoff bypass open-meteo entirely."""
+    import tipopac.atmosphere as atm_mod
+
+    def _fail_if_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError("open-meteo must not be called for pre-2021 dates")
+
+    monkeypatch.setattr(atm_mod, "_fetch_open_meteo", _fail_if_called)
+
+    ds = _make_fitted_ds(freqs_Hz=[22.2e9])
+    # MJD seconds for 2020-06-01T12:00:00 UTC — clearly before 2021-03-23.
+    pre_cutoff_mjd_s = 5097729600.0
+    n_scan = ds.sizes["scan"]
+    ds = ds.assign_coords(
+        scan_time_start=(
+            ("scan",),
+            np.array(
+                [pre_cutoff_mjd_s + 120.0 * i for i in range(n_scan)], dtype=np.float64
+            ),
+        ),
+        scan_time_end=(
+            ("scan",),
+            np.array(
+                [pre_cutoff_mjd_s + 120.0 * i + 90.0 for i in range(n_scan)],
+                dtype=np.float64,
+            ),
+        ),
+    )
+
+    attach_profile(ds, source="open-meteo", afgl_climatology="auto")
+
+    # June obs → summer climatology
+    assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_summer"
+    assert "open_meteo_query" not in ds.attrs
+    assert "atm_pressure" in ds.data_vars
+
+
 def test_attach_profile_open_meteo_called_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -187,9 +226,7 @@ def test_attach_profile_open_meteo_called_once(
         # 2 hourly slices x 2 levels
         pressure = np.array([800.0, 500.0]) * u.hPa
         temperature = np.array([[280.0, 240.0], [281.0, 241.0]]) * u.K
-        h2o_vmr = (
-            np.array([[1e-3, 1e-5], [1.1e-3, 1.05e-5]]) * u.dimensionless_unscaled
-        )
+        h2o_vmr = np.array([[1e-3, 1e-5], [1.1e-3, 1.05e-5]]) * u.dimensionless_unscaled
         hour_unix_s = np.array([0.0, 3600.0])
         return pressure, temperature, h2o_vmr, hour_unix_s, {"endpoint": "fake"}
 

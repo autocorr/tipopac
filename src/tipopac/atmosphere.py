@@ -59,6 +59,10 @@ _OM_ARCHIVE_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 _OM_MODEL = "gfs_hrrr"
 _OM_FORECAST_HORIZON_DAYS = 16  # beyond this age, use archive endpoint
 _OM_TIMEOUT_S = 5.0
+# Earliest date with pressure-level data in the gfs_hrrr historical-forecast
+# archive (empirical lower bound, no authoritative reference). Observations
+# starting before this are routed to AFGL without an HTTP round-trip.
+_OM_HRRR_ARCHIVE_START = "2021-03-23"
 
 # Pressure levels requested from open-meteo (hPa, coarse grid is fine for am).
 _OM_PRESSURE_LEVELS: list[int] = [
@@ -118,7 +122,9 @@ def attach_profile(
       scan. Retries with backoff governed by ``retry_delays_s`` (default
       4 attempts at 0, 5, 15+45 s offsets) on transient failures; on
       deterministic failure (``_NoPressureLevelData``) bails to AFGL
-      immediately.
+      immediately. If the observation starts before
+      ``_OM_HRRR_ARCHIVE_START`` (the gfs_hrrr pressure-level archive
+      lower bound), the network call is skipped and AFGL is used.
     * ``source="afgl"`` skips the network call entirely.
     * ``afgl_climatology="auto"`` resolves to summer/winter from the
       observation's median month.
@@ -149,54 +155,63 @@ def attach_profile(
 
     if source == "open-meteo":
         date_start, date_end = _utc_date_range(scan_starts, scan_ends)
-        last_exc: Exception | None = None
-        for attempt, delay in enumerate((0.0,) + retry_delays_s):
-            if delay > 0:
-                _log.info(
-                    "open-meteo attempt %d/%d after %.0fs backoff",
-                    attempt + 1,
-                    len(retry_delays_s) + 1,
-                    delay,
-                )
-                time.sleep(delay)
-            try:
-                p_grid, t_grid, h_grid, hour_unix_s, meta = _fetch_open_meteo(
-                    _VLA_LAT, _VLA_LON, date_start, date_end
-                )
-                (
-                    pressure_q,
-                    temperature_per_scan,
-                    h2o_vmr_per_scan,
-                ) = _pick_hourly_per_scan_and_clip(
-                    p_grid,
-                    t_grid,
-                    h_grid,
-                    hour_unix_s,
-                    scan_starts,
-                    surface_pressure,
-                )
-                open_meteo_query = meta
-                used_source = "open_meteo"
-                break
-            except _NoPressureLevelData as exc:
-                _log.warning(
-                    "open-meteo has no upper-air data for this date range "
-                    "(%s); falling back to AFGL %r",
-                    exc,
-                    afgl_climatology,
-                )
-                last_exc = exc
-                break
-            except Exception as exc:
-                last_exc = exc
-                _log.warning("open-meteo attempt %d failed: %s", attempt + 1, exc)
-        else:
+        if date_start < _OM_HRRR_ARCHIVE_START:
             _log.warning(
-                "open-meteo exhausted %d attempts; falling back to AFGL %r (last: %s)",
-                len(retry_delays_s) + 1,
+                "observation start %s predates open-meteo gfs_hrrr "
+                "pressure-level archive (%s); using AFGL %r without HTTP request",
+                date_start,
+                _OM_HRRR_ARCHIVE_START,
                 afgl_climatology,
-                last_exc,
             )
+        else:
+            last_exc: Exception | None = None
+            for attempt, delay in enumerate((0.0,) + retry_delays_s):
+                if delay > 0:
+                    _log.info(
+                        "open-meteo attempt %d/%d after %.0fs backoff",
+                        attempt + 1,
+                        len(retry_delays_s) + 1,
+                        delay,
+                    )
+                    time.sleep(delay)
+                try:
+                    p_grid, t_grid, h_grid, hour_unix_s, meta = _fetch_open_meteo(
+                        _VLA_LAT, _VLA_LON, date_start, date_end
+                    )
+                    (
+                        pressure_q,
+                        temperature_per_scan,
+                        h2o_vmr_per_scan,
+                    ) = _pick_hourly_per_scan_and_clip(
+                        p_grid,
+                        t_grid,
+                        h_grid,
+                        hour_unix_s,
+                        scan_starts,
+                        surface_pressure,
+                    )
+                    open_meteo_query = meta
+                    used_source = "open_meteo"
+                    break
+                except _NoPressureLevelData as exc:
+                    _log.warning(
+                        "open-meteo has no upper-air data for this date range "
+                        "(%s); falling back to AFGL %r",
+                        exc,
+                        afgl_climatology,
+                    )
+                    last_exc = exc
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    _log.warning("open-meteo attempt %d failed: %s", attempt + 1, exc)
+            else:
+                _log.warning(
+                    "open-meteo exhausted %d attempts; falling back to AFGL %r (last: %s)",
+                    len(retry_delays_s) + 1,
+                    afgl_climatology,
+                    last_exc,
+                )
 
     if used_source is None:
         # source="afgl" path or open-meteo failure
