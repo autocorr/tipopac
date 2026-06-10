@@ -62,6 +62,50 @@ def test_nearest_idx_exact_match() -> None:
     np.testing.assert_array_equal(idx, [0, 1, 2])
 
 
+def test_constructor_stores_selection_unchanged(tmp_path: Path) -> None:
+    """`scans` / `bands` are stored raw and validated only at read()."""
+    from tipopac.readers.sdm import SDMReader
+
+    r = SDMReader.from_path(tmp_path, scans=[12], bands=["Ka", "Q"])
+    assert r._scans_requested == [12]
+    assert r._bands_requested == ["Ka", "Q"]
+    r2 = SDMReader.from_path(tmp_path)
+    assert r2._scans_requested is None
+    assert r2._bands_requested is None
+
+
+def test_apply_selection_mirrors_ms() -> None:
+    """SDM `_apply_selection` agrees with the MS reader's helper."""
+    from tipopac.readers.ms import _apply_selection as ms_apply
+    from tipopac.readers.sdm import _apply_selection as sdm_apply
+
+    spw_freq = np.array([1.5e9, 14.0e9, 22.0e9, 33.0e9])
+    scan_ids = [1, 2]
+    scan_spws = {1: [0, 1, 2], 2: [3]}
+    scan_t_start = {1: 0.0, 2: 100.0}
+    scan_t_end = {1: 90.0, 2: 190.0}
+
+    ms_out = ms_apply(
+        scan_ids,
+        dict(scan_spws),
+        dict(scan_t_start),
+        dict(scan_t_end),
+        spw_freq,
+        None,
+        None,
+    )
+    sdm_out = sdm_apply(
+        scan_ids,
+        dict(scan_spws),
+        dict(scan_t_start),
+        dict(scan_t_end),
+        spw_freq,
+        None,
+        None,
+    )
+    assert ms_out == sdm_out
+
+
 # ---------------------------------------------------------------------------
 # Slow tests — require data/tip_test.sdm (and data/tip_test.ms for parity)
 # ---------------------------------------------------------------------------
@@ -203,11 +247,11 @@ def test_sdm_ms_parity_syspower(ds_ms, ds_sdm) -> None:
     the full Scan.startTime/endTime).  We compare only at matched timestamps.
     """
     n_scan = ds_ms.sizes["scan"]
-    utc_ms = ds_ms["time_utc"].values    # (scan, time)
+    utc_ms = ds_ms["time_utc"].values  # (scan, time)
     utc_sdm = ds_sdm["time_utc"].values
 
     for var in ("switched_diff", "switched_sum"):
-        ms_arr = ds_ms[var].values   # (scan, ant, spw, pol, time)
+        ms_arr = ds_ms[var].values  # (scan, ant, spw, pol, time)
         sdm_arr = ds_sdm[var].values
         fl_ms = ds_ms["flag"].values
         fl_sdm = ds_sdm["flag"].values
@@ -216,7 +260,7 @@ def test_sdm_ms_parity_syspower(ds_ms, ds_sdm) -> None:
             jj_ms, jj_sdm = _common_time_indices(utc_ms[i], utc_sdm[i])
             if len(jj_ms) == 0:
                 continue
-            ms_v = ms_arr[i, :, :, :, jj_ms]    # (ant, spw, pol, n_common)
+            ms_v = ms_arr[i, :, :, :, jj_ms]  # (ant, spw, pol, n_common)
             sdm_v = sdm_arr[i, :, :, :, jj_sdm]
             fl_v = fl_ms[i, :, :, :, jj_ms] | fl_sdm[i, :, :, :, jj_sdm]
             valid = ~fl_v
@@ -252,7 +296,7 @@ def test_sdm_ms_parity_zenith_angle(ds_ms, ds_sdm) -> None:
     n_scan = ds_ms.sizes["scan"]
     utc_ms = ds_ms["time_utc"].values
     utc_sdm = ds_sdm["time_utc"].values
-    ms_za = ds_ms["zenith_angle"].values    # (scan, ant, time)
+    ms_za = ds_ms["zenith_angle"].values  # (scan, ant, time)
     sdm_za = ds_sdm["zenith_angle"].values
 
     for i in range(n_scan):
@@ -280,7 +324,7 @@ def test_sdm_ms_parity_weather(ds_ms, ds_sdm) -> None:
     utc_sdm = ds_sdm["time_utc"].values
 
     for var, atol in [("weather_T", 1.0), ("weather_P", 200.0), ("weather_RH", 0.02)]:
-        ms_arr = ds_ms[var].values    # (scan, time)
+        ms_arr = ds_ms[var].values  # (scan, time)
         sdm_arr = ds_sdm[var].values
         for i in range(n_scan):
             jj_ms, jj_sdm = _common_time_indices(utc_ms[i], utc_sdm[i])

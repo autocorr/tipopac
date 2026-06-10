@@ -317,7 +317,8 @@ def build_pwv_grid(
         raise ValueError(f"invalid pwv range [{pwv_min_mm}, {pwv_max_mm}]")
 
     h2o_q: u.Quantity = (
-        h2o_vmr if isinstance(h2o_vmr, u.Quantity)
+        h2o_vmr
+        if isinstance(h2o_vmr, u.Quantity)
         else np.asarray(h2o_vmr) * u.dimensionless_unscaled
     )
     pwv_unscaled = pwv_mm_from_profile(pressure, h2o_q)

@@ -8,7 +8,16 @@ import xarray as xr
 
 from tipopac import schema
 from tipopac import physics
+from tipopac.bands import band_for_frequency
 from tipopac.fit import fit_dataset
+
+
+def _band_label(freq_Hz: float) -> str:
+    """Best-effort band label for synthetic frequencies; falls back to ``L``."""
+    try:
+        return band_for_frequency(float(freq_Hz))
+    except ValueError:
+        return "L"
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +133,13 @@ def _make_tip_ds(
             "xyz": ["X", "Y", "Z"],
             "frequency": (("spw",), np.full(n_spw, freq_Hz, dtype=np.float64)),
             "bandwidth": (("spw",), np.full(n_spw, 2e9, dtype=np.float64)),
+            "band": (
+                ("spw",),
+                np.array(
+                    [_band_label(freq_Hz)] * n_spw,
+                    dtype="U4",
+                ),
+            ),
             "antenna_position": (
                 ("antenna", "xyz"),
                 np.zeros((n_ant, 3), dtype=np.float64),
@@ -351,6 +367,7 @@ def _make_tcal_ds(
             "xyz": ["X", "Y", "Z"],
             "frequency": (("spw",), np.array([freq_Hz])),
             "bandwidth": (("spw",), np.array([2e9])),
+            "band": (("spw",), np.array([_band_label(freq_Hz)], dtype="U4")),
             "antenna_position": (
                 ("antenna", "xyz"),
                 np.zeros((n_ant, 3), dtype=np.float64),

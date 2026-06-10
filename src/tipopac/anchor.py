@@ -176,8 +176,10 @@ def write_am_curve(
                 "write_am_curve assumes a single shared frequency grid"
             )
 
-    pwv_repr = float(np.nanmedian(pwv)) if np.any(np.isfinite(pwv)) else float(
-        ref_grid.pwv_unscaled_mm
+    pwv_repr = (
+        float(np.nanmedian(pwv))
+        if np.any(np.isfinite(pwv))
+        else float(ref_grid.pwv_unscaled_mm)
     )
     tau, _ = ref_grid.lookup(pwv_repr, ref_grid.freq_Hz)
 

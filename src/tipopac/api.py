@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -20,6 +21,7 @@ _INDEPENDENT_TO_BACKEND: dict[str, str] = {
     "independent_tau": "tau_per_antenna",
     "independent_tau_solve": "tcal_solve",
 }
+
 
 def _get_readers() -> list:
     global _READERS
@@ -94,6 +96,8 @@ class Result:
 def tipopac(
     path: str | Path,
     *,
+    scans: Sequence[int] | None = None,
+    bands: Sequence[str] | None = None,
     mode: str = "independent_tau_solve",
     flags_online: bool = True,
     flags_file: str | Path | None = None,
@@ -110,6 +114,15 @@ def tipopac(
     ----------
     path:
         Path to an MS or SDM (auto-detected).
+    scans:
+        DO_SKYDIP scan numbers to keep. ``None`` (default) keeps every
+        DO_SKYDIP scan in the input.
+    bands:
+        VLA receiver bands to keep (e.g. ``["Ku", "K"]``; case-
+        insensitive). ``None`` (default) keeps the high-frequency
+        receivers ``("Ku", "K", "Ka", "Q")`` where tipping-curve fits
+        are well-conditioned; pass ``bands=["L", ...]`` to opt into low
+        bands explicitly.
     mode:
         Fit mode. Defaults to ``"independent_tau_solve"`` — per-(scan, spw)
         Stage-A Tcal-solve fit followed by a per-antenna PWV anchor (Stage
@@ -143,7 +156,7 @@ def tipopac(
             f"mode must be one of {tuple(_INDEPENDENT_TO_BACKEND)!r}, got {mode!r}"
         )
 
-    ta = TippingAnalysis.from_path(path)
+    ta = TippingAnalysis.from_path(path, scans=scans, bands=bands)
     ta.apply_flags(
         online=flags_online, file=None if flags_file is None else Path(flags_file)
     )
@@ -179,10 +192,16 @@ class TippingAnalysis:
         self._grids: dict[int, PwvGrid] = {}
 
     @classmethod
-    def from_path(cls, path: str | Path) -> "TippingAnalysis":
+    def from_path(
+        cls,
+        path: str | Path,
+        *,
+        scans: Sequence[int] | None = None,
+        bands: Sequence[str] | None = None,
+    ) -> "TippingAnalysis":
         p = Path(path)
         R = _detect_reader(p)
-        ds = R.from_path(p).read()
+        ds = R.from_path(p, scans=scans, bands=bands).read()
         return cls(ds, p)
 
     def apply_flags(
@@ -222,9 +241,7 @@ class TippingAnalysis:
             return
         from tipopac.atmosphere import attach_profile
 
-        attach_profile(
-            self._ds, source=source, afgl_climatology=afgl_climatology
-        )
+        attach_profile(self._ds, source=source, afgl_climatology=afgl_climatology)
 
     def build_atm_grids(
         self,
@@ -288,8 +305,7 @@ class TippingAnalysis:
     ) -> None:
         if mode not in _INDEPENDENT_TO_BACKEND:
             raise ValueError(
-                f"mode must be one of {tuple(_INDEPENDENT_TO_BACKEND)!r}, "
-                f"got {mode!r}"
+                f"mode must be one of {tuple(_INDEPENDENT_TO_BACKEND)!r}, got {mode!r}"
             )
 
         from tipopac import fit
@@ -311,9 +327,7 @@ class TippingAnalysis:
             for i, sid in enumerate(scan_ids)
             if int(sid) in self._grids
         }
-        t_mean = compute_t_mean_grid(
-            grids_by_pos, freqs_Hz, n_scan=int(scan_ids.size)
-        )
+        t_mean = compute_t_mean_grid(grids_by_pos, freqs_Hz, n_scan=int(scan_ids.size))
 
         fit.fit_dataset(
             self._ds,

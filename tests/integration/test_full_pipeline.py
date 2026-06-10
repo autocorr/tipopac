@@ -89,3 +89,19 @@ def test_independent_tau_solve_outputs_populated(ds_independent_tau_solve):
     assert finite_mask.any(), "Stage-B PWV anchor produced no finite values"
     # σ_PWV must be positive where finite.
     assert (ds["pwv_err"].values[finite_mask] > 0).all()
+
+
+@pytest.mark.slow
+def test_independent_tau_solve_band_selection(ds_independent_tau_solve):
+    """Default `bands=None` keeps only high-frequency bands and records provenance."""
+    ds = ds_independent_tau_solve
+
+    bands_present = set(ds.coords["band"].values.tolist())
+    assert bands_present <= {"Ku", "K", "Ka", "Q"}, (
+        f"low-band SPWs survived default filter: {bands_present}"
+    )
+
+    assert ds.attrs["scans_requested"] == "all"
+    assert ds.attrs["bands_requested"] == "default_high_freq"
+    assert set(ds.attrs["selected_bands"]) == bands_present
+    assert ds.attrs["selected_scans"] == list(ds.coords["scan"].values.tolist())

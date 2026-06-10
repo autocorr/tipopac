@@ -50,6 +50,7 @@ INPUT_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
 REQUIRED_COORDS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "frequency": (("spw",), np.dtype(np.float64)),
     "bandwidth": (("spw",), np.dtype(np.float64)),
+    "band": (("spw",), np.dtype("U4")),
     "antenna_position": (("antenna", "xyz"), np.dtype(np.float64)),
     "scan_time_start": (("scan",), np.dtype(np.float64)),
     "scan_time_end": (("scan",), np.dtype(np.float64)),

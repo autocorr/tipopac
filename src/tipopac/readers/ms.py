@@ -13,19 +13,40 @@ Unit notes (confirmed against tip_test.ms):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
 
 from tipopac import schema
+from tipopac.bands import (
+    attach_selection_attrs,
+    band_for_frequency,
+    normalize_bands,
+    select_spws_by_band,
+    validate_scan_selection,
+)
 
 
 class MSReader:
-    """Read a CASA MS into the canonical xr.Dataset."""
+    """Read a CASA MS into the canonical xr.Dataset.
 
-    def __init__(self, path: Path) -> None:
+    `scans` and `bands` filter the DO_SKYDIP set at read time so excluded
+    data is never loaded. `scans=None` keeps all DO_SKYDIP scans;
+    `bands=None` keeps only the high-frequency receivers (Ku, K, Ka, Q).
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        scans: Sequence[int] | None = None,
+        bands: Sequence[str] | None = None,
+    ) -> None:
         self._path = Path(path)
+        self._scans_requested = scans
+        self._bands_requested = bands
 
     @classmethod
     def supports(cls, path: Path) -> bool:
@@ -33,8 +54,14 @@ class MSReader:
         return (p / "table.dat").exists() and (p / "SYSPOWER").is_dir()
 
     @classmethod
-    def from_path(cls, path: Path) -> "MSReader":
-        return cls(path)
+    def from_path(
+        cls,
+        path: Path,
+        *,
+        scans: Sequence[int] | None = None,
+        bands: Sequence[str] | None = None,
+    ) -> "MSReader":
+        return cls(path, scans=scans, bands=bands)
 
     def read(self) -> xr.Dataset:
         path = self._path
@@ -43,7 +70,15 @@ class MSReader:
         spw_freq, spw_bw = _read_spectral_window(path)
         scan_ids, scan_spws, scan_t_start, scan_t_end = _read_scan_meta(path)
 
-        tip_spws = sorted({s for spws in scan_spws.values() for s in spws})
+        scan_ids, scan_spws, scan_t_start, scan_t_end, tip_spws = _apply_selection(
+            scan_ids,
+            scan_spws,
+            scan_t_start,
+            scan_t_end,
+            spw_freq,
+            self._scans_requested,
+            self._bands_requested,
+        )
         spw_to_idx = {s: i for i, s in enumerate(tip_spws)}
 
         tcal_ref = _read_caldevice(path, len(ant_names), tip_spws, spw_to_idx)
@@ -71,6 +106,7 @@ class MSReader:
             wx_RH=wx_RH,
         )
 
+        attach_selection_attrs(ds, self._scans_requested, self._bands_requested)
         schema.validate(ds)
         return ds
 
@@ -78,6 +114,74 @@ class MSReader:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _apply_selection(
+    scan_ids: list[int],
+    scan_spws: dict[int, list[int]],
+    scan_t_start: dict[int, float],
+    scan_t_end: dict[int, float],
+    spw_freq: np.ndarray,
+    scans_requested: Sequence[int] | None,
+    bands_requested: Sequence[str] | None,
+) -> tuple[
+    list[int],
+    dict[int, list[int]],
+    dict[int, float],
+    dict[int, float],
+    list[int],
+]:
+    """Apply the user's scan + band selection to reader metadata.
+
+    Mirrors the SDM reader. Raises `ValueError` if the resulting set is
+    empty.
+    """
+    scan_ids = validate_scan_selection(scans_requested, scan_ids)
+    scan_spws = {sc: scan_spws[sc] for sc in scan_ids}
+    scan_t_start = {sc: scan_t_start[sc] for sc in scan_ids}
+    scan_t_end = {sc: scan_t_end[sc] for sc in scan_ids}
+
+    tip_spws_all = sorted({s for spws in scan_spws.values() for s in spws})
+
+    allowed_bands = normalize_bands(bands_requested)
+    tip_spws = select_spws_by_band(tip_spws_all, spw_freq, allowed_bands)
+    if not tip_spws:
+        observed = sorted(
+            {band_for_frequency(float(spw_freq[s])) for s in tip_spws_all}
+        )
+        raise ValueError(
+            f"no SPWs match bands={list(allowed_bands)!r}; "
+            f"observed bands in this dataset: {observed}"
+        )
+
+    keep_set = set(tip_spws)
+    kept_scan_ids: list[int] = []
+    for sc in scan_ids:
+        scan_spws[sc] = [s for s in scan_spws[sc] if s in keep_set]
+        if scan_spws[sc]:
+            kept_scan_ids.append(sc)
+    if not kept_scan_ids:
+        raise ValueError(
+            f"no scans retain any SPW after bands={list(allowed_bands)!r} "
+            "filter; widen the band selection or pick different scans"
+        )
+
+    dropped = [sc for sc in scan_ids if sc not in kept_scan_ids]
+    # When the user named scans explicitly, a band-filter drop of any of
+    # those is a contract violation — match the "raise on miss" behavior
+    # of `validate_scan_selection`.
+    if scans_requested is not None and dropped:
+        raise ValueError(
+            f"requested scan(s) {dropped} have no SPWs in "
+            f"bands={list(allowed_bands)!r}; either widen the band "
+            "selection or drop these scans from the request"
+        )
+    for sc in dropped:
+        scan_spws.pop(sc, None)
+        scan_t_start.pop(sc, None)
+        scan_t_end.pop(sc, None)
+
+    return kept_scan_ids, scan_spws, scan_t_start, scan_t_end, tip_spws
 
 
 def _read_antenna(path: Path) -> tuple[list[str], np.ndarray]:
@@ -438,6 +542,13 @@ def _build_dataset(
             "bandwidth": (
                 ("spw",),
                 spw_bw[tip_spws].astype(np.float64),
+            ),
+            "band": (
+                ("spw",),
+                np.array(
+                    [band_for_frequency(float(f)) for f in spw_freq[tip_spws]],
+                    dtype="U4",
+                ),
             ),
             "antenna_position": (
                 ("antenna", "xyz"),

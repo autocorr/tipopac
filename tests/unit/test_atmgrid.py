@@ -148,9 +148,8 @@ def test_t_sky_at_zenith_equals_tb_z() -> None:
     f = np.array([12e9, 18e9, 25e9])
     for pwv_mm in g.pwv_mm[1:-1:2]:  # off-the-end PWV values
         tau_z, tmean = g.lookup(pwv_mm, f)
-        t_sky = (
-            tmean * (1.0 - np.exp(-tau_z * airmass))
-            + _T_CMB_TOY * np.exp(-tau_z * airmass)
+        t_sky = tmean * (1.0 - np.exp(-tau_z * airmass)) + _T_CMB_TOY * np.exp(
+            -tau_z * airmass
         )
         # Reconstruct Tb_z at the same PWV by direct lookup.
         i = int(np.where(g.pwv_mm == pwv_mm)[0][0])
