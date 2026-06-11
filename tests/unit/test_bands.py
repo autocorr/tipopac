@@ -1,4 +1,4 @@
-"""Unit tests for `tipopac.bands` — band table and selection helpers."""
+"""Unit tests for `tipopac.bands` — SPW NAME parsing and selection helpers."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import pytest
 
 from tipopac.bands import (
     HIGH_FREQ_DEFAULT,
-    VLA_BANDS,
-    band_for_frequency,
+    VLA_BAND_LABELS,
+    band_for_spw_name,
     normalize_bands,
     select_spws_by_band,
     validate_scan_selection,
@@ -16,35 +16,48 @@ from tipopac.bands import (
 
 
 # ---------------------------------------------------------------------------
-# band_for_frequency
+# band_for_spw_name
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "freq_Hz, expected",
+    "name, expected",
     [
-        (1.5e9, "L"),
-        (3.0e9, "S"),
-        (6.0e9, "C"),
-        (10.0e9, "X"),
-        (14.0e9, "Ku"),
-        (22.0e9, "K"),
-        (33.0e9, "Ka"),
-        (45.0e9, "Q"),
+        # SPECTRAL_WINDOW.NAME form (upper-case band token, as seen in
+        # tip_test.{ms,sdm})
+        ("EVLA_K#A0C0#0", "K"),
+        ("EVLA_KA#A0C0#16", "Ka"),
+        ("EVLA_KU#A0C0#48", "Ku"),
+        ("EVLA_Q#A0C0#80", "Q"),
+        # Receiver.xml `<frequencyBand>` form (mixed-case) is bare but
+        # still accepted — same parser applies once the prefix is split.
+        ("EVLA_Ka", "Ka"),
+        ("EVLA_Ku", "Ku"),
+        # low bands round-trip too
+        ("EVLA_L#…", "L"),
+        ("EVLA_S#…", "S"),
+        ("EVLA_C#…", "C"),
+        ("EVLA_X#…", "X"),
     ],
 )
-def test_band_for_frequency_typical(freq_Hz: float, expected: str) -> None:
-    assert band_for_frequency(freq_Hz) == expected
+def test_band_for_spw_name_typical(name: str, expected: str) -> None:
+    assert band_for_spw_name(name) == expected
 
 
-def test_band_for_frequency_out_of_range_raises() -> None:
-    with pytest.raises(ValueError, match="outside any VLA band"):
-        band_for_frequency(100.0e9)
+def test_band_for_spw_name_empty_raises() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        band_for_spw_name("")
 
 
-def test_band_for_frequency_below_range_raises() -> None:
-    with pytest.raises(ValueError, match="outside any VLA band"):
-        band_for_frequency(1.0e6)
+def test_band_for_spw_name_no_prefix_raises() -> None:
+    with pytest.raises(ValueError, match=r"EVLA_<BAND>"):
+        band_for_spw_name("WIDE_0#A0C0#0")
+
+
+def test_band_for_spw_name_unknown_band_raises() -> None:
+    # `EVLA_` prefix present but the token isn't a known VLA band
+    with pytest.raises(ValueError, match=r"unknown band token"):
+        band_for_spw_name("EVLA_Z#A0C0#0")
 
 
 # ---------------------------------------------------------------------------
@@ -109,27 +122,27 @@ def test_validate_scan_selection_empty_raises() -> None:
 
 def test_select_spws_by_band_filters_to_allowed() -> None:
     # spw 0=L, 1=Ka, 2=Q, 3=Ku
-    spw_freq = np.array([1.5e9, 33.0e9, 45.0e9, 14.0e9])
+    spw_bands = np.array(["L", "Ka", "Q", "Ku"])
     tip_spws = [0, 1, 2, 3]
-    kept = select_spws_by_band(tip_spws, spw_freq, ("Ka", "Q"))
+    kept = select_spws_by_band(tip_spws, spw_bands, ("Ka", "Q"))
     assert kept == [1, 2]
 
 
 def test_select_spws_by_band_preserves_input_order() -> None:
-    spw_freq = np.array([14.0e9, 33.0e9, 22.0e9])
+    spw_bands = np.array(["Ku", "Ka", "K"])
     tip_spws = [2, 0, 1]  # K, Ku, Ka in input order
-    kept = select_spws_by_band(tip_spws, spw_freq, HIGH_FREQ_DEFAULT)
+    kept = select_spws_by_band(tip_spws, spw_bands, HIGH_FREQ_DEFAULT)
     assert kept == [2, 0, 1]
 
 
 def test_select_spws_by_band_can_return_empty() -> None:
     # all SPWs are L-band; caller is responsible for raising the
     # zero-match error.
-    spw_freq = np.array([1.5e9, 1.7e9])
-    assert select_spws_by_band([0, 1], spw_freq, ("Ka",)) == []
+    spw_bands = np.array(["L", "L"])
+    assert select_spws_by_band([0, 1], spw_bands, ("Ka",)) == []
 
 
-def test_vla_bands_no_gaps_within_known_ranges() -> None:
-    # Sanity check: every band's `lo <= hi`.
-    for name, (lo, hi) in VLA_BANDS.items():
-        assert lo < hi, f"band {name!r} has lo>=hi"
+def test_vla_band_labels_match_high_freq_default() -> None:
+    # Sanity check: the high-freq default is a subset of the canonical
+    # label tuple.
+    assert set(HIGH_FREQ_DEFAULT) <= set(VLA_BAND_LABELS)

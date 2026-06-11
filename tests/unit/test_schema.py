@@ -65,8 +65,6 @@ def make_minimal_ds(
         "flag": (full_dims, np.zeros(full_shape, dtype=np.bool_)),
     }
 
-    from tipopac.bands import band_for_frequency
-
     freqs = np.linspace(1.0e9, 50.0e9, n_spw).astype(np.float64)
     coords: dict[str, tuple[tuple[str, ...], np.ndarray]] = {
         "polarization": (("polarization",), np.array(POL_VALUES)),
@@ -77,7 +75,7 @@ def make_minimal_ds(
         ),
         "band": (
             ("spw",),
-            np.array([band_for_frequency(float(f)) for f in freqs], dtype="U4"),
+            np.full(n_spw, "K", dtype="U4"),
         ),
         "antenna_position": (
             ("antenna", "xyz"),

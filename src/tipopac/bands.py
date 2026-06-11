@@ -1,4 +1,4 @@
-"""VLA receiver-band table and selection helpers.
+"""VLA receiver-band labels and selection helpers.
 
 Used by `tipopac.api` and the MS/SDM readers to filter scans and
 spectral windows at read time. The default `bands=None` resolves to the
@@ -6,9 +6,13 @@ high-frequency receivers (`Ku, K, Ka, Q`) where tipping-curve opacity
 fits are well-conditioned; low bands (`L, S, C, X`) are excluded by
 default but available on explicit request.
 
-The band table covers the full VLA receiver suite; frequency edges are
-the standard receiver coverage. SPWs that span no band raise — real
-VLA data should never miss.
+The band label of each SPW is read from the authoritative SPW NAME
+string carried by both the MS (`SPECTRAL_WINDOW.NAME`) and the SDM
+(`SpectralWindow.xml` `<name>`), in the form ``EVLA_<BAND>#…`` (e.g.
+``EVLA_KA#A0C0#16``). The casing of `<BAND>` is not consistent across
+sources (`Receiver.xml` uses ``EVLA_Ka`` while `SpectralWindow` uses
+``EVLA_KA``), so parsing is case-insensitive and returns the canonical
+mixed-case label.
 """
 
 from __future__ import annotations
@@ -20,58 +24,71 @@ import xarray as xr
 
 __all__ = [
     "HIGH_FREQ_DEFAULT",
-    "VLA_BANDS",
+    "VLA_BAND_LABELS",
     "attach_selection_attrs",
-    "band_for_frequency",
+    "band_for_spw_name",
     "normalize_bands",
     "select_spws_by_band",
     "validate_scan_selection",
 ]
 
 
-# VLA receiver bands in Hz. Edges chosen per the standard band labels
-# (e.g. https://science.nrao.edu/facilities/vla/docs/manuals/oss).
-# Multiple SPWs may share a label (e.g. low-Ka and high-Ka in the same
-# scan are both "Ka") — the label is not a unique key for an SPW.
-VLA_BANDS: dict[str, tuple[float, float]] = {
-    "4": (58.0e6, 84.0e6),
-    "P": (224.0e6, 480.0e6),
-    "L": (1.0e9, 2.0e9),
-    "S": (2.0e9, 4.0e9),
-    "C": (4.0e9, 8.0e9),
-    "X": (8.0e9, 12.0e9),
-    "Ku": (12.0e9, 18.0e9),
-    "K": (18.0e9, 26.5e9),
-    "Ka": (26.5e9, 40.0e9),
-    "Q": (40.0e9, 50.0e9),
-}
+# Canonical VLA receiver band labels in order of increasing frequency.
+VLA_BAND_LABELS: tuple[str, ...] = (
+    "4",
+    "P",
+    "L",
+    "S",
+    "C",
+    "X",
+    "Ku",
+    "K",
+    "Ka",
+    "Q",
+)
 
 HIGH_FREQ_DEFAULT: tuple[str, ...] = ("Ku", "K", "Ka", "Q")
 
-# Case-insensitive lookup: lowercase → canonical key.
-_BAND_BY_LOWER: dict[str, str] = {k.lower(): k for k in VLA_BANDS}
+# Case-insensitive lookup: lowercase → canonical label.
+_BAND_BY_LOWER: dict[str, str] = {b.lower(): b for b in VLA_BAND_LABELS}
 
 
-def band_for_frequency(freq_Hz: float) -> str:
-    """Return the VLA band label for a frequency in Hz.
+def band_for_spw_name(name: str) -> str:
+    """Return the canonical VLA band label parsed from an SPW NAME.
 
-    Raises `ValueError` if the frequency falls outside every band — real
-    VLA tipping-scan SPWs should never hit this path.
+    Expects the receiver-set string used by both the MS and the SDM:
+    ``EVLA_<BAND>#<BASEBAND>#<INDEX>`` (e.g. ``EVLA_KA#A0C0#16``). The
+    `<BAND>` token is matched case-insensitively against the known VLA
+    labels.
+
+    Raises `ValueError` if `name` is empty, lacks the ``EVLA_`` prefix,
+    or carries an unknown band token — the SPW NAME is the source of
+    truth; an unparseable value should never be silently mapped.
     """
-    for name, (lo, hi) in VLA_BANDS.items():
-        if lo <= freq_Hz <= hi:
-            return name
-    raise ValueError(
-        f"frequency {freq_Hz:.3e} Hz falls outside any VLA band "
-        f"(known bands: {tuple(VLA_BANDS)})"
-    )
+    token = str(name).strip()
+    if not token:
+        raise ValueError("SPW NAME is empty; cannot identify VLA band")
+    head = token.split("#", 1)[0]
+    if not head.startswith("EVLA_"):
+        raise ValueError(
+            f"SPW NAME {token!r} is not in the expected ``EVLA_<BAND>#…`` "
+            f"form; cannot identify VLA receiver band"
+        )
+    band_token = head[len("EVLA_") :]
+    canonical = _BAND_BY_LOWER.get(band_token.lower())
+    if canonical is None:
+        raise ValueError(
+            f"SPW NAME {token!r} carries unknown band token "
+            f"{band_token!r}; known bands: {VLA_BAND_LABELS}"
+        )
+    return canonical
 
 
 def normalize_bands(bands: Sequence[str] | None) -> tuple[str, ...]:
     """Normalize a user-supplied band selection.
 
     - `None` → `HIGH_FREQ_DEFAULT` (`Ku, K, Ka, Q`).
-    - Case-insensitive match against `VLA_BANDS` keys; preserves input
+    - Case-insensitive match against `VLA_BAND_LABELS`; preserves input
       order and dedupes.
     - Empty sequence raises `ValueError` (explicit empty ≠ default).
     - Unknown band names raise `ValueError`, naming the offender and
@@ -93,7 +110,7 @@ def normalize_bands(bands: Sequence[str] | None) -> tuple[str, ...]:
             continue
         seen.setdefault(canonical, None)
     if bad:
-        raise ValueError(f"unknown band(s) {bad!r}; known bands: {tuple(VLA_BANDS)}")
+        raise ValueError(f"unknown band(s) {bad!r}; known bands: {VLA_BAND_LABELS}")
     return tuple(seen)
 
 
@@ -158,17 +175,15 @@ def attach_selection_attrs(
 
 def select_spws_by_band(
     tip_spws: Sequence[int],
-    spw_freq: np.ndarray,
+    spw_bands: np.ndarray,
     allowed_bands: Sequence[str],
 ) -> list[int]:
-    """Return SPW ids whose ref frequency falls in `allowed_bands`.
+    """Return SPW ids whose band label is in `allowed_bands`.
 
-    `tip_spws` are the candidate SPW indices (into `spw_freq`); the
-    result preserves the input order.
+    `tip_spws` are the candidate SPW indices (into `spw_bands`);
+    `spw_bands[i]` is the canonical band label for SPW `i` (as produced
+    by `band_for_spw_name` at read time). The result preserves the
+    input order.
     """
     allowed = set(allowed_bands)
-    return [
-        int(s)
-        for s in tip_spws
-        if band_for_frequency(float(spw_freq[int(s)])) in allowed
-    ]
+    return [int(s) for s in tip_spws if str(spw_bands[int(s)]) in allowed]

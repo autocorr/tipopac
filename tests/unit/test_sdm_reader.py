@@ -79,7 +79,7 @@ def test_apply_selection_mirrors_ms() -> None:
     from tipopac.readers.ms import _apply_selection as ms_apply
     from tipopac.readers.sdm import _apply_selection as sdm_apply
 
-    spw_freq = np.array([1.5e9, 14.0e9, 22.0e9, 33.0e9])
+    spw_bands = np.array(["L", "Ku", "K", "Ka"])
     scan_ids = [1, 2]
     scan_spws = {1: [0, 1, 2], 2: [3]}
     scan_t_start = {1: 0.0, 2: 100.0}
@@ -90,7 +90,7 @@ def test_apply_selection_mirrors_ms() -> None:
         dict(scan_spws),
         dict(scan_t_start),
         dict(scan_t_end),
-        spw_freq,
+        spw_bands,
         None,
         None,
     )
@@ -99,7 +99,7 @@ def test_apply_selection_mirrors_ms() -> None:
         dict(scan_spws),
         dict(scan_t_start),
         dict(scan_t_end),
-        spw_freq,
+        spw_bands,
         None,
         None,
     )

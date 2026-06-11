@@ -73,14 +73,14 @@ def test_apply_selection_band_filters_low_bands() -> None:
     """Default bands filter drops L/C/X SPWs and Ku/K/Ka/Q survive."""
     from tipopac.readers.ms import _apply_selection
 
-    spw_freq = np.array([1.5e9, 6.0e9, 14.0e9, 22.0e9, 33.0e9, 45.0e9])
+    spw_bands = np.array(["L", "C", "Ku", "K", "Ka", "Q"])
     scan_ids = [1, 2]
     scan_spws = {1: [0, 1, 2, 3], 2: [4, 5]}
     scan_t_start = {1: 0.0, 2: 100.0}
     scan_t_end = {1: 90.0, 2: 190.0}
 
     out_scan_ids, out_spws, _, _, tip_spws = _apply_selection(
-        scan_ids, scan_spws, scan_t_start, scan_t_end, spw_freq, None, None
+        scan_ids, scan_spws, scan_t_start, scan_t_end, spw_bands, None, None
     )
     assert out_scan_ids == [1, 2]
     assert tip_spws == [2, 3, 4, 5]  # Ku, K, Ka, Q kept
@@ -93,14 +93,14 @@ def test_apply_selection_drops_scan_with_no_surviving_spws() -> None:
     from tipopac.readers.ms import _apply_selection
 
     # scan 1 has only an L SPW; scan 2 has Ka and Q
-    spw_freq = np.array([1.5e9, 33.0e9, 45.0e9])
+    spw_bands = np.array(["L", "Ka", "Q"])
     scan_ids = [1, 2]
     scan_spws = {1: [0], 2: [1, 2]}
     scan_t_start = {1: 0.0, 2: 100.0}
     scan_t_end = {1: 90.0, 2: 190.0}
 
     out_scan_ids, out_spws, out_t_start, out_t_end, tip_spws = _apply_selection(
-        scan_ids, scan_spws, scan_t_start, scan_t_end, spw_freq, None, None
+        scan_ids, scan_spws, scan_t_start, scan_t_end, spw_bands, None, None
     )
     assert out_scan_ids == [2]
     assert 1 not in out_spws
@@ -112,23 +112,23 @@ def test_apply_selection_zero_match_raises() -> None:
     """All-L data with default high-freq selection raises with band names."""
     from tipopac.readers.ms import _apply_selection
 
-    spw_freq = np.array([1.5e9, 1.7e9])
+    spw_bands = np.array(["L", "L"])
     with pytest.raises(ValueError, match=r"observed bands"):
-        _apply_selection([1], {1: [0, 1]}, {1: 0.0}, {1: 90.0}, spw_freq, None, None)
+        _apply_selection([1], {1: [0, 1]}, {1: 0.0}, {1: 90.0}, spw_bands, None, None)
 
 
 def test_apply_selection_scan_subset() -> None:
     """User-specified scans narrow the resolved set."""
     from tipopac.readers.ms import _apply_selection
 
-    spw_freq = np.array([33.0e9])  # one Ka spw
+    spw_bands = np.array(["Ka"])  # one Ka spw
     scan_ids = [1, 2, 3]
     scan_spws = {1: [0], 2: [0], 3: [0]}
     scan_t_start = {1: 0.0, 2: 100.0, 3: 200.0}
     scan_t_end = {1: 90.0, 2: 190.0, 3: 290.0}
 
     out_scan_ids, _, _, _, _ = _apply_selection(
-        scan_ids, scan_spws, scan_t_start, scan_t_end, spw_freq, [2], None
+        scan_ids, scan_spws, scan_t_start, scan_t_end, spw_bands, [2], None
     )
     assert out_scan_ids == [2]
 
@@ -138,7 +138,7 @@ def test_apply_selection_explicit_scan_dropped_by_band_filter_raises() -> None:
     from tipopac.readers.ms import _apply_selection
 
     # scan 1 has an L SPW (rejected by default Ku/K/Ka/Q), scan 2 has Ka
-    spw_freq = np.array([1.5e9, 33.0e9])
+    spw_bands = np.array(["L", "Ka"])
     scan_ids = [1, 2]
     scan_spws = {1: [0], 2: [1]}
     scan_t_start = {1: 0.0, 2: 100.0}
@@ -146,7 +146,7 @@ def test_apply_selection_explicit_scan_dropped_by_band_filter_raises() -> None:
 
     with pytest.raises(ValueError, match=r"requested scan\(s\) \[1\]"):
         _apply_selection(
-            scan_ids, scan_spws, scan_t_start, scan_t_end, spw_freq, [1, 2], None
+            scan_ids, scan_spws, scan_t_start, scan_t_end, spw_bands, [1, 2], None
         )
 
 
@@ -178,7 +178,7 @@ def test_ms_reader_dims_match_reference() -> None:
     """
     import json
 
-    from tipopac.bands import VLA_BANDS
+    from tipopac.bands import VLA_BAND_LABELS
     from tipopac.readers.ms import MSReader
 
     ref_path = (
@@ -192,7 +192,7 @@ def test_ms_reader_dims_match_reference() -> None:
     )
     ref = json.loads(ref_path.read_text())
 
-    reader = MSReader.from_path(MS_PATH, bands=list(VLA_BANDS))
+    reader = MSReader.from_path(MS_PATH, bands=list(VLA_BAND_LABELS))
     ds = reader.read()
 
     assert list(ds.coords["antenna"].values) == ref["coords"]["antenna"]

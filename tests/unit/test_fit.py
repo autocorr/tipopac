@@ -8,16 +8,12 @@ import xarray as xr
 
 from tipopac import schema
 from tipopac import physics
-from tipopac.bands import band_for_frequency
 from tipopac.fit import fit_dataset
 
 
 def _band_label(freq_Hz: float) -> str:
-    """Best-effort band label for synthetic frequencies; falls back to ``L``."""
-    try:
-        return band_for_frequency(float(freq_Hz))
-    except ValueError:
-        return "L"
+    """Stand-in band label for synthetic datasets — fit logic ignores it."""
+    return "K"
 
 
 # ---------------------------------------------------------------------------

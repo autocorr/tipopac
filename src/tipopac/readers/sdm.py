@@ -26,7 +26,7 @@ import xarray as xr
 from tipopac import schema
 from tipopac.bands import (
     attach_selection_attrs,
-    band_for_frequency,
+    band_for_spw_name,
     normalize_bands,
     select_spws_by_band,
     validate_scan_selection,
@@ -79,15 +79,13 @@ class SDMReader:
         import sdmpy
 
         sdm = sdmpy.SDM(str(Path(path)), use_xsd=False)
-        spw_freq, _, _ = _read_spectral_window(sdm)
+        _, _, spw_bands, _ = _read_spectral_window(sdm)
         scan_ids, scan_spws, scan_t_start, _ = _read_scan_meta(sdm)
 
         out: list[SkydipScanInfo] = []
         for sc in scan_ids:
             spws = tuple(scan_spws[sc])
-            bands = tuple(
-                sorted({band_for_frequency(float(spw_freq[s])) for s in spws})
-            )
+            bands = tuple(sorted({str(spw_bands[s]) for s in spws}))
             out.append(
                 SkydipScanInfo(
                     scan_id=sc,
@@ -104,7 +102,7 @@ class SDMReader:
         sdm = sdmpy.SDM(str(self._path), use_xsd=False)
 
         ant_names, ant_positions, ant_id_to_idx = _read_antenna(sdm)
-        spw_freq, spw_bw, spw_id_to_idx = _read_spectral_window(sdm)
+        spw_freq, spw_bw, spw_bands, spw_id_to_idx = _read_spectral_window(sdm)
         scan_ids, scan_spws, scan_t_start, scan_t_end = _read_scan_meta(sdm)
 
         scan_ids, scan_spws, scan_t_start, scan_t_end, tip_spws = _apply_selection(
@@ -112,7 +110,7 @@ class SDMReader:
             scan_spws,
             scan_t_start,
             scan_t_end,
-            spw_freq,
+            spw_bands,
             self._scans_requested,
             self._bands_requested,
         )
@@ -132,6 +130,7 @@ class SDMReader:
             ant_positions=ant_positions,
             spw_freq=spw_freq,
             spw_bw=spw_bw,
+            spw_bands=spw_bands,
             tip_spws=tip_spws,
             spw_to_idx=spw_to_idx,
             spw_id_to_idx=spw_id_to_idx,
@@ -165,7 +164,7 @@ def _apply_selection(
     scan_spws: dict[int, list[int]],
     scan_t_start: dict[int, float],
     scan_t_end: dict[int, float],
-    spw_freq: np.ndarray,
+    spw_bands: np.ndarray,
     scans_requested: Sequence[int] | None,
     bands_requested: Sequence[str] | None,
 ) -> tuple[
@@ -188,11 +187,9 @@ def _apply_selection(
     tip_spws_all = sorted({s for spws in scan_spws.values() for s in spws})
 
     allowed_bands = normalize_bands(bands_requested)
-    tip_spws = select_spws_by_band(tip_spws_all, spw_freq, allowed_bands)
+    tip_spws = select_spws_by_band(tip_spws_all, spw_bands, allowed_bands)
     if not tip_spws:
-        observed = sorted(
-            {band_for_frequency(float(spw_freq[s])) for s in tip_spws_all}
-        )
+        observed = sorted({str(spw_bands[s]) for s in tip_spws_all})
         raise ValueError(
             f"no SPWs match bands={list(allowed_bands)!r}; "
             f"observed bands in this dataset: {observed}"
@@ -257,16 +254,20 @@ def _read_antenna(
 
 def _read_spectral_window(
     sdm: Any,
-) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
-    """Return (ref_frequency, total_bandwidth, spw_id_to_idx) in Hz.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int]]:
+    """Return (ref_frequency, total_bandwidth, band_labels, spw_id_to_idx).
 
     spw_id_to_idx maps 'SpectralWindow_N' → row index.
     """
     spw_rows = list(sdm["SpectralWindow"])  # type: ignore[index]
     freq = np.array([float(s.refFreq) for s in spw_rows], dtype=np.float64)
     bw = np.array([float(s.totBandwidth) for s in spw_rows], dtype=np.float64)
+    bands = np.array(
+        [band_for_spw_name(str(s.name)) for s in spw_rows],
+        dtype="U4",
+    )
     spw_id_to_idx = {str(s.spectralWindowId): i for i, s in enumerate(spw_rows)}
-    return freq, bw, spw_id_to_idx
+    return freq, bw, bands, spw_id_to_idx
 
 
 def _read_scan_meta(
@@ -446,6 +447,7 @@ def _build_dataset(
     ant_positions: np.ndarray,
     spw_freq: np.ndarray,
     spw_bw: np.ndarray,
+    spw_bands: np.ndarray,
     tip_spws: list[int],
     spw_to_idx: dict[int, int],
     spw_id_to_idx: dict[str, int],
@@ -616,13 +618,7 @@ def _build_dataset(
             "xyz": ["X", "Y", "Z"],
             "frequency": (("spw",), spw_freq[tip_spws].astype(np.float64)),
             "bandwidth": (("spw",), spw_bw[tip_spws].astype(np.float64)),
-            "band": (
-                ("spw",),
-                np.array(
-                    [band_for_frequency(float(f)) for f in spw_freq[tip_spws]],
-                    dtype="U4",
-                ),
-            ),
+            "band": (("spw",), spw_bands[tip_spws].astype("U4")),
             "antenna_position": (
                 ("antenna", "xyz"),
                 ant_positions.astype(np.float64),

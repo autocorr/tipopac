@@ -22,7 +22,7 @@ import xarray as xr
 from tipopac import schema
 from tipopac.bands import (
     attach_selection_attrs,
-    band_for_frequency,
+    band_for_spw_name,
     normalize_bands,
     select_spws_by_band,
     validate_scan_selection,
@@ -73,15 +73,13 @@ class MSReader:
         ``tipopac.summary``.
         """
         p = Path(path)
-        spw_freq, _ = _read_spectral_window(p)
+        _, _, spw_bands = _read_spectral_window(p)
         scan_ids, scan_spws, scan_t_start, _ = _read_scan_meta(p)
 
         out: list[SkydipScanInfo] = []
         for sc in scan_ids:
             spws = tuple(scan_spws[sc])
-            bands = tuple(
-                sorted({band_for_frequency(float(spw_freq[s])) for s in spws})
-            )
+            bands = tuple(sorted({str(spw_bands[s]) for s in spws}))
             out.append(
                 SkydipScanInfo(
                     scan_id=sc,
@@ -96,7 +94,7 @@ class MSReader:
         path = self._path
 
         ant_names, ant_positions = _read_antenna(path)
-        spw_freq, spw_bw = _read_spectral_window(path)
+        spw_freq, spw_bw, spw_bands = _read_spectral_window(path)
         scan_ids, scan_spws, scan_t_start, scan_t_end = _read_scan_meta(path)
 
         scan_ids, scan_spws, scan_t_start, scan_t_end, tip_spws = _apply_selection(
@@ -104,7 +102,7 @@ class MSReader:
             scan_spws,
             scan_t_start,
             scan_t_end,
-            spw_freq,
+            spw_bands,
             self._scans_requested,
             self._bands_requested,
         )
@@ -120,6 +118,7 @@ class MSReader:
             ant_positions=ant_positions,
             spw_freq=spw_freq,
             spw_bw=spw_bw,
+            spw_bands=spw_bands,
             tip_spws=tip_spws,
             spw_to_idx=spw_to_idx,
             scan_ids=scan_ids,
@@ -150,7 +149,7 @@ def _apply_selection(
     scan_spws: dict[int, list[int]],
     scan_t_start: dict[int, float],
     scan_t_end: dict[int, float],
-    spw_freq: np.ndarray,
+    spw_bands: np.ndarray,
     scans_requested: Sequence[int] | None,
     bands_requested: Sequence[str] | None,
 ) -> tuple[
@@ -173,11 +172,9 @@ def _apply_selection(
     tip_spws_all = sorted({s for spws in scan_spws.values() for s in spws})
 
     allowed_bands = normalize_bands(bands_requested)
-    tip_spws = select_spws_by_band(tip_spws_all, spw_freq, allowed_bands)
+    tip_spws = select_spws_by_band(tip_spws_all, spw_bands, allowed_bands)
     if not tip_spws:
-        observed = sorted(
-            {band_for_frequency(float(spw_freq[s])) for s in tip_spws_all}
-        )
+        observed = sorted({str(spw_bands[s]) for s in tip_spws_all})
         raise ValueError(
             f"no SPWs match bands={list(allowed_bands)!r}; "
             f"observed bands in this dataset: {observed}"
@@ -227,8 +224,10 @@ def _read_antenna(path: Path) -> tuple[list[str], np.ndarray]:
     return names, pos
 
 
-def _read_spectral_window(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Return (ref_frequency, total_bandwidth) in Hz for all SPWs."""
+def _read_spectral_window(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (ref_frequency, total_bandwidth, band_labels) for all SPWs."""
     from casatools import table as _table
 
     tb = _table()
@@ -236,9 +235,14 @@ def _read_spectral_window(path: Path) -> tuple[np.ndarray, np.ndarray]:
         tb.open(str(path / "SPECTRAL_WINDOW"))
         freq = tb.getcol("REF_FREQUENCY").copy()
         bw = tb.getcol("TOTAL_BANDWIDTH").copy()
+        names = tb.getcol("NAME")
     finally:
         tb.close()
-    return freq, bw
+    bands = np.array(
+        [band_for_spw_name(str(n)) for n in names],
+        dtype="U4",
+    )
+    return freq, bw, bands
 
 
 def _read_scan_meta(
@@ -391,6 +395,7 @@ def _build_dataset(
     ant_positions: np.ndarray,
     spw_freq: np.ndarray,
     spw_bw: np.ndarray,
+    spw_bands: np.ndarray,
     tip_spws: list[int],
     spw_to_idx: dict[int, int],
     scan_ids: list[int],
@@ -572,13 +577,7 @@ def _build_dataset(
                 ("spw",),
                 spw_bw[tip_spws].astype(np.float64),
             ),
-            "band": (
-                ("spw",),
-                np.array(
-                    [band_for_frequency(float(f)) for f in spw_freq[tip_spws]],
-                    dtype="U4",
-                ),
-            ),
+            "band": (("spw",), spw_bands[tip_spws].astype("U4")),
             "antenna_position": (
                 ("antenna", "xyz"),
                 ant_positions.astype(np.float64),
