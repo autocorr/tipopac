@@ -591,13 +591,16 @@ on `buildmytasks` or a `casa` process; it does not mean zero
 
 ### 9.3 Plots
 
-`plot.PlotData(ds).save_all(out_dir=...)` writes one PNG per
-`(scan, antenna, spw)`:
-
-- Top panel: `Tsys` vs. zenith angle for both polarizations with
-  the fitted tipping curve overlaid.
-- Bottom panel: the am τ(ν) curve from `am_freq_grid` / `am_tau`
-  as a QA cross-check overlay.
+`plot.PlotData(ds).save_all(out_dir=...)` writes one interactive
+vega-altair `.html` per plot plus a top-level `index.html`. Hover
+tooltips carry `(scan, antenna, spw, polarization)` identity;
+colour encodes status (good / flagged / weighted mean), not
+identity. Per successfully-fit `(scan, antenna, spw)`: an elevation
+curve (Tsys vs. zenith angle, both pols, fitted curve overlaid).
+Per scan with any successful fit: a τ vs frequency log-scatter with
+optional am τ(ν) overlay from `am_freq_grid` / `am_tau`, and —
+when `tcal_fit` actually differs from `tcal_ref` — a `T_cal` vs
+frequency and a `c = T_cal,fit / T_cal,ref` plot.
 
 `out_dir` is created with `Path.mkdir(parents=True, exist_ok=True)`.
 
