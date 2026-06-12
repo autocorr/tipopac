@@ -213,7 +213,7 @@ class ElevationCurve(Plot):
         x_enc = alt.X(
             "zenith_angle:Q",
             title="Zenith angle [deg]",
-            scale=alt.Scale(domain=[36, 70], nice=False),
+            scale=alt.Scale(domain=[30, 70], nice=False),
         )
         y_enc = alt.Y(
             "Tsys:Q",
