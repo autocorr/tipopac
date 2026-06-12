@@ -11,7 +11,7 @@ Public surface:
   ``PlotData.tau_vs_frequency(scans=None)``
   ``PlotData.tcal_vs_frequency(scans=None, kind="fit")``
   ``PlotData.c_vs_frequency(scans=None)``
-  ``PlotData.save_all(out_dir)`` — write every plot + ``index.html``.
+  ``PlotData.save_all(out_dir)`` — write every plot ``.html`` file.
 """
 
 from __future__ import annotations
@@ -65,12 +65,12 @@ class Plot:
     COLOR_L_POL = "dodgerblue"
     COLOR_AM_MODEL = "black"
 
-    WIDTH = 480
-    HEIGHT = 320
-    WIDTH_WIDE = 720
-    POINT_SIZE = 16
-    MEAN_POINT_SIZE = 64
-    LINE_STROKE = 1.8
+    WIDTH = 800
+    HEIGHT = 600
+    WIDTH_WIDE = 1200
+    POINT_SIZE = 25
+    MEAN_POINT_SIZE = 80
+    LINE_STROKE = 2.0
 
     def __init__(self, ds: xr.Dataset) -> None:
         self.ds = ds
@@ -82,7 +82,7 @@ class Plot:
         """Serialise the chart to ``path.html`` (standalone, inline data)."""
         path = Path(path).with_suffix(".html")
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.build().save(str(path))
+        self.build().save(path)
         _log.info("plot saved: %s", path)
 
     def _finalize(
@@ -120,7 +120,7 @@ def _to_df(
     return obj.to_dataframe().reset_index().dropna(subset=subset)
 
 
-class _PerScanPlot(Plot):
+class _QuantityVsFrequency(Plot):
     """Shared scaffolding for multi-scan plots."""
 
     def __init__(self, ds: xr.Dataset, scans: int | list[int] | None = None) -> None:
@@ -128,6 +128,12 @@ class _PerScanPlot(Plot):
         self.scans = _validate_scans(ds, scans)
         self.ds_sub = ds.sel(scan=self.scans)
         self.width = self.WIDTH_WIDE if len(self.scans) > 1 else self.WIDTH
+
+    @property
+    def freq_domain(self) -> tuple[float, float]:
+        f_min = self.ds_sub["frequency_GHz"].min() - 2
+        f_max = self.ds_sub["frequency_GHz"].max() + 2
+        return float(f_min), float(f_max)
 
     def _mean_layer(
         self,
@@ -207,9 +213,15 @@ class ElevationCurve(Plot):
         x_enc = alt.X(
             "zenith_angle:Q",
             title="Zenith angle [deg]",
-            scale=alt.Scale(domain=[float(_Z_GRID.min()), float(_Z_GRID.max())]),
+            scale=alt.Scale(domain=[36, 70], nice=False),
         )
-        y_enc = alt.Y("Tsys:Q", title="T_sys [K]")
+        y_enc = alt.Y(
+            "Tsys:Q",
+            title="System Temperature [K]",
+            scale=alt.Scale(
+                domain=[df.Tsys.min() / 1.05, df.Tsys.max() * 1.05], nice=False
+            ),
+        )
 
         scatter = (
             alt.Chart(df)
@@ -246,7 +258,7 @@ class ElevationCurve(Plot):
         return self._finalize(scatter + model, title=title)
 
 
-class TauVsFrequency(_PerScanPlot):
+class TauVsFrequency(_QuantityVsFrequency):
     """Zenith opacity vs spw centre frequency.
 
     Per-sample scatter (gray=passed, orangered=failed-fit) + antenna-weighted
@@ -256,7 +268,7 @@ class TauVsFrequency(_PerScanPlot):
 
     def build(self) -> alt.LayerChart | alt.FacetChart:
         ds_sub = self.ds_sub
-        y_title = "τ_z [nepers]"
+        y_title = "Zenith optical depth [nepers]"
 
         df = _to_df(
             ds_sub[["tau_zenith", "tau_err", "fit_success"]], dropna="tau_zenith"
@@ -273,13 +285,17 @@ class TauVsFrequency(_PerScanPlot):
         tau_max = float(ds_sub["tau_zenith"].max(skipna=True))
         # Guard against non-positive values that would break the log axis.
         tau_min = max(tau_min, 1e-4)
-        y_domain = [tau_min / 1.1, tau_max * 1.1]
+        y_domain = [tau_min / 1.2, tau_max * 1.2]
 
-        x_enc = alt.X("frequency_GHz:Q", title="Frequency [GHz]")
+        x_enc = alt.X(
+            "frequency_GHz:Q",
+            title="Frequency [GHz]",
+            scale=alt.Scale(domain=self.freq_domain, nice=False),
+        )
         y_enc = alt.Y(
             "tau_zenith:Q",
             title=y_title,
-            scale=alt.Scale(type="log", domain=y_domain),
+            scale=alt.Scale(type="log", domain=y_domain, nice=False),
         )
 
         status_scale = alt.Scale(
@@ -333,7 +349,7 @@ class TauVsFrequency(_PerScanPlot):
         )
 
 
-class TcalVsFrequency(_PerScanPlot):
+class TcalVsFrequency(_QuantityVsFrequency):
     """Fitted Tcal vs frequency, with per-pol/antenna scatter + summary mean."""
 
     def __init__(
@@ -347,10 +363,32 @@ class TcalVsFrequency(_PerScanPlot):
 
     def build(self) -> alt.LayerChart | alt.FacetChart:
         ds_sub = self.ds_sub
-        y_title = "T_cal [K]"
+        y_title = f"Calibration device temperature ({self.kind}) [K]"
 
         col = f"tcal_{self.kind}"
-        df = _to_df(ds_sub[["tcal_fit", "tcal_ref"]], dropna=col)
+        if self.kind == "ref":
+            # tcal_ref has no scan dim; pulling it alongside tcal_fit into a
+            # joint Dataset broadcasts it N_scan-fold (~7× empirically) and
+            # bloats the embedded data. Plot it from the bare DataArray.
+            df = _to_df(ds_sub["tcal_ref"], name="tcal_ref")
+            tooltip = [
+                "antenna:N",
+                "spw:N",
+                "polarization:N",
+                alt.Tooltip("frequency_GHz:Q", format=".3f"),
+                alt.Tooltip("tcal_ref:Q", format=".3f"),
+            ]
+        else:
+            df = _to_df(ds_sub[["tcal_fit", "tcal_ref"]], dropna=col)
+            tooltip = [
+                "scan:N",
+                "antenna:N",
+                "spw:N",
+                "polarization:N",
+                alt.Tooltip("frequency_GHz:Q", format=".3f"),
+                alt.Tooltip("tcal_fit:Q", format=".3f"),
+                alt.Tooltip("tcal_ref:Q", format=".3f"),
+            ]
         mean_da = ds_sub[col].mean(dim=["polarization", "antenna"])
         mean_df = _to_df(mean_da, name="mean_tcal")
 
@@ -358,17 +396,13 @@ class TcalVsFrequency(_PerScanPlot):
             alt.Chart(df)
             .mark_point(filled=True, size=self.POINT_SIZE, color=self.COLOR_GOOD)
             .encode(
-                x=alt.X("frequency_GHz:Q", title="Frequency [GHz]"),
+                x=alt.X(
+                    "frequency_GHz:Q",
+                    title="Frequency [GHz]",
+                    scale=alt.Scale(domain=self.freq_domain, nice=False),
+                ),
                 y=alt.Y(f"{col}:Q", title=y_title),
-                tooltip=[
-                    "scan:N",
-                    "antenna:N",
-                    "spw:N",
-                    "polarization:N",
-                    alt.Tooltip("frequency_GHz:Q", format=".3f"),
-                    alt.Tooltip("tcal_fit:Q", format=".3f"),
-                    alt.Tooltip("tcal_ref:Q", format=".3f"),
-                ],
+                tooltip=tooltip,
             )
         )
         mean = self._mean_layer(
@@ -382,7 +416,7 @@ class TcalVsFrequency(_PerScanPlot):
         )
 
 
-class CVsFrequency(_PerScanPlot):
+class CVsFrequency(_QuantityVsFrequency):
     """Tcal correction multiplier c = tcal_fit / tcal_ref vs frequency.
 
     Dashed reference line at c=1 + per-(antenna, spw, pol) gray scatter +
@@ -391,7 +425,7 @@ class CVsFrequency(_PerScanPlot):
 
     def build(self) -> alt.LayerChart | alt.FacetChart:
         ds_sub = self.ds_sub
-        y_title = "c = T_cal,fit / T_cal,ref"
+        y_title = "Cal. device scaling (c = T_cal,fit / T_cal,ref)"
 
         c_da = ds_sub["tcal_fit"] / ds_sub["tcal_ref"]
         df = _to_df(c_da, name="c_ratio")
@@ -407,7 +441,11 @@ class CVsFrequency(_PerScanPlot):
             alt.Chart(df)
             .mark_point(filled=True, size=self.POINT_SIZE, color=self.COLOR_GOOD)
             .encode(
-                x=alt.X("frequency_GHz:Q", title="Frequency [GHz]"),
+                x=alt.X(
+                    "frequency_GHz:Q",
+                    title="Frequency [GHz]",
+                    scale=alt.Scale(domain=self.freq_domain, nice=False),
+                ),
                 y=alt.Y("c_ratio:Q", title=y_title),
                 tooltip=[
                     "scan:N",
@@ -428,135 +466,64 @@ class CVsFrequency(_PerScanPlot):
         )
 
 
-# Sections in the index page; insertion order = display order.
-_INDEX_SECTIONS: tuple[tuple[str, str], ...] = (
-    ("tippingcurve_", "Elevation curves"),
-    ("tau_vs_frequency_", "τ vs frequency"),
-    ("tcal_vs_frequency_", "T_cal vs frequency"),
-    ("c_vs_frequency_", "c = T_cal,fit / T_cal,ref"),
-)
-
-
-def _write_index_html(out_dir: Path, entries: list[tuple[str, str]]) -> None:
-    """Write ``out_dir/index.html`` linking every per-plot file grouped by section.
-
-    ``entries`` is ``[(section_title, filename), ...]``.
-    """
-    by_section: dict[str, list[str]] = {title: [] for _, title in _INDEX_SECTIONS}
-    for section, filename in entries:
-        by_section.setdefault(section, []).append(filename)
-
-    parts = [
-        "<!doctype html>",
-        '<html lang="en"><head>',
-        '<meta charset="utf-8">',
-        "<title>tipopac plots</title>",
-        "<style>",
-        "body { font-family: sans-serif; margin: 2em; max-width: 60em; }",
-        "h1 { border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }",
-        "h2 { margin-top: 1.5em; }",
-        "ul { line-height: 1.5; }",
-        "</style>",
-        "</head><body>",
-        "<h1>tipopac diagnostic plots</h1>",
-    ]
-    for section_title, files in by_section.items():
-        if not files:
-            continue
-        parts.append(f"<h2>{section_title}</h2>")
-        parts.append("<ul>")
-        for fn in sorted(files):
-            label = Path(fn).stem
-            parts.append(f'<li><a href="{fn}">{label}</a></li>')
-        parts.append("</ul>")
-    parts.append("</body></html>")
-
-    (out_dir / "index.html").write_text("\n".join(parts), encoding="utf-8")
-
-
 class PlotData:
     """Wrap the canonical tipopac dataset and dispatch the four plot types.
 
     Convenience methods (``elevation_curve`` etc.) return ``alt.LayerChart``
     objects so callers can inspect or render them; :meth:`save_all` writes
-    every applicable plot to ``out_dir`` as ``.html`` plus a top-level
-    ``index.html`` linking them.
+    every applicable plot to ``out_dir`` as ``.html``.
     """
 
     def __init__(self, ds: xr.Dataset) -> None:
         self.ds = ds.assign_coords(frequency_GHz=ds.frequency / 1e9)
 
-    def elevation_curve(
-        self, scan: int, antenna: str, spw: int
-    ) -> alt.LayerChart | alt.FacetChart:
-        return ElevationCurve(self.ds, scan, antenna, spw).build()
+    def elevation_curve(self, scan: int, antenna: str, spw: int) -> ElevationCurve:
+        return ElevationCurve(self.ds, scan, antenna, spw)
 
-    def tau_vs_frequency(
-        self, scans: int | list[int] | None = None
-    ) -> alt.LayerChart | alt.FacetChart:
-        return TauVsFrequency(self.ds, scans).build()
+    def tau_vs_frequency(self, scans: int | list[int] | None = None) -> TauVsFrequency:
+        return TauVsFrequency(self.ds, scans)
 
     def tcal_vs_frequency(
         self, scans: int | list[int] | None = None, kind: str = "fit"
-    ) -> alt.LayerChart | alt.FacetChart:
-        return TcalVsFrequency(self.ds, scans, kind).build()
+    ) -> TcalVsFrequency:
+        return TcalVsFrequency(self.ds, scans, kind)
 
-    def c_vs_frequency(
-        self, scans: int | list[int] | None = None
-    ) -> alt.LayerChart | alt.FacetChart:
-        return CVsFrequency(self.ds, scans).build()
+    def c_vs_frequency(self, scans: int | list[int] | None = None) -> CVsFrequency:
+        return CVsFrequency(self.ds, scans)
 
-    def save_all(self, out_dir: str | Path) -> None:
-        """Write every applicable plot to ``out_dir`` as ``.html``.
+    def save_all(
+        self, out_dir: str | Path = Path("."), plot_elev: bool = False
+    ) -> None:
+        """Write every applicable plot to ``out_dir`` as stand-alone ``.html``.
 
-        - One ``tippingcurve_spw_{spw}_{ant}_scan_{scan}`` per successful cell.
-        - One ``tau_vs_frequency_scan_{scan}`` per scan with any successful fit.
-        - One ``tcal_vs_frequency_scan_{scan}`` per scan when ``tcal_fit`` and
-          ``tcal_ref`` actually differ (i.e. ``independent_tau_solve`` mode).
-        - One ``c_vs_frequency_scan_{scan}`` per scan under the same condition.
-        - One ``index.html`` linking everything.
+        - ``tippingcurve_spw_{spw}_{ant}_scan_{scan}`` per successful cell.
+        - ``tau_vs_frequency`` over every scan.
+        - ``tcal_ref_vs_frequency`` over every scan.
+        - ``tcal_fit_vs_frequency`` and ``c_vs_frequency`` additionally when
+          ``tcal_fit`` differs from ``tcal_ref`` (``independent_tau_solve`` mode).
         """
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
 
         success = self.ds["fit_success"]
         if not bool(success.any()):
-            _log.warning(
-                "save_all: no successful fits; only index.html will be written"
-            )
-
-        entries: list[tuple[str, str]] = []
+            _log.warning("save_all: no successful fits; no plots will be written")
 
         # Per-cell elevation curves.
-        cells = success.stack(cell=("scan", "antenna", "spw"))
-        for scan_raw, ant_raw, spw_raw in cells.cell.values[cells.values]:
-            scan_id, ant, spw_id = int(scan_raw), str(ant_raw), int(spw_raw)
-            stem = f"tippingcurve_spw_{spw_id}_{ant}_scan_{scan_id}"
-            ElevationCurve(self.ds, scan_id, ant, spw_id).save(out / stem)
-            entries.append(("Elevation curves", f"{stem}.html"))
+        if plot_elev:
+            cells = success.stack(cell=("scan", "antenna", "spw"))
+            for scan_raw, ant_raw, spw_raw in cells.cell.values[cells.values]:
+                scan_id, ant, spw_id = int(scan_raw), str(ant_raw), int(spw_raw)
+                stem = f"tippingcurve_spw_{spw_id}_{ant}_scan_{scan_id}"
+                self.elevation_curve(scan_id, ant, spw_id).save(out / stem)
 
-        # Per-scan plots: only scans with at least one successful cell.
-        scans_with_fits = success.any(dim=("antenna", "spw"))
-        scan_ids = [
-            int(s) for s in success.coords["scan"].values[scans_with_fits.values]
-        ]
-        for scan_id in scan_ids:
-            stem = f"tau_vs_frequency_scan_{scan_id}"
-            TauVsFrequency(self.ds, [scan_id]).save(out / stem)
-            entries.append(("τ vs frequency", f"{stem}.html"))
+        # Parameter versus frequency plots.
+        self.tau_vs_frequency().save(out / "tau_vs_frequency")
+        self.tcal_vs_frequency(kind="ref").save(out / "tcal_ref_vs_frequency")
 
-        # Tcal / c plots only when fit and reference actually differ — in
-        # tau_per_antenna mode tcal_fit broadcasts from tcal_ref so the
-        # plots would be redundant.
-        fit_b, ref_b = xr.broadcast(self.ds["tcal_fit"], self.ds["tcal_ref"])
-        if not np.allclose(fit_b.values, ref_b.values, equal_nan=True):
-            for scan_id in scan_ids:
-                tcal_stem = f"tcal_vs_frequency_scan_{scan_id}"
-                TcalVsFrequency(self.ds, [scan_id]).save(out / tcal_stem)
-                entries.append(("T_cal vs frequency", f"{tcal_stem}.html"))
-
-                c_stem = f"c_vs_frequency_scan_{scan_id}"
-                CVsFrequency(self.ds, [scan_id]).save(out / c_stem)
-                entries.append(("c = T_cal,fit / T_cal,ref", f"{c_stem}.html"))
-
-        _write_index_html(out, entries)
+        # Only generate fitted Tcal and "c" plots when fit.
+        if self.ds.attrs["mode"] == "independent_tau":
+            pass
+        else:
+            self.tcal_vs_frequency(kind="fit").save(out / "tcal_fit_vs_frequency")
+            self.c_vs_frequency().save(out / "c_vs_frequency")

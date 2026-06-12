@@ -124,7 +124,8 @@ def tipopac(
         Stage-A fit parallelism. ``None`` runs serially. Higher values
         dispatch via a process pool with single-threaded BLAS per worker.
     plot_dir:
-        If set, write per-(scan, antenna, spw) diagnostic PNGs here.
+        If set, write interactive diagnostic plot ``.html`` files here and
+        generate a self-contained GUI ``index.html`` next to them.
     caltable_opacity:
         If set, write a CASA TOpac caltable to this path.
     caltable_tcal:
@@ -148,6 +149,7 @@ def tipopac(
 
     if plot_dir is not None:
         ta.plot(out_dir=Path(plot_dir))
+        ta.weblog(plot_dir=Path(plot_dir))
     if caltable_opacity is not None or caltable_tcal is not None:
         ta.write_caltables(
             opacity=None if caltable_opacity is None else Path(caltable_opacity),
@@ -331,6 +333,11 @@ class TippingAnalysis:
         from tipopac.plot import PlotData
 
         PlotData(self._ds).save_all(out_dir=Path(out_dir))
+
+    def weblog(self, plot_dir: str | Path) -> None:
+        from tipopac.weblog import build_weblog
+
+        build_weblog(Path(plot_dir))
 
     def write_caltables(
         self,

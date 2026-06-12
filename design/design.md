@@ -134,8 +134,10 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
   `fetch_atm_profile` if needed.
 - `fit(mode, n_workers)` — Stage A + Stage B. Auto-calls
   `build_atm_grids` if needed. After this `result` is available.
-- `plot(out_dir)` — per-(scan, antenna, spw) PNGs via
+- `plot(out_dir)` — interactive plot `.html` files via
   `plot.PlotData(ds).save_all`.
+- `weblog(plot_dir)` — self-contained GUI `index.html` over the plot
+  files via `weblog.build_weblog`.
 - `write_caltables(opacity, tcal)` — optional CASA-format outputs.
 
 ---
@@ -592,15 +594,21 @@ on `buildmytasks` or a `casa` process; it does not mean zero
 ### 9.3 Plots
 
 `plot.PlotData(ds).save_all(out_dir=...)` writes one interactive
-vega-altair `.html` per plot plus a top-level `index.html`. Hover
-tooltips carry `(scan, antenna, spw, polarization)` identity;
-colour encodes status (good / flagged / weighted mean), not
-identity. Per successfully-fit `(scan, antenna, spw)`: an elevation
-curve (Tsys vs. zenith angle, both pols, fitted curve overlaid).
-Per scan with any successful fit: a τ vs frequency log-scatter with
-optional am τ(ν) overlay from `am_freq_grid` / `am_tau`, and —
-when `tcal_fit` actually differs from `tcal_ref` — a `T_cal` vs
-frequency and a `c = T_cal,fit / T_cal,ref` plot.
+vega-altair `.html` per plot. Hover tooltips carry
+`(scan, antenna, spw, polarization)` identity; colour encodes status
+(good / flagged / weighted mean), not identity. Per successfully-fit
+`(scan, antenna, spw)`: an elevation curve (Tsys vs. zenith angle,
+both pols, fitted curve overlaid). Per scan with any successful fit:
+a τ vs frequency log-scatter with optional am τ(ν) overlay from
+`am_freq_grid` / `am_tau`, and — when `tcal_fit` actually differs
+from `tcal_ref` — a `T_cal` vs frequency and a
+`c = T_cal,fit / T_cal,ref` plot.
+
+`weblog.build_weblog(plot_dir)` is an independent pipeline step that
+scans `plot_dir` and emits a self-contained GUI `index.html` —
+dropdown for plot type plus text boxes for `(scan, antenna, spw)`
+when picking an elevation curve. Missing files surface as
+"Plot not found: …" rather than broken iframes.
 
 `out_dir` is created with `Path.mkdir(parents=True, exist_ok=True)`.
 
