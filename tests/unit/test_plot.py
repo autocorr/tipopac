@@ -92,6 +92,10 @@ def _make_plot_ds(
         "tau_err": (("scan", "antenna", "spw"), tau_err),
         "T0": (("scan", "antenna", "spw", "polarization"), T0),
         "tcal_fit": (("scan", "antenna", "spw", "polarization"), tcal_fit),
+        "Twmt": (
+            ("scan", "spw"),
+            np.full((n_scan, n_spw), 270.0, dtype=np.float32),
+        ),
         "fit_success": (("scan", "antenna", "spw"), fit_success_arr),
         "fit_reason": (("scan", "antenna", "spw"), fit_reason),
     }

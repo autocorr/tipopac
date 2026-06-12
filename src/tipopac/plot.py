@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from tipopac.physics import k2nt, tsys_model, weighted_mean_atm_T
+from tipopac.physics import tsys_model
 
 __all__ = [
     "CVsFrequency",
@@ -193,9 +193,7 @@ class ElevationCurve(Plot):
         c_R = tcal_fit_R / tcal_ref_R if tcal_ref_R > 0 else 1.0
         c_L = tcal_fit_L / tcal_ref_L if tcal_ref_L > 0 else 1.0
 
-        freq_Hz = float(cell["frequency"])
-        T_surf_mean = float(cell["weather_T"].mean(skipna=True))
-        Twmt = float(k2nt(weighted_mean_atm_T(T_surf_mean), freq_Hz))
+        Twmt = float(cell["Twmt"])
 
         fit_R = tsys_model(_Z_GRID, T0_R, tau0, Twmt) / c_R
         fit_L = tsys_model(_Z_GRID, T0_L, tau0, Twmt) / c_L
