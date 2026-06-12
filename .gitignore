@@ -10,4 +10,9 @@ wheels/
 .venv
 
 # Local dev checkout of github.com/autocorr/amwrap; pinned via [tool.uv.sources].
-amwrap/
+vendor/amwrap/
+
+# Other local use directories
+benchmarks/
+run/
+notes.md
