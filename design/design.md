@@ -253,9 +253,11 @@ Data variables — fit results (filled by fit.py)
   fit_reason    (scan, antenna, spw)                       str
 
 Data variables — atmospheric profile (filled by atmosphere.attach_profile)
-  atm_pressure     (atm_level,)                            float64   Pa
-  atm_temperature  (scan, atm_level)                       float32   K
-  atm_h2o_vmr      (scan, atm_level)                       float32   volumetric mixing ratio
+  atm_pressure         (atm_level,)                        float64   Pa
+  atm_temperature      (scan, atm_level)                   float32   K
+  atm_h2o_vmr          (scan, atm_level)                   float32   volumetric mixing ratio
+  surface_pressure_hPa (scan,)                             float64   hPa  per-scan median (NaN when no weather_P)
+  pwv_profile_source   (scan,)                             str       per-scan grid provenance (set by build_atm_grids)
 
 Data variables — atmospheric anchor (filled by anchor.anchor_pwv / write_am_curve)
   pwv              (antenna,)                              float32   mm   per-antenna fitted PWV
@@ -275,8 +277,6 @@ Attrs
   selected_bands      : list[str]           (sorted unique band labels present after filtering)
   atm_profile_source  : "open_meteo" | "afgl_<climatology>"
   open_meteo_query    : dict | None      (provenance: lat, lon, time, endpoint, model)
-  surface_pressure_hPa: dict[int, float] (per-scan median surface pressure)
-  pwv_profile_source  : dict[int, str]   (per-scan grid provenance)
 ```
 
 ### 4.1 Representation choices
@@ -495,18 +495,19 @@ across scans.
 
 - Data vars `atm_pressure(atm_level)` (Pa, 1-D),
   `atm_temperature(scan, atm_level)` (K),
-  `atm_h2o_vmr(scan, atm_level)` (dimensionless VMR).
+  `atm_h2o_vmr(scan, atm_level)` (dimensionless VMR),
+  `surface_pressure_hPa(scan,)` (per-scan provenance; omitted when no
+  scan has finite weather_P).
 - Attrs `atm_profile_source` (e.g. `"open_meteo"` or
   `"afgl_midlatitude_summer"`), `open_meteo_query` (lat, lon, time
-  range, endpoint, model; absent on AFGL path), `surface_pressure_hPa`
-  (per-scan provenance).
+  range, endpoint, model; absent on AFGL path).
 
 ### 7.2 `build_atm_grids(pwv_step_mm, freq_step_Hz, n_workers)`
 
 Precomputes one `PwvGrid` per scan from the attached profile and
 stores them on `TippingAnalysis._grids[scan_id]`. Auto-calls
 `fetch_atm_profile` if `atm_pressure` is not yet on the dataset.
-Writes `ds.attrs["pwv_profile_source"][scan_id]` for provenance.
+Writes the `pwv_profile_source(scan,)` data var for provenance.
 
 ### 7.3 `PwvGrid` contract
 

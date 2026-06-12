@@ -207,9 +207,10 @@ class TippingAnalysis:
         ``atm_pressure`` is a no-op.
 
         Adds ``atm_pressure(atm_level)``, ``atm_temperature(scan,
-        atm_level)``, ``atm_h2o_vmr(scan, atm_level)``. Writes attrs
-        ``atm_profile_source``, ``open_meteo_query``,
-        ``surface_pressure_hPa``.
+        atm_level)``, ``atm_h2o_vmr(scan, atm_level)``,
+        ``surface_pressure_hPa(scan,)`` (omitted when no scan has finite
+        weather_P). Writes attrs ``atm_profile_source``,
+        ``open_meteo_query``.
 
         ``source``:
             ``"open-meteo"`` (default) — one HTTP call covering the obs
@@ -235,10 +236,9 @@ class TippingAnalysis:
 
         Auto-calls :meth:`fetch_atm_profile` with defaults if the profile
         is not yet on the dataset. Populates ``self._grids[scan_id] =
-        PwvGrid`` for every scan and writes
-        ``ds.attrs["pwv_profile_source"][scan_id]`` for provenance. Used
-        by the post-fit atmospheric anchor (see
-        ``design/independent_tau_fit.md``); not consumed by :meth:`fit`.
+        PwvGrid`` for every scan and writes the ``pwv_profile_source(scan,)``
+        data var for provenance. Used by the post-fit atmospheric anchor
+        (see ``design/independent_tau_fit.md``); not consumed by :meth:`fit`.
         """
         import astropy.units as u
 
@@ -258,7 +258,7 @@ class TippingAnalysis:
         temp_K = self._ds["atm_temperature"].values  # (scan, atm_level)
         vmr = self._ds["atm_h2o_vmr"].values  # (scan, atm_level)
 
-        sources: dict[int, str] = {}
+        sources_arr = np.full(scan_ids.size, "", dtype=object)
         for i, scan_id in enumerate(scan_ids):
             temperature_q = temp_K[i].astype(np.float64) * u.K
             h2o_q = vmr[i].astype(np.float64) * u.dimensionless_unscaled
@@ -274,9 +274,9 @@ class TippingAnalysis:
                 n_workers=n_workers,
             )
             self._grids[int(scan_id)] = grid
-            sources[int(scan_id)] = atm_source
+            sources_arr[i] = atm_source
 
-        self._ds.attrs["pwv_profile_source"] = sources
+        self._ds["pwv_profile_source"] = (("scan",), sources_arr)
 
     def fit(
         self,

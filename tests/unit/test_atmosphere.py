@@ -168,6 +168,24 @@ def test_attach_profile_afgl_writes_atm_vars() -> None:
     assert ds["atm_temperature"].dims == ("scan", "atm_level")
     assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_summer"
 
+    # surface_pressure_hPa is a data var (so the dataset can round-trip
+    # through netCDF), one entry per scan in hPa.
+    assert "surface_pressure_hPa" in ds.data_vars
+    assert ds["surface_pressure_hPa"].dims == ("scan",)
+    assert ds["surface_pressure_hPa"].dtype == np.float64
+    np.testing.assert_allclose(
+        ds["surface_pressure_hPa"].values,
+        np.full(ds.sizes["scan"], 850.0),
+    )
+
+
+def test_attach_profile_omits_surface_pressure_when_no_weather_P() -> None:
+    """No weather_P → no surface_pressure_hPa data var (optional schema entry)."""
+    ds = _make_fitted_ds(freqs_Hz=[22.2e9]).drop_vars("weather_P")
+    attach_profile(ds, source="afgl", afgl_climatology="midlatitude_summer")
+
+    assert "surface_pressure_hPa" not in ds.data_vars
+
 
 def test_attach_profile_afgl_auto_picks_winter_in_winter() -> None:
     """auto climatology picks midlatitude_winter for a Jan observation."""

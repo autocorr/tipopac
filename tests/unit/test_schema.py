@@ -136,6 +136,50 @@ def test_validate_passes_with_fit_results() -> None:
     assert validate(make_minimal_ds(with_fit_results=True)) is None
 
 
+def test_validate_passes_with_atm_provenance_vars() -> None:
+    """Optional surface_pressure_hPa / pwv_profile_source must validate."""
+    ds = make_minimal_ds()
+    n_scan = ds.sizes["scan"]
+    ds["surface_pressure_hPa"] = (
+        ("scan",),
+        np.full(n_scan, 850.0, dtype=np.float64),
+    )
+    ds["pwv_profile_source"] = (
+        ("scan",),
+        np.full(n_scan, "afgl_midlatitude_summer", dtype=object),
+    )
+    assert validate(ds) is None
+
+
+def test_dataset_with_atm_provenance_vars_roundtrips_to_netcdf(tmp_path) -> None:
+    """The previous attrs were dicts and could not be serialized to netCDF."""
+    ds = make_minimal_ds()
+    n_scan = ds.sizes["scan"]
+    ds["surface_pressure_hPa"] = (
+        ("scan",),
+        np.full(n_scan, 850.0, dtype=np.float64),
+    )
+    ds["pwv_profile_source"] = (
+        ("scan",),
+        np.array(["open_meteo"] * n_scan, dtype=object),
+    )
+
+    out = tmp_path / "ds.nc"
+    ds.to_netcdf(out)
+    import xarray as xr  # noqa: PLC0415 — local import for the round-trip
+
+    rt = xr.open_dataset(out)
+    try:
+        np.testing.assert_array_equal(
+            rt["surface_pressure_hPa"].values,
+            ds["surface_pressure_hPa"].values,
+        )
+        rt_sources = [str(v) for v in rt["pwv_profile_source"].values]
+        assert rt_sources == ["open_meteo"] * n_scan
+    finally:
+        rt.close()
+
+
 def test_validate_rejects_wrong_dtype() -> None:
     ds = make_minimal_ds()
     ds["switched_diff"] = ds["switched_diff"].astype(np.float64)
