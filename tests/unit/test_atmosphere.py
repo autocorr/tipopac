@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -302,8 +302,11 @@ def test_fetch_open_meteo_live() -> None:
 
     from tipopac.atmosphere import _VLA_LAT, _VLA_LON, _fetch_open_meteo
 
-    # A historical date guaranteed to be in archive.
-    date_str = datetime(2024, 1, 15, tzinfo=timezone.utc).strftime("%Y-%m-%d")
+    # 90 days back: past the 16-day forecast horizon so we hit the
+    # archive endpoint, recent enough that open-meteo hasn't pruned
+    # the gfs_hrrr pressure-level data (early-2024 dates have been
+    # pruned upstream).
+    date_str = (datetime.now(tz=timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
 
     pressure, temperature, h2o_vmr, hour_unix_s, meta = _fetch_open_meteo(
         _VLA_LAT, _VLA_LON, date_str, date_str
