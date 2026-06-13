@@ -24,6 +24,7 @@ def _make_plot_ds(
     n_spw: int = 1,
     success: bool = True,
     with_am: bool = False,
+    with_atm: bool = False,
     freq_Hz: float = 22.2e9,
     mode: str = "independent_tau_solve",
 ) -> xr.Dataset:
@@ -110,6 +111,24 @@ def _make_plot_ds(
             np.full(am_freq_grid.size, tau0, dtype=np.float64),
         )
 
+    if with_atm:
+        # 10-level synthetic profile, 850 → 10 hPa. Stored in Pa (schema §5).
+        atm_p_hPa = np.array(
+            [850, 700, 500, 300, 200, 100, 50, 30, 20, 10], dtype=np.float64
+        )
+        atm_p_Pa = atm_p_hPa * 100.0
+        atm_T = np.linspace(280.0, 210.0, atm_p_hPa.size, dtype=np.float32)
+        atm_vmr = np.logspace(-3, -6, atm_p_hPa.size).astype(np.float32)
+        data_vars["atm_pressure"] = (("atm_level",), atm_p_Pa)
+        data_vars["atm_temperature"] = (
+            ("scan", "atm_level"),
+            np.broadcast_to(atm_T, (n_scan, atm_p_hPa.size)).copy(),
+        )
+        data_vars["atm_h2o_vmr"] = (
+            ("scan", "atm_level"),
+            np.broadcast_to(atm_vmr, (n_scan, atm_p_hPa.size)).copy(),
+        )
+
     coords = {
         "scan": np.arange(1, n_scan + 1, dtype=np.intp),
         "antenna": [f"ea{i + 1:02d}" for i in range(n_ant)],
@@ -167,9 +186,7 @@ def test_elevation_curve_returns_layerchart() -> None:
 
 def test_elevation_curve_tooltip_has_polarization_and_tsys() -> None:
     ds = _make_plot_ds(success=True)
-    spec = (
-        PlotData(ds).elevation_curve(scan=1, antenna="ea01", spw=0).build().to_dict()
-    )
+    spec = PlotData(ds).elevation_curve(scan=1, antenna="ea01", spw=0).build().to_dict()
     scatter_layer = next(
         layer for layer in spec["layer"] if layer["mark"]["type"] == "point"
     )
@@ -305,6 +322,112 @@ def test_c_vs_frequency_accepts_scan_list() -> None:
     assert isinstance(chart, alt.LayerChart)
 
 
+def test_atmospheric_profile_returns_layerchart() -> None:
+    ds = _make_plot_ds(n_scan=2, success=True, with_atm=True)
+    chart = PlotData(ds).atmospheric_profile().build()
+    assert isinstance(chart, alt.LayerChart)
+    spec = chart.to_dict()
+    # T line + mixing-ratio line.
+    assert len(spec["layer"]) == 2
+    marks = {layer["mark"]["type"] for layer in spec["layer"]}
+    assert marks == {"line"}
+    # x-scales must be independent so the two measures get separate axes.
+    assert spec["resolve"]["scale"]["x"] == "independent"
+
+
+def test_atmospheric_profile_axes_and_scales() -> None:
+    ds = _make_plot_ds(success=True, with_atm=True)
+    spec = PlotData(ds).atmospheric_profile().build().to_dict()
+    orients: set[str] = set()
+    x_scale_types: set[str] = set()
+    for layer in spec["layer"]:
+        x_enc = layer["encoding"]["x"]
+        orients.add(x_enc["axis"]["orient"])
+        x_scale_types.add(x_enc["scale"].get("type", "linear"))
+        y_scale = layer["encoding"]["y"]["scale"]
+        assert y_scale["type"] == "log"
+        # Domain runs from ~10 hPa at top to ≥850 hPa at bottom (reversed
+        # so high pressure sits at the bottom of the chart).
+        assert y_scale["domain"][0] == 10
+        assert y_scale["domain"][1] >= 850
+        assert y_scale["reverse"] is True
+    assert orients == {"bottom", "top"}
+    assert x_scale_types == {"linear", "log"}
+
+
+def _profile_rows(spec: dict) -> list[dict]:
+    """Extract the (deduped) row list from an AtmosphericProfile spec."""
+    return spec["datasets"][spec["data"]["name"]]
+
+
+def test_atmospheric_profile_kelvin_unit() -> None:
+    ds = _make_plot_ds(success=True, with_atm=True)
+    spec = PlotData(ds).atmospheric_profile(temperature_unit="K").build().to_dict()
+    t_layer = next(
+        layer
+        for layer in spec["layer"]
+        if layer["encoding"]["x"]["axis"]["orient"] == "bottom"
+    )
+    assert t_layer["encoding"]["x"]["field"] == "temperature_K"
+    rows = _profile_rows(spec)
+    # Synthetic profile uses 280 → 210 K; values must be in Kelvin range.
+    assert max(row["temperature_K"] for row in rows) > 250
+
+
+def test_atmospheric_profile_per_scan_selection() -> None:
+    ds = _make_plot_ds(n_scan=3, success=True, with_atm=True)
+    # Make scan 2 distinctive so we can verify selection.
+    ds["atm_temperature"].values[1, :] = 250.0
+    spec = PlotData(ds).atmospheric_profile(scan=2).build().to_dict()
+    rows = _profile_rows(spec)
+    # Scan 2 was set uniformly to 250 K → -23.15 °C.
+    assert all(abs(row["temperature_C"] - (250.0 - 273.15)) < 1e-3 for row in rows)
+
+
+def test_atmospheric_profile_rejects_bad_unit() -> None:
+    import pytest
+
+    ds = _make_plot_ds(success=True, with_atm=True)
+    with pytest.raises(ValueError, match="temperature_unit"):
+        PlotData(ds).atmospheric_profile(temperature_unit="F")
+
+
+def test_atmospheric_profile_line_order_is_pressure() -> None:
+    """Both lines must trace in pressure order, not in T/VMR order.
+
+    Vega-Lite's default ``mark_line`` sort is by x; without an explicit
+    ``order`` encoding a non-monotonic T or VMR profile renders as a
+    zigzag instead of a smooth atmospheric trace.
+    """
+    ds = _make_plot_ds(success=True, with_atm=True)
+    spec = PlotData(ds).atmospheric_profile().build().to_dict()
+    for layer in spec["layer"]:
+        order = layer["encoding"].get("order")
+        assert order is not None
+        assert order["field"] == "pressure_hPa"
+
+
+def test_atmospheric_profile_pan_binds_all_axes() -> None:
+    """Pan/zoom must cover both x axes and the shared y axis.
+
+    The two x scales are independent, so each layer carries its own
+    x-scale binding; y is bound once at the composition level. A drag
+    fires all three so the user can pan both lines together on whichever
+    axis they grab.
+    """
+    ds = _make_plot_ds(success=True, with_atm=True)
+    spec = PlotData(ds).atmospheric_profile().build().to_dict()
+    # Altair hoists layer-level params to the top of the layered spec.
+    # Asserting by explicit name confirms none were deduplicated away
+    # (the failure mode when autogen names collide).
+    scale_params = {
+        p["name"]: p["select"]["encodings"]
+        for p in spec.get("params", [])
+        if p.get("bind") == "scales"
+    }
+    assert scale_params == {"t_pan": ["x"], "q_pan": ["x"], "y_pan": ["y"]}
+
+
 # ---------------------------------------------------------------------------
 # save_all integration tests (write plot files only; no index.html — that
 # lives in tipopac.weblog and is exercised in test_weblog.py).
@@ -393,3 +516,15 @@ def test_save_all_emits_tcal_fit_and_c_in_solve_mode(tmp_path: Path) -> None:
     PlotData(ds).save_all(tmp_path)
     assert (tmp_path / "tcal_fit_vs_frequency.html").exists()
     assert (tmp_path / "c_vs_frequency.html").exists()
+
+
+def test_save_all_writes_atmospheric_profile_when_present(tmp_path: Path) -> None:
+    ds = _make_plot_ds(success=True, with_atm=True)
+    PlotData(ds).save_all(tmp_path)
+    assert (tmp_path / "atmospheric_profile.html").exists()
+
+
+def test_save_all_skips_atmospheric_profile_when_absent(tmp_path: Path) -> None:
+    ds = _make_plot_ds(success=True)
+    PlotData(ds).save_all(tmp_path)
+    assert not (tmp_path / "atmospheric_profile.html").exists()

@@ -31,6 +31,7 @@ _AGGREGATE_PLOTS: tuple[tuple[str, str], ...] = (
     ("tcal_fit_vs_frequency.html", "T_cal (fit) vs frequency"),
     ("tcal_ref_vs_frequency.html", "T_cal (ref) vs frequency"),
     ("c_vs_frequency.html", "c = T_cal,fit / T_cal,ref"),
+    ("atmospheric_profile.html", "Atmospheric profile"),
 )
 _ELEVATION_LABEL = "Elevation curve"
 

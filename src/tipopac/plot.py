@@ -27,6 +27,7 @@ import xarray as xr
 from tipopac.physics import tsys_model
 
 __all__ = [
+    "AtmosphericProfile",
     "CVsFrequency",
     "ElevationCurve",
     "Plot",
@@ -91,12 +92,14 @@ class Plot:
         *,
         title: str,
         width: int | None = None,
+        interactive: bool = True,
     ) -> alt.LayerChart | alt.FacetChart:
-        return chart.properties(
+        chart = chart.properties(
             width=width if width is not None else self.WIDTH,
             height=self.HEIGHT,
             title=title,
-        ).interactive()
+        )
+        return chart.interactive() if interactive else chart
 
 
 def _validate_scans(ds: xr.Dataset, scans: int | list[int] | None) -> list[int]:
@@ -464,6 +467,135 @@ class CVsFrequency(_QuantityVsFrequency):
         )
 
 
+class AtmosphericProfile(Plot):
+    """Vertical T and H₂O mixing-ratio profiles vs pressure.
+
+    Pressure on a log y-axis (850 → 10 hPa, high pressure at the bottom).
+    Temperature on a linear x-axis (bottom edge, firebrick) and H₂O
+    volume mixing ratio on an independent log x-axis (top edge,
+    dodgerblue). ``scan=None`` plots the across-scan mean; an int picks
+    a single scan.
+    """
+
+    def __init__(
+        self,
+        ds: xr.Dataset,
+        scan: int | None = None,
+        temperature_unit: str = "C",
+    ) -> None:
+        super().__init__(ds)
+        if temperature_unit not in ("C", "K"):
+            raise ValueError(
+                f"temperature_unit must be 'C' or 'K', got {temperature_unit!r}"
+            )
+        self.scan = None if scan is None else int(scan)
+        self.temperature_unit = temperature_unit
+
+    def build(self) -> alt.LayerChart | alt.FacetChart:
+        pressure_hPa = self.ds["atm_pressure"].values / 100.0
+        if self.scan is None:
+            temp_K = self.ds["atm_temperature"].mean(dim="scan").values
+            vmr = self.ds["atm_h2o_vmr"].mean(dim="scan").values
+        else:
+            temp_K = self.ds["atm_temperature"].sel(scan=self.scan).values
+            vmr = self.ds["atm_h2o_vmr"].sel(scan=self.scan).values
+
+        temp_C = temp_K - 273.15
+        temp_col = "temperature_C" if self.temperature_unit == "C" else "temperature_K"
+        temp_values = temp_C if self.temperature_unit == "C" else temp_K
+        temp_title = (
+            "Temperature [°C]" if self.temperature_unit == "C" else "Temperature [K]"
+        )
+
+        # Floor VMR for the log axis — open-meteo + amwrap never emit zeros
+        # in practice, but ``mark_line`` with a log scale silently drops any
+        # non-positive sample, which would leave a misleading gap.
+        df = pd.DataFrame(
+            {
+                "pressure_hPa": pressure_hPa,
+                temp_col: temp_values,
+                "h2o_vmr": np.clip(vmr, 1e-12, None),
+            }
+        )
+
+        y_enc = alt.Y(
+            "pressure_hPa:Q",
+            title="Pressure [hPa]",
+            scale=alt.Scale(type="log", domain=[10, 875], reverse=True, nice=False),
+        )
+        # Vega-Lite sorts ``mark_line`` points by the x channel by default,
+        # which would draw the temperature and VMR lines in value order
+        # rather than profile order. Force the trace to follow pressure.
+        line_order = alt.Order("pressure_hPa:Q")
+        # Pan/zoom selections: the two x scales are independent so each
+        # layer carries its own x-scale binding; y is shared at the layer
+        # composition. A single drag fires all three selections, so the
+        # user pans both lines together on whichever axis they grab.
+        t_pan = alt.selection_interval(bind="scales", encodings=["x"], name="t_pan")
+        q_pan = alt.selection_interval(bind="scales", encodings=["x"], name="q_pan")
+        y_pan = alt.selection_interval(bind="scales", encodings=["y"], name="y_pan")
+        t_line = (
+            alt.Chart(df)
+            .mark_line(color=self.COLOR_R_POL, strokeWidth=self.LINE_STROKE)
+            .encode(
+                x=alt.X(
+                    f"{temp_col}:Q",
+                    title=temp_title,
+                    scale=alt.Scale(domain=[-70, 40], nice=False),
+                    axis=alt.Axis(
+                        orient="bottom",
+                        titleColor=self.COLOR_R_POL,
+                        labelColor=self.COLOR_R_POL,
+                    ),
+                ),
+                y=y_enc,
+                order=line_order,
+                tooltip=[
+                    alt.Tooltip("pressure_hPa:Q", format=".1f"),
+                    alt.Tooltip(f"{temp_col}:Q", format=".2f"),
+                ],
+            )
+            .add_params(t_pan)
+        )
+        q_line = (
+            alt.Chart(df)
+            .mark_line(color=self.COLOR_L_POL, strokeWidth=self.LINE_STROKE)
+            .encode(
+                x=alt.X(
+                    "h2o_vmr:Q",
+                    title="H₂O volume mixing ratio",
+                    scale=alt.Scale(type="log", domain=[2e-6, 0.01], nice=False),
+                    axis=alt.Axis(
+                        orient="top",
+                        titleColor=self.COLOR_L_POL,
+                        labelColor=self.COLOR_L_POL,
+                    ),
+                ),
+                y=y_enc,
+                order=line_order,
+                tooltip=[
+                    alt.Tooltip("pressure_hPa:Q", format=".1f"),
+                    alt.Tooltip("h2o_vmr:Q", format=".2e"),
+                ],
+            )
+            .add_params(q_pan)
+        )
+
+        if self.scan is None:
+            n_scan = int(self.ds.sizes["scan"])
+            title = f"mean profile across {n_scan} scan{'s' if n_scan != 1 else ''}"
+        else:
+            title = f"scan {self.scan}"
+        source = self.ds.attrs.get("atm_profile_source")
+        if source:
+            title = f"{title} — {source}"
+
+        chart = (
+            alt.layer(t_line, q_line).resolve_scale(x="independent").add_params(y_pan)
+        )
+        return self._finalize(chart, title=title, interactive=False)
+
+
 class PlotData:
     """Wrap the canonical tipopac dataset and dispatch the four plot types.
 
@@ -488,6 +620,11 @@ class PlotData:
 
     def c_vs_frequency(self, scans: int | list[int] | None = None) -> CVsFrequency:
         return CVsFrequency(self.ds, scans)
+
+    def atmospheric_profile(
+        self, scan: int | None = None, temperature_unit: str = "C"
+    ) -> AtmosphericProfile:
+        return AtmosphericProfile(self.ds, scan, temperature_unit)
 
     def save_all(
         self, out_dir: str | Path = Path("."), plot_elev: bool = False
@@ -518,6 +655,11 @@ class PlotData:
         # Parameter versus frequency plots.
         self.tau_vs_frequency().save(out / "tau_vs_frequency")
         self.tcal_vs_frequency(kind="ref").save(out / "tcal_ref_vs_frequency")
+
+        # Atmospheric profile (mean across scans); skip when the optional
+        # atm vars are not on the dataset.
+        if "atm_pressure" in self.ds.data_vars:
+            self.atmospheric_profile().save(out / "atmospheric_profile")
 
         # Only generate fitted Tcal and "c" plots when fit.
         if self.ds.attrs["mode"] == "independent_tau":
