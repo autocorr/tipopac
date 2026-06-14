@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import xarray as xr
@@ -61,6 +62,71 @@ def _software_versions() -> dict[str, str]:
     return versions
 
 
+def _coerce_attr_for_netcdf(value: Any) -> Any:
+    """Map a Dataset attr to a NetCDF-serializable value.
+
+    NetCDF attrs accept strings, numbers, and 1-D numeric/string arrays.
+    Dicts (e.g. ``open_meteo_query``) and ``None`` are JSON-encoded;
+    ``Path`` is stringified; lists are upcast to ``np.ndarray`` when
+    homogeneously numeric or string, else JSON-encoded.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str | bytes | int | float | np.ndarray):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, list | tuple):
+        if all(isinstance(v, bool | np.bool_) for v in value):
+            return np.asarray(value, dtype=np.int8)
+        if all(isinstance(v, int | np.integer) for v in value):
+            return np.asarray(value, dtype=np.int64)
+        if all(isinstance(v, float | np.floating) for v in value):
+            return np.asarray(value, dtype=np.float64)
+        if all(isinstance(v, str) for v in value):
+            return np.asarray(value, dtype="U")
+        return json.dumps(list(value), default=str)
+    if isinstance(value, dict):
+        return json.dumps(value, default=str)
+    return repr(value)
+
+
+def _write_dataset_netcdf(ds: xr.Dataset, path: Path) -> None:
+    """Write ``ds`` to NetCDF, sanitizing attrs/vars NetCDF cannot encode.
+
+    Works on a shallow copy so the caller's in-memory Dataset is not
+    mutated. Coerces ``pwv_profile_source`` from object dtype to a
+    fixed-width unicode array and runs every Dataset attr through
+    :func:`_coerce_attr_for_netcdf`.
+    """
+    to_write = ds.copy()
+    if "pwv_profile_source" in to_write.data_vars and to_write[
+        "pwv_profile_source"
+    ].dtype == np.dtype("O"):
+        vals = to_write["pwv_profile_source"].values
+        to_write["pwv_profile_source"] = (
+            to_write["pwv_profile_source"].dims,
+            np.asarray([str(v) for v in vals], dtype="U"),
+        )
+    to_write.attrs = {k: _coerce_attr_for_netcdf(v) for k, v in to_write.attrs.items()}
+    to_write.to_netcdf(path)
+
+
+def _write_model_opacity_tsv(ds: xr.Dataset, path: Path) -> None:
+    """Stage-B model atmospheric opacity τ(ν) as a two-column TSV.
+
+    Reads ``am_freq_grid`` (Hz) and ``am_tau`` (nepers) from ``ds`` —
+    both 1-D over ``frequency_dense`` — and writes
+    ``frequency_Hz\\ttau_nepers`` rows.
+    """
+    freq_Hz = np.asarray(ds["am_freq_grid"].values, dtype=np.float64)
+    tau = np.asarray(ds["am_tau"].values, dtype=np.float64)
+    with path.open("w") as f:
+        f.write("frequency_Hz\ttau_nepers\n")
+        for nu, t in zip(freq_Hz, tau, strict=True):
+            f.write(f"{nu:.6e}\t{t:.6e}\n")
+
+
 @dataclass(frozen=True)
 class Result:
     """Return value of `tipopac()` and `TippingAnalysis.result`."""
@@ -83,9 +149,9 @@ def tipopac(
     atm_profile_source: str = "open-meteo",
     afgl_climatology: str = "auto",
     n_workers: int | None = None,
-    plot_dir: str | Path | None = None,
-    caltable_opacity: str | Path | None = None,
-    caltable_tcal: str | Path | None = None,
+    output_dir: str | Path | None = Path("."),
+    caltable_opacity: bool = False,
+    caltable_tcal: bool = False,
 ) -> Result:
     """Run the full tipping-curve pipeline and return a :class:`Result`.
 
@@ -123,13 +189,20 @@ def tipopac(
     n_workers:
         Stage-A fit parallelism. ``None`` runs serially. Higher values
         dispatch via a process pool with single-threaded BLAS per worker.
-    plot_dir:
-        If set, write interactive diagnostic plot ``.html`` files here and
-        generate a self-contained GUI ``index.html`` next to them.
+    output_dir:
+        Directory for all on-disk outputs (created if missing). Default
+        ``Path(".")`` writes into the current working directory. ``None``
+        is compute-only mode — return the :class:`Result` without writing
+        anything. When set, every run produces ``tipopac.nc`` (full
+        Dataset), ``model_opacity.tsv`` (Stage-B τ(ν) at the
+        representative PWV), the interactive ``.html`` plots, and the
+        ``index.html`` weblog.
     caltable_opacity:
-        If set, write a CASA TOpac caltable to this path.
+        Opt-in: write a CASA TOpac caltable to ``output_dir/tipopac.opacity``.
+        No effect when ``output_dir is None``.
     caltable_tcal:
-        If set, write a CALDEVICE-style Tcal caltable to this path.
+        Opt-in: write a CALDEVICE-style Tcal caltable to
+        ``output_dir/tipopac.tcal``. No effect when ``output_dir is None``.
     """
     if mode not in _INDEPENDENT_TO_BACKEND:
         raise ValueError(
@@ -147,13 +220,11 @@ def tipopac(
     ta.build_atm_grids()
     ta.fit(mode=mode, n_workers=n_workers)
 
-    if plot_dir is not None:
-        ta.plot(out_dir=Path(plot_dir))
-        ta.weblog(plot_dir=Path(plot_dir))
-    if caltable_opacity is not None or caltable_tcal is not None:
-        ta.write_caltables(
-            opacity=None if caltable_opacity is None else Path(caltable_opacity),
-            tcal=None if caltable_tcal is None else Path(caltable_tcal),
+    if output_dir is not None:
+        ta.write_outputs(
+            output_dir,
+            caltable_opacity=caltable_opacity,
+            caltable_tcal=caltable_tcal,
         )
     return ta.result
 
@@ -351,6 +422,33 @@ class TippingAnalysis:
             caltables.write_opacity(self._ds, opacity)
         if tcal is not None:
             caltables.write_tcal(self._ds, tcal)
+
+    def write_outputs(
+        self,
+        output_dir: str | Path = Path("."),
+        *,
+        caltable_opacity: bool = False,
+        caltable_tcal: bool = False,
+    ) -> None:
+        """Write every artifact for this analysis into ``output_dir``.
+
+        Creates ``output_dir`` if missing, then writes the full Dataset
+        (``tipopac.nc``), the Stage-B τ(ν) table (``model_opacity.tsv``),
+        every diagnostic plot, and the weblog ``index.html``. Caltables
+        are opt-in via the boolean flags and land in the same directory
+        as ``tipopac.opacity`` / ``tipopac.tcal``.
+        """
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _write_dataset_netcdf(self._ds, out_dir / "tipopac.nc")
+        _write_model_opacity_tsv(self._ds, out_dir / "model_opacity.tsv")
+        self.plot(out_dir=out_dir)
+        self.weblog(plot_dir=out_dir)
+        if caltable_opacity or caltable_tcal:
+            self.write_caltables(
+                opacity=out_dir / "tipopac.opacity" if caltable_opacity else None,
+                tcal=out_dir / "tipopac.tcal" if caltable_tcal else None,
+            )
 
     @property
     def result(self) -> Result:

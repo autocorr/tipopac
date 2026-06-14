@@ -63,9 +63,9 @@ result: Result = tipopac(
     atm_profile_source="open-meteo",                 # | "afgl"
     afgl_climatology="auto",                         # | "midlatitude_summer" | ...
     n_workers=None,                                  # int → multiprocessing.Pool
-    plot_dir=None,                                   # if set, write PNGs here
-    caltable_opacity=None,                           # if set, write CASA TOpac table
-    caltable_tcal=None,                              # if set, write CALDEVICE-style table
+    output_dir=Path("."),                            # dir for all outputs; None = compute-only
+    caltable_opacity=False,                          # opt-in CASA TOpac table → output_dir/tipopac.opacity
+    caltable_tcal=False,                             # opt-in CALDEVICE-style table → output_dir/tipopac.tcal
 )
 
 # --- class-based for staged / notebook use ---
@@ -76,8 +76,7 @@ ta.apply_flags(online=True, file=None)
 ta.fetch_atm_profile(source="open-meteo")
 ta.build_atm_grids()
 ta.fit(mode="independent_tau_solve")
-ta.plot(out_dir="plots/")
-ta.write_caltables(opacity="z.cal", tcal="t.cal")
+ta.write_outputs("out/", caltable_opacity=True, caltable_tcal=True)
 result = ta.result
 ```
 
@@ -139,6 +138,9 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
 - `weblog(plot_dir)` — self-contained GUI `index.html` over the plot
   files via `weblog.build_weblog`.
 - `write_caltables(opacity, tcal)` — optional CASA-format outputs.
+- `write_outputs(output_dir, caltable_opacity, caltable_tcal)` —
+  bundle: NetCDF (`tipopac.nc`), Stage-B τ(ν) TSV (`model_opacity.tsv`),
+  plots, weblog, and opt-in caltables all into one directory.
 
 ---
 
@@ -262,8 +264,8 @@ Data variables — atmospheric profile (filled by atmosphere.attach_profile)
 Data variables — atmospheric anchor (filled by anchor.anchor_pwv / write_am_curve)
   pwv              (antenna,)                              float32   mm   per-antenna fitted PWV
   pwv_err          (antenna,)                              float32   mm   1σ from Cramér–Rao
-  am_freq_grid     (frequency_dense,)                      float64   Hz   dense am output axis
-  am_tau           (frequency_dense,)                      float64   nepers, at representative PWV
+  am_freq_grid     (frequency_dense,)                      float64   Hz   dense am output axis (TSV column 1)
+  am_tau           (frequency_dense,)                      float64   nepers, at representative PWV (TSV column 2)
 
 Attrs
   source_path         : str
