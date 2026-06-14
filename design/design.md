@@ -331,13 +331,14 @@ disabled, no frame transform is needed.
 propagation gives
 
 ```
-σ_Tsys ≈ √2 · Tsys² / (T_c · √(Δν · τ_int))
+σ_Tsys ≈ 2 · Tsys² / (T_c · √(Δν · τ_int))
 ```
 
 with `Δν` the per-spw bandwidth and `τ_int` the per-sample
-`exposure_time`. The `Tsys / T_c` amplification (~10–60× for VLA
-bands) is the physically essential part — dropping it would mis-scale
-σ and trip 4σ residual rejection on most samples.
+`exposure_time` (the total ON+OFF Walsh interval; each state
+accumulates `τ_int / 2`). The `Tsys / T_c` amplification (~10–60× for
+VLA bands) is the physically essential part — dropping it would
+mis-scale σ and trip 4σ residual rejection on most samples.
 
 ### 5.4 Stage A fit
 

@@ -257,19 +257,22 @@ def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
     here G is derived from D via G = D/T_c. Propagating the uncertainties in S
     and D and dropping second order terms it can be shown that:
 
-        σ_Tsys ≈ √2 · Tsys² / (T_c · √(Δν · τ_int))
+        σ_Tsys ≈ 2 · Tsys² / (T_c · √(Δν · τ_int))
 
-    T_c is ``tcal_ref`` rather than the solve-mode ``tcal_fit``: empirically
-    that choice gives the cleaner σ, since ``tcal_fit`` carries trajectory
-    noise from the near-degenerate (T_0, c, τ) fit ridge. Computing σ here,
-    pre-fit, also makes the noise model identical across fit modes.
+    The `2` prefactor uses the convention that ``τ_int`` (= MS ``EXPOSURE``)
+    is the total ON+OFF Walsh interval, with each state accumulating
+    ``τ_int / 2`` of integration time. T_c is ``tcal_ref`` rather than the
+    solve-mode ``tcal_fit``: empirically that choice gives the cleaner σ,
+    since ``tcal_fit`` carries trajectory noise from the near-degenerate
+    (T_0, c, τ) fit ridge. Computing σ here, pre-fit, also makes the noise
+    model identical across fit modes.
 
     Inputs:
         Δν      — ``bandwidth`` coord (per spw), Hz
         τ_int   — ``exposure_time`` (per scan, time), s
         T_c     — ``tcal_ref`` (per antenna, spw, pol), K
 
-    See ``design/design.md`` §5.3.
+    See ``design/design.md`` §5.3 and ``old_context/sigma_tsys_derivation.md``.
     """
     n_scan, n_ant, n_spw, n_pol, n_time = tsys.shape
     tcal = ds["tcal_ref"].values  # (ant, spw, pol)
@@ -282,7 +285,7 @@ def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
 
     with np.errstate(divide="ignore", invalid="ignore"):
         denom = tcal_b * np.sqrt(bw_b * expo_b)
-        sigma = np.sqrt(2.0) * (tsys * tsys) / denom
+        sigma = 2.0 * (tsys * tsys) / denom
 
     finite = np.isfinite(tsys) & np.isfinite(denom) & (denom > 0)
     return np.where(finite, sigma, np.nan).astype(np.float32)
