@@ -429,6 +429,108 @@ def test_atmospheric_profile_pan_binds_all_axes() -> None:
 
 
 # ---------------------------------------------------------------------------
+# fit_quality_heatmap
+# ---------------------------------------------------------------------------
+
+
+def test_fit_quality_heatmap_single_scan_is_rect_chart() -> None:
+    ds = _make_plot_ds(n_ant=3, n_spw=2, success=True)
+    chart = PlotData(ds).fit_quality_heatmap(scans=1).build()
+    spec = chart.to_dict()
+    # Single scan → no facet wrapper; a plain Chart with mark.rect.
+    assert spec["mark"]["type"] == "rect"
+    assert spec["encoding"]["x"]["field"] == "spw"
+    assert spec["encoding"]["y"]["field"] == "antenna"
+
+
+def test_fit_quality_heatmap_multi_scan_facets_by_scan() -> None:
+    ds = _make_plot_ds(n_scan=3, n_ant=2, n_spw=2, success=True)
+    chart = PlotData(ds).fit_quality_heatmap().build()
+    spec = chart.to_dict()
+    # Facet column carries scan; the inner spec is the rect chart.
+    assert spec["facet"]["column"]["field"] == "scan"
+    assert spec["spec"]["mark"]["type"] == "rect"
+
+
+def test_fit_quality_heatmap_tooltip_carries_required_fields() -> None:
+    ds = _make_plot_ds(n_ant=2, n_spw=2, success=True)
+    spec = PlotData(ds).fit_quality_heatmap(scans=1).build().to_dict()
+    fields = [item.get("field") for item in spec["encoding"]["tooltip"]]
+    for required in ("antenna", "spw", "scan", "flag_fraction", "fit_reason"):
+        assert required in fields
+
+
+def test_fit_quality_heatmap_colors_by_fit_reason() -> None:
+    ds = _make_plot_ds(n_ant=2, n_spw=2, success=True)
+    spec = PlotData(ds).fit_quality_heatmap(scans=1).build().to_dict()
+    color = spec["encoding"]["color"]
+    assert color["field"] == "fit_reason"
+    # Domain locks the categorical order so the legend renders consistently.
+    assert "ok" in color["scale"]["domain"]
+    assert "fit_failed" in color["scale"]["domain"]
+
+
+def test_fit_quality_heatmap_flag_fraction_excludes_nan_pad() -> None:
+    """Denominator must be n_real_samples, not n_time × n_pol.
+
+    Both readers NaN-init switched_diff and only write observed cells,
+    so the real-sample mask is `~isnan(switched_diff)`. A scan with 2 of
+    5 time slots holding data and one (pol, time) cell flagged within
+    the data region should report 1/(2*2)=0.25, not 1/(5*2)=0.10.
+    """
+    ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
+    # Mark the last 3 time samples as NaN-pad (no input data, flag=True).
+    ds["switched_diff"].values[0, 0, 0, :, 2:] = np.nan
+    ds["flag"].values[0, 0, 0, :, 2:] = True
+    # One genuine flag in the real region: (pol=0, time=1).
+    ds["flag"].values[0, 0, 0, 0, 1] = True
+    spec = PlotData(ds).fit_quality_heatmap(scans=1).build().to_dict()
+    rows = spec["datasets"][spec["data"]["name"]]
+    [row] = rows
+    assert abs(row["flag_fraction"] - 0.25) < 1e-6
+
+
+def test_fit_quality_heatmap_drops_missing_spw_cells() -> None:
+    """Cells the scan never observed must not render.
+
+    Readers leave ``switched_diff`` all-NaN with ``flag=True`` for
+    (scan, antenna, spw) cells the scan didn't observe (one band per
+    scan on the VLA, ~108 spws). Without the drop, those cells
+    dominate the heatmap as fully-flagged ``too_few_samples``.
+    """
+    ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=2, success=True)
+    # spw=1 was never observed: no data, flag fully True.
+    ds["switched_diff"].values[0, 0, 1, :, :] = np.nan
+    ds["flag"].values[0, 0, 1, :, :] = True
+    spec = PlotData(ds).fit_quality_heatmap(scans=1).build().to_dict()
+    rows = spec["datasets"][spec["data"]["name"]]
+    assert {row["spw"] for row in rows} == {0}
+
+
+def test_fit_quality_heatmap_facet_x_scale_is_independent() -> None:
+    """VLA scans observe disjoint spw blocks (one band per scan).
+
+    Without independent x scales, every facet inherits the global spw
+    domain and the data crowds into a thin scan-specific strip — cells
+    outside the first facet end up at off-screen x positions. The fix
+    is ``resolve_scale(x='independent')`` so each facet sizes its own
+    x-axis to its actually-observed spws.
+    """
+    ds = _make_plot_ds(n_scan=3, n_ant=2, n_spw=2, success=True)
+    spec = PlotData(ds).fit_quality_heatmap().build().to_dict()
+    assert spec["resolve"]["scale"]["x"] == "independent"
+
+
+def test_fit_quality_heatmap_accepts_scan_list() -> None:
+    ds = _make_plot_ds(n_scan=3, n_ant=2, n_spw=2, success=True)
+    chart = PlotData(ds).fit_quality_heatmap(scans=[1, 3]).build()
+    spec = chart.to_dict()
+    assert spec["facet"]["column"]["field"] == "scan"
+    scans_in_data = {row["scan"] for row in spec["datasets"][spec["data"]["name"]]}
+    assert scans_in_data == {1, 3}
+
+
+# ---------------------------------------------------------------------------
 # save_all integration tests (write plot files only; no index.html — that
 # lives in tipopac.weblog and is exercised in test_weblog.py).
 # ---------------------------------------------------------------------------
@@ -516,6 +618,12 @@ def test_save_all_emits_tcal_fit_and_c_in_solve_mode(tmp_path: Path) -> None:
     PlotData(ds).save_all(tmp_path)
     assert (tmp_path / "tcal_fit_vs_frequency.html").exists()
     assert (tmp_path / "c_vs_frequency.html").exists()
+
+
+def test_save_all_writes_fit_quality_heatmap(tmp_path: Path) -> None:
+    ds = _make_plot_ds(n_scan=2, n_ant=2, n_spw=2, success=True)
+    PlotData(ds).save_all(tmp_path)
+    assert (tmp_path / "fit_quality_heatmap.html").exists()
 
 
 def test_save_all_writes_atmospheric_profile_when_present(tmp_path: Path) -> None:

@@ -114,6 +114,13 @@ def test_build_weblog_announces_missing_plot_string(tmp_path: Path) -> None:
     assert "Plot not found:" in body
 
 
+def test_build_weblog_lists_fit_quality_heatmap_when_present(tmp_path: Path) -> None:
+    _touch(tmp_path / "fit_quality_heatmap.html")
+    body = build_weblog(tmp_path).read_text(encoding="utf-8")
+    assert "fit_quality_heatmap.html" in body
+    assert "Fit quality heatmap" in body
+
+
 def test_build_weblog_ignores_existing_index_html(tmp_path: Path) -> None:
     _touch(tmp_path / "tau_vs_frequency.html")
     _touch(tmp_path / "index.html")  # stale index from a prior run

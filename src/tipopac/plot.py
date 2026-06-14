@@ -30,6 +30,7 @@ __all__ = [
     "AtmosphericProfile",
     "CVsFrequency",
     "ElevationCurve",
+    "FitQualityHeatmap",
     "Plot",
     "PlotData",
     "TauVsFrequency",
@@ -596,6 +597,105 @@ class AtmosphericProfile(Plot):
         return self._finalize(chart, title=title, interactive=False)
 
 
+class FitQualityHeatmap(Plot):
+    """Per-(antenna, spw) fit-quality heatmap, faceted by scan when many.
+
+    Cell colour encodes ``fit_reason``; tooltip carries antenna, spw,
+    scan, the fraction of flagged time/polarisation samples within the
+    tipping scan (NaN time-pad excluded from the denominator), and the
+    fit quality label.
+    """
+
+    # Categorical palette ordered worst → best so the legend ranks
+    # failures intuitively. "ok" is a low-contrast grey so failures pop.
+    _REASON_DOMAIN: tuple[str, ...] = (
+        "ok",
+        "poorly_identified",
+        "high_chi2",
+        "fit_failed",
+        "too_few_samples",
+    )
+    _REASON_RANGE: tuple[str, ...] = (
+        "lightgray",
+        "khaki",
+        "orange",
+        "orangered",
+        "firebrick",
+    )
+
+    def __init__(self, ds: xr.Dataset, scans: int | list[int] | None = None) -> None:
+        super().__init__(ds)
+        self.scans = _validate_scans(ds, scans)
+        self.ds_sub = ds.sel(scan=self.scans)
+
+    def build(self) -> alt.Chart | alt.FacetChart:
+        ds_sub = self.ds_sub
+
+        # Flagged fraction per (scan, antenna, spw). The denominator is the
+        # number of real input samples — both readers NaN-init switched_diff
+        # and only write the (scan, antenna, spw) cells the scan actually
+        # observed, so ``~isnan(switched_diff)`` masks out NaN time-pad AND
+        # missing-spw cells in one shot. Cells with zero real samples are
+        # dropped entirely so unobserved (antenna, spw) pairs render blank
+        # instead of as fully-flagged ``too_few_samples`` cells.
+        has_data = ~ds_sub["switched_diff"].isnull()
+        denom = has_data.sum(dim=("polarization", "time"))
+        flagged = (ds_sub["flag"] & has_data).sum(dim=("polarization", "time"))
+        flag_frac = (flagged / denom.where(denom > 0)).astype(np.float32)
+
+        plot_ds = xr.Dataset(
+            {"flag_fraction": flag_frac, "fit_reason": ds_sub["fit_reason"]}
+        )
+        df = plot_ds.to_dataframe().reset_index()
+        df = df[df["flag_fraction"].notna()]
+
+        color = alt.Color(
+            "fit_reason:N",
+            scale=alt.Scale(
+                domain=list(self._REASON_DOMAIN), range=list(self._REASON_RANGE)
+            ),
+            legend=alt.Legend(title="Fit quality"),
+        )
+        tooltip = [
+            "antenna:N",
+            "spw:N",
+            "scan:N",
+            alt.Tooltip("flag_fraction:Q", format=".1%", title="Flagged fraction"),
+            alt.Tooltip("fit_reason:N", title="Fit quality"),
+        ]
+
+        cell_h, cell_w = 16, 22
+        chart_h = max(120, ds_sub.sizes["antenna"] * cell_h)
+        # Width is sized from the busiest facet's spw count, not the global
+        # spw axis. VLA scans observe disjoint spw blocks (one band per
+        # scan); without independent x scales each facet would inherit the
+        # global 0..N_spw domain and the data would crowd into a thin
+        # strip at scan-specific x positions.
+        max_spws_per_facet = int(df.groupby("scan")["spw"].nunique().max())
+        facet_w = max(120, max_spws_per_facet * cell_w)
+
+        base = (
+            alt.Chart(df)
+            .mark_rect(stroke="white", strokeWidth=0.5)
+            .encode(
+                x=alt.X("spw:O", title="Spectral window"),
+                y=alt.Y("antenna:N", title="Antenna"),
+                color=color,
+                tooltip=tooltip,
+            )
+            .properties(width=facet_w, height=chart_h)
+        )
+
+        title = _scan_title(self.scans)
+        if len(self.scans) == 1:
+            return base.properties(title=title)
+        return (
+            base.facet(column=alt.Column("scan:N", title="Scan"))
+            .resolve_scale(x="independent")
+            .properties(title=title)
+        )
+
+
 class PlotData:
     """Wrap the canonical tipopac dataset and dispatch the four plot types.
 
@@ -626,6 +726,11 @@ class PlotData:
     ) -> AtmosphericProfile:
         return AtmosphericProfile(self.ds, scan, temperature_unit)
 
+    def fit_quality_heatmap(
+        self, scans: int | list[int] | None = None
+    ) -> FitQualityHeatmap:
+        return FitQualityHeatmap(self.ds, scans)
+
     def save_all(
         self, out_dir: str | Path = Path("."), plot_elev: bool = False
     ) -> None:
@@ -655,6 +760,10 @@ class PlotData:
         # Parameter versus frequency plots.
         self.tau_vs_frequency().save(out / "tau_vs_frequency")
         self.tcal_vs_frequency(kind="ref").save(out / "tcal_ref_vs_frequency")
+
+        # Fit-quality heatmap over every scan.
+        if "fit_reason" in self.ds.data_vars:
+            self.fit_quality_heatmap().save(out / "fit_quality_heatmap")
 
         # Atmospheric profile (mean across scans); skip when the optional
         # atm vars are not on the dataset.
