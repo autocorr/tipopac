@@ -308,7 +308,9 @@ def _compute_twmt_grid(
                 out[i_scan, i_spw] = float(t_mean[i_scan, i_spw])
             elif np.isfinite(surf_mean[i_scan]):
                 out[i_scan, i_spw] = float(
-                    k2nt(weighted_mean_atm_T(surf_mean[i_scan]), float(freq_vals[i_spw]))
+                    k2nt(
+                        weighted_mean_atm_T(surf_mean[i_scan]), float(freq_vals[i_spw])
+                    )
                 )
     return out
 

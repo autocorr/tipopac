@@ -531,6 +531,131 @@ def test_fit_quality_heatmap_accepts_scan_list() -> None:
 
 
 # ---------------------------------------------------------------------------
+# predicted_tsys helper + residual_rms_heatmap
+# ---------------------------------------------------------------------------
+
+
+def test_predicted_tsys_default_uses_zenith_angle_shape() -> None:
+    from tipopac.physics import predicted_tsys
+
+    ds = _make_plot_ds(n_scan=2, n_ant=3, n_spw=2, success=True)
+    pred = predicted_tsys(ds)
+    assert pred.dims == ("scan", "antenna", "spw", "polarization", "time")
+    assert pred.shape == (2, 3, 2, 2, 5)
+
+
+def test_predicted_tsys_dense_grid_overlay_matches_tsys_model() -> None:
+    """Dense-grid call must equal tsys_model evaluated point-wise."""
+    from tipopac.physics import predicted_tsys, tsys_model
+
+    ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
+    cell = ds.sel(scan=1, antenna="ea01", spw=0)
+    z_grid = xr.DataArray(np.linspace(35.0, 75.0, 9), dims=("z",))
+    pred = predicted_tsys(cell, z_deg=z_grid).sel(polarization="R").values
+    expected = tsys_model(
+        z_grid.values,
+        float(cell["T0"].sel(polarization="R")),
+        float(cell["tau_zenith"]),
+        float(cell["Twmt"]),
+    )
+    # tcal_fit == tcal_ref in the fixture, so c == 1 and pred == tsys_model.
+    np.testing.assert_allclose(pred, expected, rtol=1e-5)
+
+
+def test_predicted_tsys_divides_by_c_in_tcal_solve_mode() -> None:
+    """When tcal_fit/tcal_ref != 1, the prediction must divide by c."""
+    from tipopac.physics import predicted_tsys, tsys_model
+
+    ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
+    ds["tcal_fit"].values[:] *= 1.2  # c = 1.2 for both pols
+    cell = ds.sel(scan=1, antenna="ea01", spw=0)
+    z_grid = xr.DataArray(np.linspace(35.0, 75.0, 5), dims=("z",))
+    pred = predicted_tsys(cell, z_deg=z_grid).sel(polarization="R").values
+    base = tsys_model(
+        z_grid.values,
+        float(cell["T0"].sel(polarization="R")),
+        float(cell["tau_zenith"]),
+        float(cell["Twmt"]),
+    )
+    np.testing.assert_allclose(pred, base / 1.2, rtol=1e-5)
+
+
+def test_residual_rms_heatmap_zero_when_data_equals_model() -> None:
+    """If Tsys is set exactly to the model, the heatmap RMS is 0."""
+    from tipopac.physics import predicted_tsys
+
+    ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
+    ds["Tsys"].values[:] = predicted_tsys(ds).values
+    spec = PlotData(ds).residual_rms_heatmap(scans=1).build().to_dict()
+    rows = spec["datasets"][spec["data"]["name"]]
+    [row] = rows
+    assert row["residual_rms_K"] == 0.0
+
+
+def test_residual_rms_heatmap_matches_closed_form_offset() -> None:
+    """Constant +2 K offset on Tsys yields RMS = 2 K everywhere."""
+    from tipopac.physics import predicted_tsys
+
+    ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
+    ds["Tsys"].values[:] = predicted_tsys(ds).values + 2.0
+    spec = PlotData(ds).residual_rms_heatmap(scans=1).build().to_dict()
+    rows = spec["datasets"][spec["data"]["name"]]
+    [row] = rows
+    assert abs(row["residual_rms_K"] - 2.0) < 1e-4
+
+
+def test_residual_rms_heatmap_drops_failed_fit_cells() -> None:
+    """NaN fit params ⇒ NaN predicted Tsys ⇒ NaN RMS ⇒ row dropped."""
+    ds = _make_plot_ds(n_scan=1, n_ant=2, n_spw=1, success=True)
+    # ea02 has no valid fit: NaN out T0 and tau_zenith.
+    ds["T0"].values[0, 1, 0, :] = np.nan
+    ds["tau_zenith"].values[0, 1, 0] = np.nan
+    ds["fit_reason"].values[0, 1, 0] = "fit_failed"
+    spec = PlotData(ds).residual_rms_heatmap(scans=1).build().to_dict()
+    rows = spec["datasets"][spec["data"]["name"]]
+    antennas = {row["antenna"] for row in rows}
+    assert antennas == {"ea01"}
+
+
+def test_residual_rms_heatmap_color_is_continuous_log() -> None:
+    ds = _make_plot_ds(n_ant=2, n_spw=2, success=True)
+    spec = PlotData(ds).residual_rms_heatmap(scans=1).build().to_dict()
+    color = spec["encoding"]["color"]
+    assert color["field"] == "residual_rms_K"
+    assert color["type"] == "quantitative"
+    assert color["scale"]["type"] == "log"
+
+
+def test_residual_rms_heatmap_tooltip_carries_fit_reason() -> None:
+    """fit_reason is the categorical diagnostic alongside the continuous RMS."""
+    ds = _make_plot_ds(n_ant=2, n_spw=2, success=True)
+    spec = PlotData(ds).residual_rms_heatmap(scans=1).build().to_dict()
+    fields = [item.get("field") for item in spec["encoding"]["tooltip"]]
+    for required in (
+        "antenna",
+        "spw",
+        "scan",
+        "flag_fraction",
+        "residual_rms_K",
+        "fit_reason",
+    ):
+        assert required in fields
+
+
+def test_residual_rms_heatmap_multi_scan_facets_independent_x() -> None:
+    ds = _make_plot_ds(n_scan=3, n_ant=2, n_spw=2, success=True)
+    spec = PlotData(ds).residual_rms_heatmap().build().to_dict()
+    assert spec["facet"]["column"]["field"] == "scan"
+    assert spec["resolve"]["scale"]["x"] == "independent"
+
+
+def test_save_all_writes_residual_rms_heatmap(tmp_path: Path) -> None:
+    ds = _make_plot_ds(n_scan=2, n_ant=2, n_spw=2, success=True)
+    PlotData(ds).save_all(tmp_path)
+    assert (tmp_path / "residual_rms_heatmap.html").exists()
+
+
+# ---------------------------------------------------------------------------
 # save_all integration tests (write plot files only; no index.html — that
 # lives in tipopac.weblog and is exercised in test_weblog.py).
 # ---------------------------------------------------------------------------

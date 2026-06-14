@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from tipopac.physics import tsys_model
+from tipopac.physics import predicted_tsys
 
 __all__ = [
     "AtmosphericProfile",
@@ -33,6 +33,7 @@ __all__ = [
     "FitQualityHeatmap",
     "Plot",
     "PlotData",
+    "ResidualRmsHeatmap",
     "TauVsFrequency",
     "TcalVsFrequency",
 ]
@@ -190,17 +191,11 @@ class ElevationCurve(Plot):
         tau_err_val = float(cell["tau_err"])
         T0_R = float(cell["T0"].sel(polarization="R"))
         T0_L = float(cell["T0"].sel(polarization="L"))
-        tcal_fit_R = float(cell["tcal_fit"].sel(polarization="R"))
-        tcal_fit_L = float(cell["tcal_fit"].sel(polarization="L"))
-        tcal_ref_R = float(cell["tcal_ref"].sel(polarization="R"))
-        tcal_ref_L = float(cell["tcal_ref"].sel(polarization="L"))
-        c_R = tcal_fit_R / tcal_ref_R if tcal_ref_R > 0 else 1.0
-        c_L = tcal_fit_L / tcal_ref_L if tcal_ref_L > 0 else 1.0
 
-        Twmt = float(cell["Twmt"])
-
-        fit_R = tsys_model(_Z_GRID, T0_R, tau0, Twmt) / c_R
-        fit_L = tsys_model(_Z_GRID, T0_L, tau0, Twmt) / c_L
+        z_grid = xr.DataArray(_Z_GRID, dims=("z",))
+        pred = predicted_tsys(cell, z_deg=z_grid)
+        fit_R = pred.sel(polarization="R").values
+        fit_L = pred.sel(polarization="L").values
         model_df = pd.DataFrame(
             {
                 "zenith_angle": np.concatenate([_Z_GRID, _Z_GRID]),
@@ -597,7 +592,111 @@ class AtmosphericProfile(Plot):
         return self._finalize(chart, title=title, interactive=False)
 
 
-class FitQualityHeatmap(Plot):
+class _Heatmap(Plot):
+    """Per-(antenna, spw) ``mark_rect`` heatmap, faceted by scan when many.
+
+    Shared scaffolding for the categorical fit-quality and continuous
+    residual-RMS heatmaps. Subclasses provide a metric DataArray, a
+    column name, a colour encoding, and a tooltip entry; the base handles
+    flag-fraction computation, dropping unobserved cells, facet layout,
+    and ``resolve_scale(x="independent")`` so each scan sizes to its own
+    observed spws (VLA scans observe disjoint spw blocks).
+    """
+
+    CELL_HEIGHT = 16
+    CELL_WIDTH = 22
+
+    def __init__(self, ds: xr.Dataset, scans: int | list[int] | None = None) -> None:
+        super().__init__(ds)
+        self.scans = _validate_scans(ds, scans)
+        self.ds_sub = ds.sel(scan=self.scans)
+
+    # Hooks ----------------------------------------------------------------
+    def _metric_name(self) -> str:
+        raise NotImplementedError
+
+    def _metric_array(self) -> xr.DataArray:
+        raise NotImplementedError
+
+    def _color_encoding(self) -> alt.Color:
+        raise NotImplementedError
+
+    def _metric_tooltip(self) -> alt.Tooltip:
+        raise NotImplementedError
+
+    def _extra_tooltip(self) -> list[alt.Tooltip]:
+        """Subclass hook for extra tooltip entries beyond the shared four."""
+        return []
+
+    def _extra_data_arrays(self) -> dict[str, xr.DataArray]:
+        """Subclass hook for extra columns to merge into the DataFrame.
+
+        Use this to surface columns referenced by ``_extra_tooltip`` (the
+        flag-fraction and metric columns are always present).
+        """
+        return {}
+
+    # ----------------------------------------------------------------------
+    def _flag_fraction(self) -> xr.DataArray:
+        # Both readers NaN-init switched_diff and only write observed cells,
+        # so ``~isnan(switched_diff)`` masks out NaN time-pad AND missing-spw
+        # cells in one shot. Cells with zero real samples drop out below.
+        has_data = ~self.ds_sub["switched_diff"].isnull()
+        denom = has_data.sum(dim=("polarization", "time"))
+        flagged = (self.ds_sub["flag"] & has_data).sum(dim=("polarization", "time"))
+        return (flagged / denom.where(denom > 0)).astype(np.float32)
+
+    def build(self) -> alt.Chart | alt.FacetChart:
+        metric_name = self._metric_name()
+        plot_ds = xr.Dataset(
+            {
+                "flag_fraction": self._flag_fraction(),
+                metric_name: self._metric_array(),
+                **self._extra_data_arrays(),
+            }
+        )
+        df = plot_ds.to_dataframe().reset_index()
+        df = df[df["flag_fraction"].notna() & df[metric_name].notna()]
+
+        tooltip: list = [
+            "antenna:N",
+            "spw:N",
+            "scan:N",
+            alt.Tooltip("flag_fraction:Q", format=".1%", title="Flagged fraction"),
+            self._metric_tooltip(),
+            *self._extra_tooltip(),
+        ]
+
+        chart_h = max(120, self.ds_sub.sizes["antenna"] * self.CELL_HEIGHT)
+        # Width is sized from the busiest facet's spw count, not the global
+        # spw axis. Without independent x scales the data would otherwise
+        # crowd into a thin scan-specific strip and the rest go off-screen.
+        max_spws_per_facet = int(df.groupby("scan")["spw"].nunique().max())
+        facet_w = max(120, max_spws_per_facet * self.CELL_WIDTH)
+
+        base = (
+            alt.Chart(df)
+            .mark_rect(stroke="white", strokeWidth=0.5)
+            .encode(
+                x=alt.X("spw:O", title="Spectral window"),
+                y=alt.Y("antenna:N", title="Antenna"),
+                color=self._color_encoding(),
+                tooltip=tooltip,
+            )
+            .properties(width=facet_w, height=chart_h)
+        )
+
+        title = _scan_title(self.scans)
+        if len(self.scans) == 1:
+            return base.properties(title=title)
+        return (
+            base.facet(column=alt.Column("scan:N", title="Scan"))
+            .resolve_scale(x="independent")
+            .properties(title=title)
+        )
+
+
+class FitQualityHeatmap(_Heatmap):
     """Per-(antenna, spw) fit-quality heatmap, faceted by scan when many.
 
     Cell colour encodes ``fit_reason``; tooltip carries antenna, spw,
@@ -606,7 +705,7 @@ class FitQualityHeatmap(Plot):
     fit quality label.
     """
 
-    # Categorical palette ordered worst → best so the legend ranks
+    # Categorical palette ordered best → worst so the legend ranks
     # failures intuitively. "ok" is a low-contrast grey so failures pop.
     _REASON_DOMAIN: tuple[str, ...] = (
         "ok",
@@ -623,77 +722,60 @@ class FitQualityHeatmap(Plot):
         "firebrick",
     )
 
-    def __init__(self, ds: xr.Dataset, scans: int | list[int] | None = None) -> None:
-        super().__init__(ds)
-        self.scans = _validate_scans(ds, scans)
-        self.ds_sub = ds.sel(scan=self.scans)
+    def _metric_name(self) -> str:
+        return "fit_reason"
 
-    def build(self) -> alt.Chart | alt.FacetChart:
-        ds_sub = self.ds_sub
+    def _metric_array(self) -> xr.DataArray:
+        return self.ds_sub["fit_reason"]
 
-        # Flagged fraction per (scan, antenna, spw). The denominator is the
-        # number of real input samples — both readers NaN-init switched_diff
-        # and only write the (scan, antenna, spw) cells the scan actually
-        # observed, so ``~isnan(switched_diff)`` masks out NaN time-pad AND
-        # missing-spw cells in one shot. Cells with zero real samples are
-        # dropped entirely so unobserved (antenna, spw) pairs render blank
-        # instead of as fully-flagged ``too_few_samples`` cells.
-        has_data = ~ds_sub["switched_diff"].isnull()
-        denom = has_data.sum(dim=("polarization", "time"))
-        flagged = (ds_sub["flag"] & has_data).sum(dim=("polarization", "time"))
-        flag_frac = (flagged / denom.where(denom > 0)).astype(np.float32)
-
-        plot_ds = xr.Dataset(
-            {"flag_fraction": flag_frac, "fit_reason": ds_sub["fit_reason"]}
-        )
-        df = plot_ds.to_dataframe().reset_index()
-        df = df[df["flag_fraction"].notna()]
-
-        color = alt.Color(
+    def _color_encoding(self) -> alt.Color:
+        return alt.Color(
             "fit_reason:N",
             scale=alt.Scale(
                 domain=list(self._REASON_DOMAIN), range=list(self._REASON_RANGE)
             ),
             legend=alt.Legend(title="Fit quality"),
         )
-        tooltip = [
-            "antenna:N",
-            "spw:N",
-            "scan:N",
-            alt.Tooltip("flag_fraction:Q", format=".1%", title="Flagged fraction"),
-            alt.Tooltip("fit_reason:N", title="Fit quality"),
-        ]
 
-        cell_h, cell_w = 16, 22
-        chart_h = max(120, ds_sub.sizes["antenna"] * cell_h)
-        # Width is sized from the busiest facet's spw count, not the global
-        # spw axis. VLA scans observe disjoint spw blocks (one band per
-        # scan); without independent x scales each facet would inherit the
-        # global 0..N_spw domain and the data would crowd into a thin
-        # strip at scan-specific x positions.
-        max_spws_per_facet = int(df.groupby("scan")["spw"].nunique().max())
-        facet_w = max(120, max_spws_per_facet * cell_w)
+    def _metric_tooltip(self) -> alt.Tooltip:
+        return alt.Tooltip("fit_reason:N", title="Fit quality")
 
-        base = (
-            alt.Chart(df)
-            .mark_rect(stroke="white", strokeWidth=0.5)
-            .encode(
-                x=alt.X("spw:O", title="Spectral window"),
-                y=alt.Y("antenna:N", title="Antenna"),
-                color=color,
-                tooltip=tooltip,
-            )
-            .properties(width=facet_w, height=chart_h)
+
+class ResidualRmsHeatmap(_Heatmap):
+    """Per-(antenna, spw) Tsys-fit residual RMS in Kelvin, faceted by scan.
+
+    The predicted Tsys curve is reconstructed from the persisted fit
+    parameters (``T0``, ``tau_zenith``, ``Twmt``, ``tcal_fit/tcal_ref``)
+    via :func:`tipopac.physics.predicted_tsys`. RMS is taken over
+    ``(polarization, time)`` of the un-normalised Kelvin residual after
+    masking ``flag``. Failed-fit cells have NaN parameters and drop out;
+    use :class:`FitQualityHeatmap` to see *which* category they fell
+    into.
+    """
+
+    def _metric_name(self) -> str:
+        return "residual_rms_K"
+
+    def _metric_array(self) -> xr.DataArray:
+        pred = predicted_tsys(self.ds_sub)
+        resid = (self.ds_sub["Tsys"] - pred).where(~self.ds_sub["flag"])
+        return (resid**2).mean(dim=("polarization", "time")) ** 0.5
+
+    def _color_encoding(self) -> alt.Color:
+        return alt.Color(
+            "residual_rms_K:Q",
+            scale=alt.Scale(type="log", scheme="viridis"),
+            legend=alt.Legend(title="Residual RMS [K]"),
         )
 
-        title = _scan_title(self.scans)
-        if len(self.scans) == 1:
-            return base.properties(title=title)
-        return (
-            base.facet(column=alt.Column("scan:N", title="Scan"))
-            .resolve_scale(x="independent")
-            .properties(title=title)
-        )
+    def _metric_tooltip(self) -> alt.Tooltip:
+        return alt.Tooltip("residual_rms_K:Q", format=".2f", title="Residual RMS [K]")
+
+    def _extra_tooltip(self) -> list[alt.Tooltip]:
+        return [alt.Tooltip("fit_reason:N", title="Fit quality")]
+
+    def _extra_data_arrays(self) -> dict[str, xr.DataArray]:
+        return {"fit_reason": self.ds_sub["fit_reason"]}
 
 
 class PlotData:
@@ -731,6 +813,11 @@ class PlotData:
     ) -> FitQualityHeatmap:
         return FitQualityHeatmap(self.ds, scans)
 
+    def residual_rms_heatmap(
+        self, scans: int | list[int] | None = None
+    ) -> ResidualRmsHeatmap:
+        return ResidualRmsHeatmap(self.ds, scans)
+
     def save_all(
         self, out_dir: str | Path = Path("."), plot_elev: bool = False
     ) -> None:
@@ -764,6 +851,12 @@ class PlotData:
         # Fit-quality heatmap over every scan.
         if "fit_reason" in self.ds.data_vars:
             self.fit_quality_heatmap().save(out / "fit_quality_heatmap")
+
+        # Residual-RMS heatmap. Requires the fitted parameter vars that
+        # ``predicted_tsys`` reconstructs the model from.
+        residual_rms_deps = ("T0", "tau_zenith", "Twmt", "tcal_fit", "tcal_ref", "Tsys")
+        if all(v in self.ds.data_vars for v in residual_rms_deps):
+            self.residual_rms_heatmap().save(out / "residual_rms_heatmap")
 
         # Atmospheric profile (mean across scans); skip when the optional
         # atm vars are not on the dataset.
