@@ -49,8 +49,9 @@ _log = logging.getLogger(__name__)
 # tooltipped points.
 alt.data_transformers.disable_max_rows()
 
-# Dense ZA grid for smooth model curves in elevation_curve.
-_Z_GRID: np.ndarray = np.linspace(30.0, 75.0, 300)
+# ZA grid for model curves in elevation_curve. 60 samples across 30–75°
+# is ~13 px between samples at the 800-px chart width — visually smooth.
+_Z_GRID: np.ndarray = np.linspace(30.0, 75.0, 60)
 
 
 def _scan_title(scans: list[int]) -> str:
@@ -119,14 +120,36 @@ def _to_df(
     *,
     name: str | None = None,
     dropna: str | list[str] | None = None,
+    keep: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Convert an xarray object to a tidy DataFrame for Altair."""
+    """Convert an xarray object to a tidy DataFrame for Altair.
+
+    ``keep`` projects the result to those columns, dropping the non-dim
+    coords xarray drags along (frequency_GHz, band, scan_time_*, …) that
+    would otherwise be repeated on every JSON row in the embedded data.
+    """
     if isinstance(obj, xr.DataArray):
         obj = obj.to_dataset(name=name) if name is not None else obj.to_dataset()
     subset = dropna if dropna is not None else name
     if isinstance(subset, str):
         subset = [subset]
-    return obj.to_dataframe().reset_index().dropna(subset=subset)
+    df = obj.to_dataframe().reset_index().dropna(subset=subset)
+    if keep is not None:
+        df = df[list(keep)]
+    return df
+
+
+def _round(df: pd.DataFrame, **digits: int) -> pd.DataFrame:
+    """Round selected float columns to trim JSON precision.
+
+    Up-casts float32 to float64 first; rounding a float32 in place keeps
+    it float32, and the eventual float64 JSON cast then surfaces the
+    original 8-decimal noise (e.g. ``0.05 → 0.05000000074505806``).
+    """
+    for col, n in digits.items():
+        if col in df.columns:
+            df[col] = df[col].astype(np.float64).round(n)
+    return df
 
 
 class _QuantityVsFrequency(Plot):
@@ -189,7 +212,9 @@ class ElevationCurve(Plot):
         df = _to_df(
             xr.Dataset({"Tsys": tsys_masked, "zenith_angle": cell["zenith_angle"]}),
             dropna=["Tsys", "zenith_angle"],
+            keep=["polarization", "zenith_angle", "Tsys", "time_utc"],
         )
+        _round(df, zenith_angle=2, Tsys=2, time_utc=1)
 
         tau0 = float(cell["tau_zenith"])
         tau_err_val = float(cell["tau_err"])
@@ -207,6 +232,7 @@ class ElevationCurve(Plot):
                 "polarization": ["R"] * _Z_GRID.size + ["L"] * _Z_GRID.size,
             }
         )
+        _round(model_df, zenith_angle=2, Tsys=2)
 
         pol_scale = alt.Scale(
             domain=["R", "L"], range=[self.COLOR_R_POL, self.COLOR_L_POL]
@@ -272,14 +298,30 @@ class TauVsFrequency(_QuantityVsFrequency):
         y_title = "Zenith optical depth [nepers]"
 
         df = _to_df(
-            ds_sub[["tau_zenith", "tau_err", "fit_success"]], dropna="tau_zenith"
+            ds_sub[["tau_zenith", "tau_err", "fit_success"]],
+            dropna="tau_zenith",
+            keep=[
+                "scan",
+                "antenna",
+                "spw",
+                "frequency_GHz",
+                "tau_zenith",
+                "tau_err",
+                "fit_success",
+            ],
         )
+        _round(df, frequency_GHz=3, tau_zenith=4, tau_err=4)
 
         # Weighted mean per spw across antennas. Keep scan in the dims so each
         # scan*spw combination shows as one mean point.
         weights = (1.0 / ds_sub["tau_err"] ** 2).fillna(0.0)
         mean_da = ds_sub["tau_zenith"].weighted(weights).mean(dim="antenna")
-        mean_df = _to_df(mean_da, name="mean_tau")
+        mean_df = _to_df(
+            mean_da,
+            name="mean_tau",
+            keep=["scan", "spw", "frequency_GHz", "mean_tau"],
+        )
+        _round(mean_df, frequency_GHz=3, mean_tau=4)
 
         # Domain from the full tau spread (NaN-safe via xarray).
         tau_min = float(ds_sub["tau_zenith"].min(skipna=True))
@@ -331,6 +373,7 @@ class TauVsFrequency(_QuantityVsFrequency):
                     "am_tau": ds_sub["am_tau"].values,
                 }
             )
+            _round(am_df, frequency_GHz=3, am_tau=4)
             am_line = (
                 alt.Chart(am_df, title="am model")
                 .mark_line(color=self.COLOR_AM_MODEL, strokeWidth=self.LINE_STROKE)
@@ -371,7 +414,18 @@ class TcalVsFrequency(_QuantityVsFrequency):
             # tcal_ref has no scan dim; pulling it alongside tcal_fit into a
             # joint Dataset broadcasts it N_scan-fold (~7× empirically) and
             # bloats the embedded data. Plot it from the bare DataArray.
-            df = _to_df(ds_sub["tcal_ref"], name="tcal_ref")
+            df = _to_df(
+                ds_sub["tcal_ref"],
+                name="tcal_ref",
+                keep=[
+                    "antenna",
+                    "spw",
+                    "polarization",
+                    "frequency_GHz",
+                    "tcal_ref",
+                ],
+            )
+            _round(df, frequency_GHz=3, tcal_ref=3)
             tooltip = [
                 "antenna:N",
                 "spw:N",
@@ -380,7 +434,20 @@ class TcalVsFrequency(_QuantityVsFrequency):
                 alt.Tooltip("tcal_ref:Q", format=".3f"),
             ]
         else:
-            df = _to_df(ds_sub[["tcal_fit", "tcal_ref"]], dropna=col)
+            df = _to_df(
+                ds_sub[["tcal_fit", "tcal_ref"]],
+                dropna=col,
+                keep=[
+                    "scan",
+                    "antenna",
+                    "spw",
+                    "polarization",
+                    "frequency_GHz",
+                    "tcal_fit",
+                    "tcal_ref",
+                ],
+            )
+            _round(df, frequency_GHz=3, tcal_fit=3, tcal_ref=3)
             tooltip = [
                 "scan:N",
                 "antenna:N",
@@ -391,7 +458,11 @@ class TcalVsFrequency(_QuantityVsFrequency):
                 alt.Tooltip("tcal_ref:Q", format=".3f"),
             ]
         mean_da = ds_sub[col].mean(dim=["polarization", "antenna"])
-        mean_df = _to_df(mean_da, name="mean_tcal")
+        mean_keep = ["spw", "frequency_GHz", "mean_tcal"]
+        if "scan" in mean_da.dims:
+            mean_keep = ["scan", *mean_keep]
+        mean_df = _to_df(mean_da, name="mean_tcal", keep=mean_keep)
+        _round(mean_df, frequency_GHz=3, mean_tcal=3)
 
         samples = (
             alt.Chart(df)
@@ -429,9 +500,26 @@ class CVsFrequency(_QuantityVsFrequency):
         y_title = "Cal. device scaling (c = T_cal,fit / T_cal,ref)"
 
         c_da = ds_sub["tcal_fit"] / ds_sub["tcal_ref"]
-        df = _to_df(c_da, name="c_ratio")
+        df = _to_df(
+            c_da,
+            name="c_ratio",
+            keep=[
+                "scan",
+                "antenna",
+                "spw",
+                "polarization",
+                "frequency_GHz",
+                "c_ratio",
+            ],
+        )
+        _round(df, frequency_GHz=3, c_ratio=4)
         mean_da = c_da.mean(dim=["polarization", "antenna"])
-        mean_df = _to_df(mean_da, name="mean_c")
+        mean_df = _to_df(
+            mean_da,
+            name="mean_c",
+            keep=["scan", "spw", "frequency_GHz", "mean_c"],
+        )
+        _round(mean_df, frequency_GHz=3, mean_c=4)
 
         ref = (
             alt.Chart(pd.DataFrame({"c": [1.0]}))
@@ -661,6 +749,12 @@ class _Heatmap(Plot):
         )
         df = plot_ds.to_dataframe().reset_index()
         df = df[df["flag_fraction"].notna() & df[metric_name].notna()]
+        # Drop non-dim coords (frequency_GHz, band, scan_time_*, …) xarray
+        # carries through from ds_sub — they bloat the embedded JSON.
+        base_cols = ["antenna", "spw", "scan", "flag_fraction", metric_name]
+        extra_cols = list(self._extra_data_arrays().keys())
+        df = df[base_cols + extra_cols]
+        _round(df, flag_fraction=3)
 
         tooltip: list = [
             "antenna:N",
@@ -763,7 +857,8 @@ class ResidualRmsHeatmap(_Heatmap):
     def _metric_array(self) -> xr.DataArray:
         pred = predicted_tsys(self.ds_sub)
         resid = (self.ds_sub["Tsys"] - pred).where(~self.ds_sub["flag"])
-        return (resid**2).mean(dim=("polarization", "time")) ** 0.5
+        rms = (resid**2).mean(dim=("polarization", "time")) ** 0.5
+        return rms.astype(np.float64).round(2)
 
     def _color_encoding(self) -> alt.Color:
         return alt.Color(
