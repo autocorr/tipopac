@@ -134,8 +134,10 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
   `fetch_atm_profile` if needed.
 - `fit(mode, n_workers)` — Stage A + Stage B. Auto-calls
   `build_atm_grids` if needed. After this `result` is available.
-- `plot(out_dir)` — per-(scan, antenna, spw) PNGs via
+- `plot(out_dir)` — interactive plot `.html` files via
   `plot.PlotData(ds).save_all`.
+- `weblog(plot_dir)` — self-contained GUI `index.html` over the plot
+  files via `weblog.build_weblog`.
 - `write_caltables(opacity, tcal)` — optional CASA-format outputs.
 
 ---
@@ -251,9 +253,11 @@ Data variables — fit results (filled by fit.py)
   fit_reason    (scan, antenna, spw)                       str
 
 Data variables — atmospheric profile (filled by atmosphere.attach_profile)
-  atm_pressure     (atm_level,)                            float64   Pa
-  atm_temperature  (scan, atm_level)                       float32   K
-  atm_h2o_vmr      (scan, atm_level)                       float32   volumetric mixing ratio
+  atm_pressure         (atm_level,)                        float64   Pa
+  atm_temperature      (scan, atm_level)                   float32   K
+  atm_h2o_vmr          (scan, atm_level)                   float32   volumetric mixing ratio
+  surface_pressure_hPa (scan,)                             float64   hPa  per-scan median (NaN when no weather_P)
+  pwv_profile_source   (scan,)                             str       per-scan grid provenance (set by build_atm_grids)
 
 Data variables — atmospheric anchor (filled by anchor.anchor_pwv / write_am_curve)
   pwv              (antenna,)                              float32   mm   per-antenna fitted PWV
@@ -273,8 +277,6 @@ Attrs
   selected_bands      : list[str]           (sorted unique band labels present after filtering)
   atm_profile_source  : "open_meteo" | "afgl_<climatology>"
   open_meteo_query    : dict | None      (provenance: lat, lon, time, endpoint, model)
-  surface_pressure_hPa: dict[int, float] (per-scan median surface pressure)
-  pwv_profile_source  : dict[int, str]   (per-scan grid provenance)
 ```
 
 ### 4.1 Representation choices
@@ -329,13 +331,14 @@ disabled, no frame transform is needed.
 propagation gives
 
 ```
-σ_Tsys ≈ √2 · Tsys² / (T_c · √(Δν · τ_int))
+σ_Tsys ≈ 2 · Tsys² / (T_c · √(Δν · τ_int))
 ```
 
 with `Δν` the per-spw bandwidth and `τ_int` the per-sample
-`exposure_time`. The `Tsys / T_c` amplification (~10–60× for VLA
-bands) is the physically essential part — dropping it would mis-scale
-σ and trip 4σ residual rejection on most samples.
+`exposure_time` (the total ON+OFF Walsh interval; each state
+accumulates `τ_int / 2`). The `Tsys / T_c` amplification (~10–60× for
+VLA bands) is the physically essential part — dropping it would
+mis-scale σ and trip 4σ residual rejection on most samples.
 
 ### 5.4 Stage A fit
 
@@ -493,18 +496,19 @@ across scans.
 
 - Data vars `atm_pressure(atm_level)` (Pa, 1-D),
   `atm_temperature(scan, atm_level)` (K),
-  `atm_h2o_vmr(scan, atm_level)` (dimensionless VMR).
+  `atm_h2o_vmr(scan, atm_level)` (dimensionless VMR),
+  `surface_pressure_hPa(scan,)` (per-scan provenance; omitted when no
+  scan has finite weather_P).
 - Attrs `atm_profile_source` (e.g. `"open_meteo"` or
   `"afgl_midlatitude_summer"`), `open_meteo_query` (lat, lon, time
-  range, endpoint, model; absent on AFGL path), `surface_pressure_hPa`
-  (per-scan provenance).
+  range, endpoint, model; absent on AFGL path).
 
 ### 7.2 `build_atm_grids(pwv_step_mm, freq_step_Hz, n_workers)`
 
 Precomputes one `PwvGrid` per scan from the attached profile and
 stores them on `TippingAnalysis._grids[scan_id]`. Auto-calls
 `fetch_atm_profile` if `atm_pressure` is not yet on the dataset.
-Writes `ds.attrs["pwv_profile_source"][scan_id]` for provenance.
+Writes the `pwv_profile_source(scan,)` data var for provenance.
 
 ### 7.3 `PwvGrid` contract
 
@@ -591,13 +595,30 @@ on `buildmytasks` or a `casa` process; it does not mean zero
 
 ### 9.3 Plots
 
-`plot.PlotData(ds).save_all(out_dir=...)` writes one PNG per
-`(scan, antenna, spw)`:
+`plot.PlotData(ds).save_all(out_dir=...)` writes one interactive
+vega-altair `.html` per plot. Hover tooltips carry
+`(scan, antenna, spw, polarization)` identity; colour encodes status
+(good / flagged / weighted mean), not identity. Per successfully-fit
+`(scan, antenna, spw)`: an elevation curve (Tsys vs. zenith angle,
+both pols, fitted curve overlaid). Per scan with any successful fit:
+a τ vs frequency log-scatter with optional am τ(ν) overlay from
+`am_freq_grid` / `am_tau`, and — when `tcal_fit` actually differs
+from `tcal_ref` — a `T_cal` vs frequency and a
+`c = T_cal,fit / T_cal,ref` plot. Per dataset (when the optional
+`atm_*` vars are present): a vertical T / H₂O mixing-ratio profile
+chart with pressure on a log y-axis (850 → 10 hPa) and T (linear) /
+mixing ratio (log) on independent x-axes.
 
-- Top panel: `Tsys` vs. zenith angle for both polarizations with
-  the fitted tipping curve overlaid.
-- Bottom panel: the am τ(ν) curve from `am_freq_grid` / `am_tau`
-  as a QA cross-check overlay.
+Per dataset: a textual `summary.html` (run metadata + per-scan stats
+table) — not a chart, just static HTML; surfaced as the weblog's
+landing view.
+
+`weblog.build_weblog(plot_dir)` is an independent pipeline step that
+scans `plot_dir` and emits a self-contained GUI `index.html` —
+dropdown for plot type (defaults to the summary when present) plus
+text boxes for `(scan, antenna, spw)` when picking an elevation
+curve. Missing files surface as "Plot not found: …" rather than
+broken iframes.
 
 `out_dir` is created with `Path.mkdir(parents=True, exist_ok=True)`.
 

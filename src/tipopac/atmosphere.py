@@ -6,9 +6,9 @@ Public entry point
     The single network-touching stage. Runs open-meteo once (full hourly
     grid for the observation date range) or builds an AFGL profile, picks
     the closest hour per scan, clips to the median surface pressure, and
-    writes ``atm_pressure``, ``atm_temperature``, ``atm_h2o_vmr`` to *ds*.
-    Provenance lands in ``ds.attrs`` (``atm_profile_source``,
-    ``open_meteo_query``, ``surface_pressure_hPa``).
+    writes ``atm_pressure``, ``atm_temperature``, ``atm_h2o_vmr``, and
+    ``surface_pressure_hPa(scan,)`` to *ds*. Provenance lands in
+    ``ds.attrs`` (``atm_profile_source``, ``open_meteo_query``).
 """
 
 from __future__ import annotations
@@ -114,8 +114,9 @@ def attach_profile(
     """Fetch the atmospheric profile once and attach it to *ds*.
 
     Adds data vars ``atm_pressure(atm_level)``, ``atm_temperature(scan,
-    atm_level)``, ``atm_h2o_vmr(scan, atm_level)`` and attrs
-    ``atm_profile_source``, ``open_meteo_query``, ``surface_pressure_hPa``.
+    atm_level)``, ``atm_h2o_vmr(scan, atm_level)``,
+    ``surface_pressure_hPa(scan,)`` (omitted when no scan has finite
+    weather_P) and attrs ``atm_profile_source``, ``open_meteo_query``.
 
     Behaviour:
 
@@ -253,34 +254,32 @@ def attach_profile(
     ds.attrs["atm_profile_source"] = used_source
     if open_meteo_query is not None:
         ds.attrs["open_meteo_query"] = open_meteo_query
-    if surface_pressures_hPa:
-        ds.attrs["surface_pressure_hPa"] = surface_pressures_hPa
+    if np.any(np.isfinite(surface_pressures_hPa)):
+        ds["surface_pressure_hPa"] = (("scan",), surface_pressures_hPa)
 
 
 def _compute_surface_pressure(
     ds: xr.Dataset,
-) -> tuple[u.Quantity | None, dict[int, float]]:
-    """Return ``(median_surface_pressure_quantity, per_scan_hPa_dict)``.
+) -> tuple[u.Quantity | None, np.ndarray]:
+    """Return ``(median_surface_pressure_quantity, per_scan_hPa_array)``.
 
     The Quantity is the median across scans of each scan's median weather_P
-    sample, used for the single profile clip. The dict is provenance only.
+    sample, used for the single profile clip. The array (length ``n_scan``,
+    NaN where a scan has no finite weather_P samples) is provenance only.
     """
+    n_scan = int(ds.sizes["scan"])
+    per_scan_hPa = np.full(n_scan, np.nan, dtype=np.float64)
     if "weather_P" not in ds.data_vars:
-        return None, {}
+        return None, per_scan_hPa
     weather_P_Pa = ds["weather_P"].values  # (scan, time), Pa
-    scan_ids = ds.coords["scan"].values
-    surface_pressures_hPa: dict[int, float] = {}
-    per_scan_medians: list[float] = []
-    for i, scan_id in enumerate(scan_ids):
+    for i in range(n_scan):
         samples = weather_P_Pa[i][np.isfinite(weather_P_Pa[i])]
         if samples.size:
-            p_surf_hPa = float(np.median(samples)) / 100.0
-            surface_pressures_hPa[int(scan_id)] = p_surf_hPa
-            per_scan_medians.append(p_surf_hPa)
-    if not per_scan_medians:
-        return None, {}
-    p_med_hPa = float(np.median(per_scan_medians))
-    return p_med_hPa * u.hPa, surface_pressures_hPa
+            per_scan_hPa[i] = float(np.median(samples)) / 100.0
+    finite = per_scan_hPa[np.isfinite(per_scan_hPa)]
+    if finite.size == 0:
+        return None, per_scan_hPa
+    return float(np.median(finite)) * u.hPa, per_scan_hPa
 
 
 def _utc_date_range(

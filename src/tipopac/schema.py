@@ -73,6 +73,7 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
         ("scan", "antenna", "spw", "polarization"),
         np.dtype(np.float32),
     ),
+    "Twmt": (("scan", "spw"), np.dtype(np.float32)),
     "fit_success": (("scan", "antenna", "spw"), np.dtype(np.bool_)),
     "fit_reason": (("scan", "antenna", "spw"), np.dtype("O")),
     "am_freq_grid": (("frequency_dense",), np.dtype(np.float64)),
@@ -95,6 +96,8 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "atm_pressure": (("atm_level",), np.dtype(np.float64)),
     "atm_temperature": (("scan", "atm_level"), np.dtype(np.float32)),
     "atm_h2o_vmr": (("scan", "atm_level"), np.dtype(np.float32)),
+    "surface_pressure_hPa": (("scan",), np.dtype(np.float64)),
+    "pwv_profile_source": (("scan",), np.dtype("O")),
 }
 
 POL_VALUES: tuple[str, ...] = ("R", "L")

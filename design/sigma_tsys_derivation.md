@@ -8,8 +8,11 @@ spells out the assumptions.
 The headline result:
 
 ```
-σ_Tsys  ≈  √2 · Tsys² / ( T_c · √(Δν · τ_int) )
+σ_Tsys  ≈  2 · Tsys² / ( T_c · √(Δν · τ_int) )
 ```
+
+where `τ_int` is the **total ON+OFF Walsh interval** (≈1 s), as
+reported by the MS `EXPOSURE` column for SYSPOWER rows.
 
 The surprising piece is the **Tsys²**, not the textbook Tsys you get
 from the radiometer equation. The reason is that VLA switched-power
@@ -42,7 +45,7 @@ Symbols:
 | `Tsys`  | system temperature (K). What we want.                                |
 | `T_c`   | noise-tube equivalent input temperature (K). Known from CALDEVICE.   |
 | `Δν`    | bandwidth (Hz). Per-spw `bandwidth` coord.                           |
-| `τ_int` | per-state integration time (s). Per-sample `exposure_time`.          |
+| `τ_int` | total ON+OFF Walsh integration time (s). Per-sample `exposure_time`. |
 
 The whole point of the switching scheme is that `T_c` is stable and
 known to ≲1% from on-table calibration, while `G` is none of those
@@ -75,38 +78,27 @@ fractional uncertainty in the measured power is
 σ_P / ⟨P⟩  =  1 / √(Δν · τ)
 ```
 
-So for our two single-state accumulators, each integrated over `τ_int`
-of total time on that state:
+For VLA switched power, `EXPOSURE` for SYSPOWER rows records the
+**total ON+OFF interval** `τ_int` (≈1 s), so each Walsh state
+accumulates `τ_state = τ_int / 2` of integration time. The per-state
+power uncertainties are therefore
 
 ```
-σ_P_off ≈ G · Tsys / √(Δν τ_int)
-σ_P_on  ≈ G · (Tsys + T_c) / √(Δν τ_int)  ≈  G · Tsys / √(Δν τ_int)
+σ_P_off ≈ G · Tsys / √(Δν · τ_int/2)  =  √2 · G · Tsys / √(Δν τ_int)
+σ_P_on  ≈ √2 · G · (Tsys + T_c) / √(Δν τ_int)
+        ≈ √2 · G · Tsys / √(Δν τ_int)
 ```
 
 The last approximation uses `Tsys ≫ T_c` again. Cov(P_on, P_off) = 0
 because the two accumulators draw from disjoint time samples at the
 Walsh rate.
 
-### A note on the τ_int convention
-
-There are two conventions in the literature for what "integration time"
-means in the radiometer equation, and they differ by √2:
-
-- **Per-state convention** (used above): `τ_int` is the integration
-  time accumulated *in each Walsh state*. `σ_D = √2 · G Tsys / √(Δν τ_int)`.
-- **Total-interval convention**: `τ_int` is the full ON+OFF interval.
-  Each state then gets `τ_int/2`, giving `σ_D = 2 · G Tsys / √(Δν τ_int)`.
-
-The code uses the per-state convention, which is what produces the
-`√2` prefactor in `_compute_sigma_tsys`. Whether the MS `EXPOSURE`
-column reports the per-state or total integration time is *the* known
-ambiguity in the absolute normalization of σ_Tsys; empirically
-(`run/sigma_tsys`) the predicted σ comes out ≈1.8× low, and a √2 of
-that is plausibly this convention mismatch. **This affects σ_Tsys by
-an O(1) constant**, identical across all cells, so it does not bias
-the χ² weighting in the tipping fit; it would only matter for absolute
-interpretation of reduced χ² or the σ_τ that drops out of the
-covariance.
+> **Convention note.** Earlier versions of this derivation used the
+> "per-state" convention (`τ_int` = time on each state), which gave
+> the same algebra with a `√2` prefactor instead of `2`. The empirical
+> ≈1.8× shortfall reported in §7 was the symptom; confirmation that
+> VLA `EXPOSURE` is the total ON+OFF interval resolves it.
+> `_compute_sigma_tsys` should produce the `2`-prefactor form to match.
 
 ---
 
@@ -137,29 +129,31 @@ self-calibrated measurement.
 ### 3.2 Variances of S and D
 
 S and D are linear combinations of P_on and P_off; with Cov(P_on,
-P_off) = 0:
+P_off) = 0, and each per-state variance carrying a factor of 2 from
+`τ_state = τ_int/2`:
 
 ```
 Var(S) = Var(P_on + P_off) = Var(P_on) + Var(P_off)
-       ≈ 2 · G² Tsys² / (Δν τ_int)
+       ≈ 4 · G² Tsys² / (Δν τ_int)
 
 Var(D) = Var(P_on − P_off) = Var(P_on) + Var(P_off)
-       ≈ 2 · G² Tsys² / (Δν τ_int)
+       ≈ 4 · G² Tsys² / (Δν τ_int)
 
-  →  σ_S  ≈  σ_D  ≈  √2 · G Tsys / √(Δν τ_int)
+  →  σ_S  ≈  σ_D  ≈  2 · G Tsys / √(Δν τ_int)
 ```
 
-That `√2` over the single-state σ is the well-known Dicke penalty:
-switching costs √2 in noise compared to a hypothetical total-power
-measurement with the same total integration time.
+That factor of 2 over an unswitched total-power measurement of the
+same wall-clock `τ_int` is the well-known Dicke penalty: √2 from each
+state seeing only half the integration time, another √2 from the
+variance summing across two independent accumulators.
 
 ### 3.3 Covariance of S and D
 
 ```
 Cov(S, D)  =  Cov(P_on + P_off, P_on − P_off)
            =  Var(P_on) − Var(P_off)
-           ≈  G² · ((Tsys+T_c)² − Tsys²) / (Δν τ_int)
-           ≈  G² · 2 Tsys T_c / (Δν τ_int)
+           ≈  2 G² · ((Tsys+T_c)² − Tsys²) / (Δν τ_int)
+           ≈  G² · 4 Tsys T_c / (Δν τ_int)
 ```
 
 The relative magnitude of the cross-term in σ²_Tsys vs the D-only
@@ -172,28 +166,28 @@ term is `T_c/Tsys`, which is at most ~10% at VLA, and the cross-term
 S-side contribution, using `G = D/T_c` ⇒ `G²/D² = 1/T_c²`:
 
 ```
-(∂Tsys/∂S)² σ²_S  =  ( T_c / (2D) )² · 2 G² Tsys² / (Δν τ_int)
-                  =  ( T_c² / (4 D²) ) · 2 (D²/T_c²) Tsys² / (Δν τ_int)
-                  =  Tsys² / ( 2 Δν τ_int )
+(∂Tsys/∂S)² σ²_S  =  ( T_c / (2D) )² · 4 G² Tsys² / (Δν τ_int)
+                  =  ( T_c² / (4 D²) ) · 4 (D²/T_c²) Tsys² / (Δν τ_int)
+                  =  Tsys² / ( Δν τ_int )
 ```
 
 The factor inside the parentheses simplifies because the explicit `D²`
 in the variance cancels the implicit one hidden in `G`. What's left is
-proportional to Tsys²/(Δν τ_int) — i.e., the **naive radiometer-equation
-variance**, modulo a factor of 2.
+exactly the **naive radiometer-equation variance** Tsys²/(Δν τ_int) —
+the contribution you would get from a perfectly known calibrator.
 
 D-side contribution, same substitution:
 
 ```
-(∂Tsys/∂D)² σ²_D  =  ( Tsys / D )² · 2 G² Tsys² / (Δν τ_int)
-                  =  ( Tsys² / D² ) · 2 (D²/T_c²) Tsys² / (Δν τ_int)
-                  =  2 · Tsys⁴ / ( T_c² · Δν τ_int )
+(∂Tsys/∂D)² σ²_D  =  ( Tsys / D )² · 4 G² Tsys² / (Δν τ_int)
+                  =  ( Tsys² / D² ) · 4 (D²/T_c²) Tsys² / (Δν τ_int)
+                  =  4 · Tsys⁴ / ( T_c² · Δν τ_int )
 ```
 
 ### 3.5 Ratio of D-side to S-side
 
 ```
-D-side / S-side  =  [ 2 Tsys⁴ / (T_c² Δν τ) ]  /  [ Tsys² / (2 Δν τ) ]
+D-side / S-side  =  [ 4 Tsys⁴ / (T_c² Δν τ) ]  /  [ Tsys² / (Δν τ) ]
                  =  4 · (Tsys / T_c)²
 ```
 
@@ -202,9 +196,9 @@ For VLA Tsys/T_c ≈ 10–50, the D-side dominates by 400–10000×.
 right answer to within a fraction of a percent, and we can collapse:
 
 ```
-σ²_Tsys  ≈  (∂Tsys/∂D)² σ²_D  =  2 Tsys⁴ / ( T_c² · Δν τ_int )
+σ²_Tsys  ≈  (∂Tsys/∂D)² σ²_D  =  4 Tsys⁴ / ( T_c² · Δν τ_int )
 
-→  σ_Tsys  ≈  √2 · Tsys² / ( T_c · √(Δν τ_int) )
+→  σ_Tsys  ≈  2 · Tsys² / ( T_c · √(Δν τ_int) )
 ```
 
 ---
@@ -223,26 +217,26 @@ Conceptually:
   calibrated gain. It invents a calibrator on the fly: the noise tube,
   whose K-value is known.
 - But the *signal* from that calibrator — the digital power difference
-  `D = G T_c` — is buried in the bath of Tsys K of receiver noise. Its
-  SNR is
+  `D = G T_c` — is buried in the bath of Tsys K of receiver noise. With
+  σ_D = 2 G Tsys / √(Δν τ_int):
 
   ```
-  SNR(D)  ≈  T_c · √(Δν τ) / Tsys
+  SNR(D)  =  D / σ_D  =  T_c · √(Δν τ_int) / (2 Tsys)
   ```
 
   At VLA with Tsys = 100 K, T_c = 5 K, Δν = 128 MHz, τ_int = 1 s, that
-  comes out to ≈ 565 — fine, but **not** the 10⁴–10⁵ that an external
+  comes out to ≈ 283 — fine, but **not** the 10⁴–10⁵ that an external
   calibrator would give you.
 - The fractional uncertainty in the *gain* you derive from the noise
-  tube is just 1/SNR(D) ≈ Tsys / (T_c · √(Δν τ)).
+  tube is just 1/SNR(D) ≈ 2 Tsys / (T_c · √(Δν τ_int)).
 - And the fractional uncertainty in Tsys equals the fractional
   uncertainty in 1/G, which equals the fractional uncertainty in D.
   So:
 
   ```
-  σ_Tsys / Tsys  ≈  Tsys / ( T_c · √(Δν τ) )
+  σ_Tsys / Tsys  ≈  2 · Tsys / ( T_c · √(Δν τ_int) )
 
-  σ_Tsys  ≈  Tsys² / ( T_c · √(Δν τ) )    (+ the √2 for switching)
+  σ_Tsys  ≈  2 · Tsys² / ( T_c · √(Δν τ_int) )
   ```
 
 The Tsys² is the fingerprint of a self-calibrating measurement where
@@ -274,15 +268,15 @@ Approximations made and their cost (all small at VLA):
 
 The dominant *uncontrolled* corrections are not in the math above:
 
-- **3-bit quantization**: VLA samplers add Van Vleck noise; the effective
-  σ is roughly 1.13× the ideal radiometer-eq prediction. Real.
+- **Quantization noise**: negligible. VLA tipping scans (and tipping
+  data by convention) use the 8-bit samplers, where the Van Vleck /
+  quantization-noise penalty is well below the percent level. The
+  3-bit sampler correction (~1.13× excess noise) does not apply here.
 - **Gain drift within τ_int**: G isn't perfectly constant across one
   switching cycle. If σ_G/G ~ ε, this adds ε² · Tsys² in quadrature
   to σ²_Tsys. For the VLA cryogenic chain over 1 s this is sub-percent.
 - **Atmospheric fluctuation** on sub-second timescales: real sky noise
   that the radiometer equation does not see.
-- **τ_int convention** (per-state vs total interval): an O(√2) absolute
-  scale ambiguity, identical across cells.
 
 Failure modes worth knowing:
 
@@ -339,21 +333,28 @@ sig_pred = ds["sigma_Tsys"]      (= the formula above)
 sig_naive = Tsys / √(Δν τ_int)
 ```
 
-Findings:
+Findings (recorded with the **historical** `sig_pred` that used the
+`√2` per-state prefactor — predates the §2 convention correction):
 
 ```
-median sig_emp / sig_pred   = 1.83     ← absolute scale ~1.8× off,
-                                         likely √2 from convention + Van Vleck
-median sig_emp / sig_naive  = 54       ← matches Tsys/T_c × √2 = 21 × √2 = 30
-                                         (within the absolute-scale offset)
+median sig_emp / sig_pred   = 1.83     ← absolute scale ~1.8× off
+median sig_emp / sig_naive  = 54       ← matches Tsys/T_c × 2 × ~1.3
+                                         residual = 21 × 2 × 1.3 ≈ 55
 
 multiple-regression slopes on log Tsys, log T_c, holding log(BT) at −0.5:
     log Tsys exponent:  +1.82          (rewrite expects +2, naive +1)
     log T_c  exponent:  −0.89          (rewrite expects −1, naive  0)
 ```
 
-Strong support for the Tsys²/T_c shape over the naive Tsys/√BT,
-modulo an O(1) absolute prefactor we have not chased into the ground.
+Reinterpretation under the corrected formula (`2` prefactor with
+`τ_int` = total interval): the absolute-scale ratio is
+`1.83 / √2 ≈ 1.29`, i.e. the convention factor accounts for most of
+the discrepancy and leaves a ~30% residual plausibly attributable to
+gain drift within τ_int, sub-second atmospheric fluctuation, and the
+dropped Cov(S, D) term — all of which add in the direction of
+underprediction. The shape diagnostics (Tsys exponent ≈ +2,
+T_c exponent ≈ −1) are unaffected by the prefactor and confirm the
+Tsys²/T_c functional form over the naive Tsys/√BT.
 
 ---
 

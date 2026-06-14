@@ -1,0 +1,356 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" ?>
+<casaxml xmlns="http://casa.nrao.edu/schema/psetTypes.html"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://casa.nrao.edu/schema/casa.xsd
+    file:///opt/casa/code/xmlcasa/xml/casa.xsd">
+
+    <task type="function" name="tipopac" category="calibration">
+        <shortdescription>Derive zenith opacity and Tcals from JVLA tip data.</shortdescription>
+        <description>
+                
+                tipopac will calculate zenith opacity vs time from multiple tipping
+                scans, per spectral window and optionally per antenna. Optionally,
+                noise diode temperature vs time per antenna and polarization can also
+                be calculated (requires assumption of antenna-independent opacity).
+                
+                
+                
+                Prior to running this code, it is strongly recommended that you manually
+                examine all Tsys values calculated from the switched power data per
+                antenna and polarization for the times corresponding to the tipping
+                scans.  Each OPT tipping scan comprises 4 SDM scans.  Only the 2nd
+                SDM scan is of interest (this comprises 2 subscans with scan intent
+                DO_SKYDIP), as this contains the constant-azimuth slew from high to low
+                elevation or vice versa.  (Fyi, the 1st scan slews to the start position,
+                while the 3rd and 4th scans keep the script synchronized following the
+                tip.)  To plot Tsys, generate the switched power caltable using
+                  gencal(vis='mydata.ms',caltable='mydata.swpow',caltype='swpow')
+                then use plotms with yaxis set to Tsys to inspect the data.  If you
+                find any antenna/polarization with solutions that don't smoothly
+                rise/fall during the relevant tip scan times, or if the solutions are
+                wildly different compared to other antennas, then set usrFlag=True and
+                document flags in flagfile (note syntax defined below for the flagfile
+                keyword argument).  Be aware that flagging may prevent some solutions
+                from being calculated, requiring careful consideration of interpolation
+                or calflagstrict in gaincal and applycal.
+                
+                
+                
+                A full description of the code and operating modes is provided below.
+                For more details see e.g. VLA Sci. Memo 170 and EVLA Memos 145 and 202.
+                See also ngVLA Memo 63 for which this code was originally written.
+                https://library.nrao.edu/memos.shtml
+                
+                Pa = power prior to cal injection
+                   = Patm + Psrc + Pant + Prx1
+                where
+                Patm = Pwmt*(1-exp(-tau0*A)) = atmospheric emission, elevation dependent
+                Pwmt = emission resulting from absorption in atmosphere with weighted
+                       mean temperature given by Twmt
+                tau0 = zenith opacity
+                A    = airmass ~= sec(z) for flat Earth
+                z    = zenith angle = 90 deg - elevation
+                Psrc = astrophysical radio sources = (Prab + Puab)*exp(-tau0*A)
+                       decomposed into resolved and unresolved astrophysical backgrounds;
+                       both affected by atmospheric attenuation, both approximately
+                       direction-independent, only former will correlate with other
+                       antennas, latter are smooth backgrounds resolved by the
+                       interferometer (cmb BB, MW galaxy)
+                Pant = scattering and spillover arising from geometry of antenna and feed
+                Prx1 = electronics prior to switched power injection
+                
+                Patm depends on atmospheric absorption and antenna efficiency.  Naively we
+                might expect the latter to depend on elevation, and therefore be subject to
+                elevation dependent variations.  But elevation only significantly affects
+                on-axis forward gain, not system power, because the reduction in forward
+                gain is offset by broadening of the main beam and an increase in the gain
+                of the near-in sidelobes.  Therefore, if all antennas see the same opacity,
+                then each antenna, in both polarizations at any given frequency, should
+                show the same increment in power as they move from one elevation to another.
+                That's convenient.
+                
+                Twmt can be obtained from radiosonde data (e.g. using BUFKIT), but there
+                are no stations located near the VLA (the nearest is in Albuquerque) and
+                interpolation is unlikely to be accurate given terrain and distances.
+                Instead, temporal measurements of surface temperature at the VLA can be
+                used to estimate Twmt over the array using Twmt ~= 70.2 + 0.72*Tsurf
+                [Bevis et al., 1992, J. Geophys. Res. 97(D14), 15,787].  Twmt must be
+                supplied below as a noise temperature, requiring conversion from a
+                physical temperature using the Nyquist correction to account for quantum
+                effects, namely Twmt' ~= Twmt*(h*nu/(k*Twmt)/(exp(h*nu/(k*Twmt))-1)).
+                
+                The power into the synchronous detectors is
+                Poff = G1*(Pa + Prx2)
+                Pon  = G1*(Pa + Prx2 + Pcal)
+                Psum = Pon + Poff = 2*G1*(Pa + Prx2 + Pcal/2)
+                Pdif = Pon - Poff = G1*Pcal
+                where
+                Pcal = k*B*Tcal = synchronously injected power with temp Tcal over bandwidth B
+                Prx2 = power arising from amplifiers/attenuators following cal injection,
+                       passed on to station boards for synchronous detection of switched power
+                G1   = analog gain, applied following cal injection
+                G2   = digital gain following synchronous detector but prior to requantization,
+                       after which signal is passed on to baseline boards for correlation
+                
+                The power from each antenna passed on for correlation is
+                Pc = G1*G2*(Pa + Prx2 + Pcal/2)
+                
+                Tsys/Tcal = Pavg/Pdif = (Psum/2)/Pdif
+                Tsys = (Patm + Psrc + Pant + Prx1 + Prx2 + Pcal/2) * Tcal/Pcal
+                     = Tatm + Tsrc + Tant + Trx2 + Trx2 + Tcal/2
+                     = Twmt'*(1-exp(-tau0/cos(z))) +
+                      (Trab + Tuab)*exp(-tau0/cos(z)) +
+                       Tant + Trx1 + Trx2 + Tcal/2
+                Tant will exhibit elevation dependence (as well as dependence on Tsurf).
+                However, it is only expected to exhibit significant changes at lower JVLA
+                frequencies and at airmasses greater than approximately 2.5 (z > 66 deg).
+                Therefore, this code will assume that Tant is approximately constant (!).
+                Trx1, Trx2, and Tcal will also assumed to be constant.
+                
+                Values for the resolved and unresolved astrophysical backgrounds can be
+                estimated a priori.  If we assume negligible contributions from individual
+                sources and/or the Galactic plane at the frequencies typically used for
+                JVLA tipping scans, these values are
+                  Trab ~= 0.1/(nu_GHz/1.4)**(2.7) K  [Condon et al., 2012, ApJ, 758, 23]
+                  Tuab ~= Tcmb * (h*nu/(k*Tcmb)/(exp(h*nu/(k*Tcmb))-1))
+                where Tcmb = 2.725 and Nyquist correction is included.
+                (Tcmb ~= power law index in Trab ~= e !  Hooray for redshift 0)
+                
+                We then arrive at
+                  Tsys = T0 + (Trab + Tuab)*exp(-tau0/cos(z)) + Twmt'*(1-exp(-tau0/cos(z)))
+                where T0 = Tant + Trx1 + Trx2 + Tcal/2 ~= constant.  The measured Tsys on
+                the LHS of the equation is linearly proportional to Tcal.  Tcal is also
+                present in T0.  Using the known zenith angle on the RHS, and sufficient
+                measurements as a function of elevation, solutions can be obtained for
+                T0, tau0, and possibly Tcal.
+                
+                There are 3 ways to obtain solutions:
+                1) tauPerAnt=True and calcTcals=False
+                    If the Tcals in the MS are assumed to be correct, then tau0 can be
+                    solved per scan, antenna, and spw (over polarization).
+                2) tauPerAnt=False and calcTcals=False
+                    If it can be assumed that all antennas see the same opacity, then a
+                    common tau0 over all polarizations and antennas can be solved for per
+                    scan and spw.  This mode will assume that Tcals are correct in the MS.
+                3) calcTcals=True (assumes tauPerAnt=False)
+                    The relationship between true system temperature Tsys and apparent
+                    system temperature Tsys' arising from incorrect Tcal_ref is given by
+                      Tsys = Tant + Trx1 + Trx2 + Tcal_true/2 +
+                            (Trab + Tuab)*exp(-tau0/cos(z)) +
+                             Twmt'*(1-exp(-tau0/cos(z)))
+                           = Tsys' * (Tcal_true/Tcal_ref)
+                    The code calculates the ratio Tcal_true/Tcal_ref per scan and spw
+                    that is needed to multiply Tsys' to ensure that delta(Tsys) will be
+                    the same for every antenna and polarization as the antennas slew over
+                    delta(z) between any given z_min and z_max.  To solve for this ratio,
+                    it is necessary to assume that all antennas see the same opacity.
+                    The expected change in Tsys between z_min and z_max will then be the
+                    same for every antenna and polarization.  This range can be selected
+                    arbitrarily.  This code fits 3rd order polynomials and samples Tsys'
+                    at z_min = 40 deg and z_max = 62 deg, because these are constrained
+                    within 5 deg of the tipping scan range (35-67 deg zenith angle).
+                    (Some things to note:  2nd order polynomials perform poorly for low
+                    tau0, while higher orders can become biased by noise or spillover
+                    deviations near the elevation extremes.  Flagging near the elevation
+                    extremes can bias the polynomial fits.  Fitting an exponential form
+                    with a multiplicative pre-factor is degenerate.)  For each scan and
+                    spw, the median delta(Tsys') is taken as the 'true' difference and
+                    assumed to be correct.  This effectively assumes that the laboratory
+                    hot/cold load procedures utilized for measuring Tcals yield unbiased
+                    values that are correct in the median.  Correction factors for the
+                    Tcals are then obtained from the peculiar ratios relative to the
+                    median following
+                      Tcal_true / Tcal_ref = delta(Tsys')_median / delta(Tsys')
+                    Note that the true Tcals are anticipated to exhibit a few percent
+                    temperature sensitivity, correlated with Tsurf.
+                
+                In each case, the code will print to the logger the antenna+electronic
+                contributions to Tsys (Tae = Tant+Trx1+Trx2) per scan, antenna, spectral
+                window, and polarization.  Summary statistics will also be presented,
+                indicating the median, median absolute deviation, min outlier, and max
+                outlier over all antennas and polarizations for each scan and spectral
+                window.  If you see strange values (e.g. negative, or big difference
+                between polarizations) when running with calcTcals=False, or strange
+                opacities (e.g. negative), this probably indicates incorrect assumed
+                Tcals in the MS.  Try running again with calcTcals=True.  In this case,
+                the code will print the new Tcal solutions and their differences against
+                the MS Tcals to the logger, as well as associated summary statistics.
+                Zenith opacity solutions will be reported to the logger in every case,
+                together with summary statistics.  The solutions can be examined using
+                plotms.  (WARNING: do not use plotcal because it displays absolute values
+                of opacities, and therefore cannot be used to identify negative values.)
+                
+                Negative Pdif or Psum values will be flagged.  If all data in a given
+                scan and polarization for a given antenna and spw are negative, the code
+                will report a warning and the relevant opacity will not be calculated.
+                Similarly, if there is less than 40 sec of unflagged data for a given
+                antenna, spws, scan, and polarization (e.g. following online and manual
+                flagging), it will be completely flagged.  You will need to take these
+                possibilities into consideration when supplying the resulting zenith
+                opacity caltable to applycal.  For example, if you only have one scan
+                flagged out of multiple scans, then time interpolation may be suitable
+                to avoid unnecessary flagging of correlated data.  However, if you only
+                have a single tipping scan, then you will need to consider selecting
+                applymode='calflagstrict' to prevent spws from passing through
+                uncalibrated and unflagged.  Similarly, this will need to be considered
+                following online and manual flagging.
+                
+                Possible future upgrades:
+                   * Provide goodness of fit information.
+                   * Fit to base of Tsys vs z curve to avoid bias arising from local clouds
+                     (spikes on top of smooth curve).
+                   * Heuristics to identify bad switched power data, to avoid need for
+                     manual insepction of data.
+                   * Don't assume constant Tant.  Solve for this by taking the z-dependent
+                     residual after fitting out the tau0-dependent parts, assuming that all
+                     antennas and polarizations see the same Tant, and noting that Trx1 and
+                     Trx2 are antenna and polarization dependent.
+                   * Optimize code to reduce runtime (dominated by switched power read-in)
+                   * Option to interpolate/extrapolate opacity solutions to flagged spws?
+                   * Option to solve for time-independent Tcal_true?
+                   * Is bugs bunny down there ...
+                
+                Finally, in case you are wondering:  Yes, we can use this approach to
+                measure Tcmb.  This is essentially what Penzias and Wilson did.  Cool.
+                
+                
+                
+                This code will assume the following:
+                  * the FEED table specifies dual circularly polarized feeds (R, L)
+                    for all spectral windows.  This will always be the case for the
+                    VLA at frequencies where tips are performed.
+                  * Spectral windows are numbered sequentially from 0 to N
+                    (though not all spectral windows need to contain tip data)
+                  * CALDEVICE sub-table NUM_CAL_LOAD=2 (noise tube and solar Tcals,
+                    where latter will be ignored) for all spws/ants
+                  * OBSERVATION_ID=0, ARRAY_ID=0, FEED_ID=0, etc (i.e. typical setup)
+                
+                This task does not support data selection (e.g. spw).  If you care
+                about this, select subsets of solutions later in gaincal and applycal.
+                
+                
+                
+                Descriptions of keyword arguments are provided at the end of this help file.
+                
+                
+                
+                Christopher A. Hales
+                Version 1.0 (tested with CASA Version 5.6.0 REL)
+                22 October 2019
+                
+                Code available at: http://github.com/chrishales/tipopac
+                tipopac is released under a BSD 3-Clause License; see LICENSE for details.
+                
+        </description>
+
+        <input>
+            
+            <param type="string" name="msname" mustexist="true">
+                <description>Name of input measurement set</description>
+                <value />
+            </param>
+            
+            <param type="string" name="caltableZ">
+                <description>Name of output zenith opacity calibration table</description>
+                <value />
+            </param>
+            
+            <param type="bool" name="tauPerAnt">
+                <description>Calculate zenith opacity per antenna?</description>
+                <value>False</value>
+            </param>
+            
+            <param type="bool" name="calcTcals">
+                <description>Calculate noise diode temperatures?</description>
+                <value>False</value>
+            </param>
+            <param type="string" name="caltableT" subparam="true">
+                <description>Name of output Tcal table</description>
+                <!-- dummy value, see constraints section below for default value -->
+                <value></value>
+            </param>
+            
+            <param type="bool" name="cmdFlag">
+                <description>Apply online flags? (excludes ANTENNA_NOT_ON_SOURCE)</description>
+                <value>True</value>
+            </param>
+            
+            <param type="bool" name="usrFlag">
+                <description>Apply user-defined flags?</description>
+                <value>False</value>
+            </param>
+            <param type="string" name="flagFile" mustexist="true" subparam="true">
+                <description>File containing flagging commands (see help for syntax)</description>
+                <!-- dummy value, see constraints section below for default value -->
+                <value></value>
+            </param>
+            
+            <constraints>
+               <when param="calcTcals">
+                    <equals type="bool" value="False"></equals>
+                    <equals type="bool" value="True">
+                        <default param="caltableT"><value type="string"></value></default>
+                    </equals>
+               </when>
+
+               <when param="usrFlag">
+                    <equals type="bool" value="False"></equals>
+                    <equals type="bool" value="True">
+                        <default param="flagFile"><value type="string" mustexist="true"></value></default>
+                    </equals>
+               </when>
+            </constraints>
+        </input>
+
+        <returns type="void"/>
+        <example>
+
+----- Detailed descriptions of keyword arguments -----
+
+   
+   Keyword arguments:
+       
+       
+       msname -- Name of input MS or MMS containing switched power data.
+       
+       
+       caltableZ -- Name of output zenith opacity calibration table.
+       
+       
+       tauPerAnt -- If true, zenith opacity will be calculated per antenna.  Otherwise
+                    a single value will be calculated over the array (per scan and spw).
+       
+       
+       calcTcals     -- If true, tauPerAnt will be set to False to enable calculation of
+                        noise diode temperatures per polarization, antenna, spw, and scan.
+       
+         * caltableT -- Name of output Tcal table.  This will be a modified stand-alone
+                        copy of the CALDEVICE subtable in the MS.  Note that the data
+                        stored in this table are new Tcal solutions, not delta(Tcal).
+       
+       
+       cmdFlag -- If true, the online flags will be applied to the switched power data
+                  with the exception of reason=ANTENNA_NOT_ON_SOURCE (otherwise all
+                  tipping data will be flagged).
+       
+       
+       usrFlag      -- If true, apply user-defined flags from flagFile.
+       
+         * flagFile -- Text file containing manual flags.  Special syntax is required.
+                       Each line of the file must specify a particular ant/spw/timerange.
+                       If you specify additional details (e.g. pol), or don't follow the
+                       rules below, then the hardcoded interpreter will fail.
+                         ant: specify either a single antenna name (e.g. 'ea05') or use
+                              '-1' to indicate that all antennas should be flagged
+                         spw: specify either a single spectral window (e.g. '7') or use
+                              '-1' to indicate that all spws should be flagged
+                         timerange: specify a single UTC range including dates
+                       For example, contents of myflagfile.txt:
+                         antenna='ea05' spw='-1' timerange='2019/10/01/08:00:00.0~2019/10/01/08:05:00.0'
+                         antenna='-1' spw='-1' timerange='2019/10/01/08:05:00.0~2019/10/01/08:10:00.0'
+       
+       
+        </example>
+    </task>
+</casaxml>

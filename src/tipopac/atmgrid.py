@@ -70,7 +70,7 @@ class PwvGrid:
     profile_source:
         Free-form label for which atmospheric profile underlies the grid
         (``"open_meteo"``, ``"afgl_midlatitude_summer"`` …). Stored on the
-        Dataset attrs as ``pwv_profile_source``.
+        Dataset as the ``pwv_profile_source(scan,)`` data var.
     """
 
     pwv_mm: np.ndarray

@@ -124,7 +124,8 @@ def tipopac(
         Stage-A fit parallelism. ``None`` runs serially. Higher values
         dispatch via a process pool with single-threaded BLAS per worker.
     plot_dir:
-        If set, write per-(scan, antenna, spw) diagnostic PNGs here.
+        If set, write interactive diagnostic plot ``.html`` files here and
+        generate a self-contained GUI ``index.html`` next to them.
     caltable_opacity:
         If set, write a CASA TOpac caltable to this path.
     caltable_tcal:
@@ -148,6 +149,7 @@ def tipopac(
 
     if plot_dir is not None:
         ta.plot(out_dir=Path(plot_dir))
+        ta.weblog(plot_dir=Path(plot_dir))
     if caltable_opacity is not None or caltable_tcal is not None:
         ta.write_caltables(
             opacity=None if caltable_opacity is None else Path(caltable_opacity),
@@ -205,9 +207,10 @@ class TippingAnalysis:
         ``atm_pressure`` is a no-op.
 
         Adds ``atm_pressure(atm_level)``, ``atm_temperature(scan,
-        atm_level)``, ``atm_h2o_vmr(scan, atm_level)``. Writes attrs
-        ``atm_profile_source``, ``open_meteo_query``,
-        ``surface_pressure_hPa``.
+        atm_level)``, ``atm_h2o_vmr(scan, atm_level)``,
+        ``surface_pressure_hPa(scan,)`` (omitted when no scan has finite
+        weather_P). Writes attrs ``atm_profile_source``,
+        ``open_meteo_query``.
 
         ``source``:
             ``"open-meteo"`` (default) — one HTTP call covering the obs
@@ -233,10 +236,9 @@ class TippingAnalysis:
 
         Auto-calls :meth:`fetch_atm_profile` with defaults if the profile
         is not yet on the dataset. Populates ``self._grids[scan_id] =
-        PwvGrid`` for every scan and writes
-        ``ds.attrs["pwv_profile_source"][scan_id]`` for provenance. Used
-        by the post-fit atmospheric anchor (see
-        ``design/independent_tau_fit.md``); not consumed by :meth:`fit`.
+        PwvGrid`` for every scan and writes the ``pwv_profile_source(scan,)``
+        data var for provenance. Used by the post-fit atmospheric anchor
+        (see ``design/independent_tau_fit.md``); not consumed by :meth:`fit`.
         """
         import astropy.units as u
 
@@ -256,7 +258,7 @@ class TippingAnalysis:
         temp_K = self._ds["atm_temperature"].values  # (scan, atm_level)
         vmr = self._ds["atm_h2o_vmr"].values  # (scan, atm_level)
 
-        sources: dict[int, str] = {}
+        sources_arr = np.full(scan_ids.size, "", dtype=object)
         for i, scan_id in enumerate(scan_ids):
             temperature_q = temp_K[i].astype(np.float64) * u.K
             h2o_q = vmr[i].astype(np.float64) * u.dimensionless_unscaled
@@ -272,9 +274,9 @@ class TippingAnalysis:
                 n_workers=n_workers,
             )
             self._grids[int(scan_id)] = grid
-            sources[int(scan_id)] = atm_source
+            sources_arr[i] = atm_source
 
-        self._ds.attrs["pwv_profile_source"] = sources
+        self._ds["pwv_profile_source"] = (("scan",), sources_arr)
 
     def fit(
         self,
@@ -331,6 +333,11 @@ class TippingAnalysis:
         from tipopac.plot import PlotData
 
         PlotData(self._ds).save_all(out_dir=Path(out_dir))
+
+    def weblog(self, plot_dir: str | Path) -> None:
+        from tipopac.weblog import build_weblog
+
+        build_weblog(Path(plot_dir))
 
     def write_caltables(
         self,

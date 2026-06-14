@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -168,6 +168,24 @@ def test_attach_profile_afgl_writes_atm_vars() -> None:
     assert ds["atm_temperature"].dims == ("scan", "atm_level")
     assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_summer"
 
+    # surface_pressure_hPa is a data var (so the dataset can round-trip
+    # through netCDF), one entry per scan in hPa.
+    assert "surface_pressure_hPa" in ds.data_vars
+    assert ds["surface_pressure_hPa"].dims == ("scan",)
+    assert ds["surface_pressure_hPa"].dtype == np.float64
+    np.testing.assert_allclose(
+        ds["surface_pressure_hPa"].values,
+        np.full(ds.sizes["scan"], 850.0),
+    )
+
+
+def test_attach_profile_omits_surface_pressure_when_no_weather_P() -> None:
+    """No weather_P → no surface_pressure_hPa data var (optional schema entry)."""
+    ds = _make_fitted_ds(freqs_Hz=[22.2e9]).drop_vars("weather_P")
+    attach_profile(ds, source="afgl", afgl_climatology="midlatitude_summer")
+
+    assert "surface_pressure_hPa" not in ds.data_vars
+
 
 def test_attach_profile_afgl_auto_picks_winter_in_winter() -> None:
     """auto climatology picks midlatitude_winter for a Jan observation."""
@@ -284,8 +302,11 @@ def test_fetch_open_meteo_live() -> None:
 
     from tipopac.atmosphere import _VLA_LAT, _VLA_LON, _fetch_open_meteo
 
-    # A historical date guaranteed to be in archive.
-    date_str = datetime(2024, 1, 15, tzinfo=timezone.utc).strftime("%Y-%m-%d")
+    # 90 days back: past the 16-day forecast horizon so we hit the
+    # archive endpoint, recent enough that open-meteo hasn't pruned
+    # the gfs_hrrr pressure-level data (early-2024 dates have been
+    # pruned upstream).
+    date_str = (datetime.now(tz=timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
 
     pressure, temperature, h2o_vmr, hour_unix_s, meta = _fetch_open_meteo(
         _VLA_LAT, _VLA_LON, date_str, date_str

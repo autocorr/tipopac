@@ -118,6 +118,8 @@ def fit_dataset(
     sigma_vals = sigma_Tsys_arr  # (scan, ant, spw, pol, time)
     freq_vals = ds.coords["frequency"].values  # (spw,) Hz
 
+    twmt_out = _compute_twmt_grid(weather_T_vals, freq_vals, t_mean)
+
     if mode == "tau_per_antenna":
         tasks = list(
             _build_opacity_tasks(
@@ -214,6 +216,7 @@ def fit_dataset(
     ds["tau_err"] = (("scan", "antenna", "spw"), tau_err)
     ds["T0"] = (("scan", "antenna", "spw", "polarization"), T0_out)
     ds["tcal_fit"] = (("scan", "antenna", "spw", "polarization"), tcal_fit)
+    ds["Twmt"] = (("scan", "spw"), twmt_out)
     ds["fit_success"] = (("scan", "antenna", "spw"), fit_success)
     ds["fit_reason"] = (("scan", "antenna", "spw"), fit_reason)
     ds.attrs["mode"] = mode
@@ -254,19 +257,22 @@ def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
     here G is derived from D via G = D/T_c. Propagating the uncertainties in S
     and D and dropping second order terms it can be shown that:
 
-        σ_Tsys ≈ √2 · Tsys² / (T_c · √(Δν · τ_int))
+        σ_Tsys ≈ 2 · Tsys² / (T_c · √(Δν · τ_int))
 
-    T_c is ``tcal_ref`` rather than the solve-mode ``tcal_fit``: empirically
-    that choice gives the cleaner σ, since ``tcal_fit`` carries trajectory
-    noise from the near-degenerate (T_0, c, τ) fit ridge. Computing σ here,
-    pre-fit, also makes the noise model identical across fit modes.
+    The `2` prefactor uses the convention that ``τ_int`` (= MS ``EXPOSURE``)
+    is the total ON+OFF Walsh interval, with each state accumulating
+    ``τ_int / 2`` of integration time. T_c is ``tcal_ref`` rather than the
+    solve-mode ``tcal_fit``: empirically that choice gives the cleaner σ,
+    since ``tcal_fit`` carries trajectory noise from the near-degenerate
+    (T_0, c, τ) fit ridge. Computing σ here, pre-fit, also makes the noise
+    model identical across fit modes.
 
     Inputs:
         Δν      — ``bandwidth`` coord (per spw), Hz
         τ_int   — ``exposure_time`` (per scan, time), s
         T_c     — ``tcal_ref`` (per antenna, spw, pol), K
 
-    See ``design/design.md`` §5.3.
+    See ``design/design.md`` §5.3 and ``old_context/sigma_tsys_derivation.md``.
     """
     n_scan, n_ant, n_spw, n_pol, n_time = tsys.shape
     tcal = ds["tcal_ref"].values  # (ant, spw, pol)
@@ -279,10 +285,37 @@ def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
 
     with np.errstate(divide="ignore", invalid="ignore"):
         denom = tcal_b * np.sqrt(bw_b * expo_b)
-        sigma = np.sqrt(2.0) * (tsys * tsys) / denom
+        sigma = 2.0 * (tsys * tsys) / denom
 
     finite = np.isfinite(tsys) & np.isfinite(denom) & (denom > 0)
     return np.where(finite, sigma, np.nan).astype(np.float32)
+
+
+def _compute_twmt_grid(
+    weather_T_vals: np.ndarray,
+    freq_vals: np.ndarray,
+    t_mean: np.ndarray | None,
+) -> np.ndarray:
+    """Per-(scan, spw) Twmt actually used by the fit.
+
+    Mirrors `_screen_antenna`'s resolution rule: take `t_mean[scan, spw]`
+    when finite, else fall back to `k2nt(70.2 + 0.72·<T_surf>, ν)`.
+    """
+    n_scan = weather_T_vals.shape[0]
+    n_spw = freq_vals.shape[0]
+    out = np.full((n_scan, n_spw), np.nan, dtype=np.float32)
+    surf_mean = np.nanmean(weather_T_vals, axis=1)  # (scan,)
+    for i_scan in range(n_scan):
+        for i_spw in range(n_spw):
+            if t_mean is not None and np.isfinite(t_mean[i_scan, i_spw]):
+                out[i_scan, i_spw] = float(t_mean[i_scan, i_spw])
+            elif np.isfinite(surf_mean[i_scan]):
+                out[i_scan, i_spw] = float(
+                    k2nt(
+                        weighted_mean_atm_T(surf_mean[i_scan]), float(freq_vals[i_spw])
+                    )
+                )
+    return out
 
 
 def _residuals(
