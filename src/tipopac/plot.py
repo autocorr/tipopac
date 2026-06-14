@@ -17,6 +17,8 @@ Public surface:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 
 import altair as alt
@@ -25,6 +27,7 @@ import pandas as pd
 import xarray as xr
 
 from tipopac.physics import predicted_tsys
+from tipopac.timeutils import mjd_s_to_unix_s
 
 __all__ = [
     "AtmosphericProfile",
@@ -34,6 +37,7 @@ __all__ = [
     "Plot",
     "PlotData",
     "ResidualRmsHeatmap",
+    "Summary",
     "TauVsFrequency",
     "TcalVsFrequency",
 ]
@@ -778,6 +782,190 @@ class ResidualRmsHeatmap(_Heatmap):
         return {"fit_reason": self.ds_sub["fit_reason"]}
 
 
+class Summary:
+    """Textual run summary: input + run metadata and a per-scan stats table.
+
+    Not an altair chart — writes a small self-contained ``.html`` page
+    with inline CSS that the weblog renders in its iframe as the
+    landing view. Robust to missing optional vars: any feeder that's
+    absent or all-NaN renders as ``—``.
+    """
+
+    _MISSING = "—"
+
+    def __init__(self, ds: xr.Dataset) -> None:
+        self.ds = ds
+
+    def save(self, path: Path) -> None:
+        """Write the summary HTML to ``path`` (``.html`` suffix forced)."""
+        path = Path(path).with_suffix(".html")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self._render(), encoding="utf-8")
+        _log.info("plot saved: %s", path)
+
+    # ------------------------------------------------------------------
+    def _attr(self, key: str) -> str:
+        value = self.ds.attrs.get(key)
+        if value is None or value == "":
+            return self._MISSING
+        if isinstance(value, (list, tuple)):
+            return ", ".join(str(v) for v in value) if value else self._MISSING
+        return str(value)
+
+    def _format_mjd(self, mjd_s: float) -> str:
+        if not np.isfinite(mjd_s):
+            return self._MISSING
+        dt = datetime.fromtimestamp(mjd_s_to_unix_s(float(mjd_s)), tz=timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    def _fmt(self, value: float, spec: str) -> str:
+        if not np.isfinite(value):
+            return self._MISSING
+        return format(float(value), spec)
+
+    def _render(self) -> str:
+        meta_rows = (
+            ("Input", self._attr("source_path")),
+            ("Source format", self._attr("source_format")),
+            ("Observatory", self._attr("observatory")),
+            ("Mode", self._attr("mode")),
+            ("Atmospheric profile", self._attr("atm_profile_source")),
+            ("Selected bands", self._attr("selected_bands")),
+        )
+        meta_html = "\n".join(
+            f"  <dt>{escape(label)}</dt><dd>{escape(value)}</dd>"
+            for label, value in meta_rows
+        )
+
+        scans, stat_rows = self._scan_stats()
+        scan_headers = "".join(f"<th>{scan}</th>" for scan in scans)
+        body_rows = "\n".join(
+            "    <tr><th>{label}</th>{cells}</tr>".format(
+                label=escape(label),
+                cells="".join(f"<td>{escape(v)}</td>" for v in values),
+            )
+            for label, values in stat_rows
+        )
+
+        return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tipopac summary</title>
+<style>
+  body {{
+    margin: 0; padding: 1.2em 1.6em;
+    font-family: -apple-system, system-ui, sans-serif;
+    color: #222;
+  }}
+  h2 {{
+    font-size: 1.1em; margin: 1.4em 0 0.5em;
+    border-bottom: 1px solid #ccc; padding-bottom: 0.2em;
+  }}
+  h2:first-of-type {{ margin-top: 0; }}
+  dl.meta {{
+    display: grid; grid-template-columns: max-content 1fr;
+    column-gap: 1.2em; row-gap: 0.25em; margin: 0;
+  }}
+  dl.meta dt {{ font-weight: 600; color: #555; }}
+  dl.meta dd {{ margin: 0; word-break: break-all; }}
+  table.stats {{ border-collapse: collapse; width: auto; }}
+  table.stats th, table.stats td {{
+    padding: 0.3em 0.8em; border-bottom: 1px solid #eee;
+    text-align: right; white-space: nowrap;
+  }}
+  table.stats thead th {{
+    border-bottom: 2px solid #999; text-align: center;
+  }}
+  table.stats thead th:first-child {{ border-bottom: 2px solid #999; }}
+  table.stats tbody th {{
+    font-weight: 600; color: #555; text-align: left;
+  }}
+</style>
+</head>
+<body>
+<h2>Run</h2>
+<dl class="meta">
+{meta_html}
+</dl>
+<h2>Per-scan statistics</h2>
+<table class="stats">
+  <thead>
+    <tr><th>Scan</th>{scan_headers}</tr>
+  </thead>
+  <tbody>
+{body_rows}
+  </tbody>
+</table>
+</body>
+</html>
+"""
+
+    # ------------------------------------------------------------------
+    def _scan_stats(self) -> tuple[list[str], list[tuple[str, list[str]]]]:
+        ds = self.ds
+        scans = [str(int(s)) for s in ds["scan"].values]
+
+        # Observed-cell masks (heatmap pattern, plot.py:640).
+        has_data = ~ds["switched_diff"].isnull()
+        per_scan_spw = has_data.any(dim=("antenna", "polarization", "time"))
+        per_scan_ant_spw = has_data.any(dim=("polarization", "time"))
+
+        # Row 1: UTC start.
+        utc_starts = [self._format_mjd(t) for t in ds["scan_time_start"].values]
+
+        # Row 2: bands observed (unique, in spw order).
+        band = ds["band"].values
+        bands_per_scan: list[str] = []
+        for s in range(ds.sizes["scan"]):
+            observed = per_scan_spw.isel(scan=s).values
+            seen: list[str] = []
+            for b in band[observed]:
+                bs = str(b)
+                if bs and bs not in seen:
+                    seen.append(bs)
+            bands_per_scan.append(", ".join(seen) if seen else self._MISSING)
+
+        # Row 3: center frequency [GHz], mean over observed spws.
+        freq_ghz = ds["frequency"].astype(np.float64) / 1e9
+        center_freq = freq_ghz.where(per_scan_spw).mean(dim="spw")
+        center_freq_strs = [self._fmt(v, ".2f") for v in center_freq.values]
+
+        # Row 4: weighted mean tau across (antenna, spw).
+        if "tau_zenith" in ds.data_vars and "tau_err" in ds.data_vars:
+            weights = (1.0 / ds["tau_err"] ** 2).fillna(0.0)
+            mean_tau = ds["tau_zenith"].weighted(weights).mean(dim=("antenna", "spw"))
+            mean_tau_strs = [self._fmt(v, ".4f") for v in mean_tau.values]
+        else:
+            mean_tau_strs = [self._MISSING] * len(scans)
+
+        # Row 5: flag fraction over observed (ant, spw, pol, time) cells.
+        reduce_dims = ("antenna", "spw", "polarization", "time")
+        denom = has_data.sum(dim=reduce_dims)
+        flagged = (ds["flag"] & has_data).sum(dim=reduce_dims)
+        frac = (flagged / denom.where(denom > 0)).values
+        flag_frac_strs = [self._fmt(v, ".1%") for v in frac]
+
+        # Row 6: fit success fraction over observed (ant, spw) cells.
+        if "fit_success" in ds.data_vars:
+            denom_as = per_scan_ant_spw.sum(dim=("antenna", "spw"))
+            succ = (ds["fit_success"] & per_scan_ant_spw).sum(dim=("antenna", "spw"))
+            succ_frac = (succ / denom_as.where(denom_as > 0)).values
+            succ_strs = [self._fmt(v, ".1%") for v in succ_frac]
+        else:
+            succ_strs = [self._MISSING] * len(scans)
+
+        rows: list[tuple[str, list[str]]] = [
+            ("UTC start", utc_starts),
+            ("Bands", bands_per_scan),
+            ("Center freq [GHz]", center_freq_strs),
+            ("Mean τ", mean_tau_strs),
+            ("Flag fraction", flag_frac_strs),
+            ("Fit success", succ_strs),
+        ]
+        return scans, rows
+
+
 class PlotData:
     """Wrap the canonical tipopac dataset and dispatch the four plot types.
 
@@ -818,6 +1006,9 @@ class PlotData:
     ) -> ResidualRmsHeatmap:
         return ResidualRmsHeatmap(self.ds, scans)
 
+    def summary(self) -> Summary:
+        return Summary(self.ds)
+
     def save_all(
         self, out_dir: str | Path = Path("."), plot_elev: bool = False
     ) -> None:
@@ -831,6 +1022,8 @@ class PlotData:
         """
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
+
+        self.summary().save(out / "summary")
 
         success = self.ds["fit_success"]
         if not bool(success.any()):

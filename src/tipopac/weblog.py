@@ -26,14 +26,16 @@ _log = logging.getLogger(__name__)
 
 # Hard-coded naming patterns (mirror plot.PlotData.save_all).
 _ELEVATION_RE = re.compile(r"^tippingcurve_spw_(\d+)_(\w+)_scan_(\d+)\.html$")
+# Surfaced first in the dropdown when present — the weblog's landing view.
+_SUMMARY_PLOT: tuple[str, str] = ("summary.html", "Summary")
 _AGGREGATE_PLOTS: tuple[tuple[str, str], ...] = (
-    ("tau_vs_frequency.html", "τ vs frequency"),
+    ("tau_vs_frequency.html", "Opacity vs frequency"),
     ("tcal_fit_vs_frequency.html", "T_cal (fit) vs frequency"),
     ("tcal_ref_vs_frequency.html", "T_cal (ref) vs frequency"),
     ("c_vs_frequency.html", "c = T_cal,fit / T_cal,ref"),
     ("atmospheric_profile.html", "Atmospheric profile"),
     ("fit_quality_heatmap.html", "Fit quality heatmap"),
-    ("residual_rms_heatmap.html", "Residual RMS [K]"),
+    ("residual_rms_heatmap.html", "Residual RMS heatmap"),
 )
 _ELEVATION_LABEL = "Elevation curve"
 
@@ -44,6 +46,7 @@ def build_weblog(plot_dir: str | Path) -> Path:
     files = sorted(p.name for p in plot_dir.glob("*.html") if p.name != "index.html")
     files_set = set(files)
 
+    has_summary = _SUMMARY_PLOT[0] in files_set
     aggregates = [(fn, label) for fn, label in _AGGREGATE_PLOTS if fn in files_set]
     triples = [
         (int(m.group(1)), m.group(2), int(m.group(3)))
@@ -64,6 +67,7 @@ def build_weblog(plot_dir: str | Path) -> Path:
     index_path.write_text(
         _render_html(
             aggregates=aggregates,
+            has_summary=has_summary,
             has_elevation=bool(triples),
             scans=scans,
             antennas=antennas,
@@ -79,6 +83,7 @@ def build_weblog(plot_dir: str | Path) -> Path:
 def _render_html(
     *,
     aggregates: list[tuple[str, str]],
+    has_summary: bool,
     has_elevation: bool,
     scans: list[int],
     antennas: list[str],
@@ -86,6 +91,9 @@ def _render_html(
     available: list[str],
 ) -> str:
     options: list[str] = []
+    if has_summary:
+        fn, label = _SUMMARY_PLOT
+        options.append(f'<option value="{fn}" data-file="{fn}">{label}</option>')
     if has_elevation:
         options.append(f'<option value="elevation">{_ELEVATION_LABEL}</option>')
     for fn, label in aggregates:

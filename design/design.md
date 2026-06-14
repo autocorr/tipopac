@@ -608,11 +608,16 @@ from `tcal_ref` — a `T_cal` vs frequency and a
 chart with pressure on a log y-axis (850 → 10 hPa) and T (linear) /
 mixing ratio (log) on independent x-axes.
 
+Per dataset: a textual `summary.html` (run metadata + per-scan stats
+table) — not a chart, just static HTML; surfaced as the weblog's
+landing view.
+
 `weblog.build_weblog(plot_dir)` is an independent pipeline step that
 scans `plot_dir` and emits a self-contained GUI `index.html` —
-dropdown for plot type plus text boxes for `(scan, antenna, spw)`
-when picking an elevation curve. Missing files surface as
-"Plot not found: …" rather than broken iframes.
+dropdown for plot type (defaults to the summary when present) plus
+text boxes for `(scan, antenna, spw)` when picking an elevation
+curve. Missing files surface as "Plot not found: …" rather than
+broken iframes.
 
 `out_dir` is created with `Path.mkdir(parents=True, exist_ok=True)`.
 

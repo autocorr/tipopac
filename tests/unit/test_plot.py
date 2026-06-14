@@ -137,6 +137,7 @@ def _make_plot_ds(
         "xyz": ["X", "Y", "Z"],
         "frequency": (("spw",), freqs),
         "bandwidth": (("spw",), np.full(n_spw, 2e9, dtype=np.float64)),
+        "band": (("spw",), np.full(n_spw, "K", dtype="U4")),
         "antenna_position": (
             ("antenna", "xyz"),
             np.zeros((n_ant, 3), dtype=np.float64),
