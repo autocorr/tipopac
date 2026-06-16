@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,8 @@ import xarray as xr
 
 from tipopac.atmgrid import PwvGrid
 from tipopac.readers import detect_reader as _detect_reader
+
+_log = logging.getLogger(__name__)
 
 # Public Stage A+B modes (independent τ fit + per-antenna PWV anchor;
 # `design/independent_tau_fit.md`). The values are the Stage-A backend
@@ -327,6 +330,16 @@ class TippingAnalysis:
         pressure_Pa = self._ds["atm_pressure"].values  # (scan, atm_level)
         temp_K = self._ds["atm_temperature"].values  # (scan, atm_level)
         vmr = self._ds["atm_h2o_vmr"].values  # (scan, atm_level)
+        surface_P_hPa = (
+            self._ds["surface_pressure_hPa"].values
+            if "surface_pressure_hPa" in self._ds.data_vars
+            else None
+        )
+
+        # Within a single call, scans sharing the same am inputs (and surface
+        # pressures within 0.2 hPa of the first builder) reuse the same
+        # PwvGrid. PwvGrid is frozen + read-only downstream — sharing is safe.
+        cache: list[tuple[bytes, float | None, PwvGrid]] = []
 
         sources_arr = np.full(scan_ids.size, "", dtype=object)
         for i, scan_id in enumerate(scan_ids):
@@ -334,22 +347,67 @@ class TippingAnalysis:
             t_row = temp_K[i].astype(np.float64)
             h_row = vmr[i].astype(np.float64)
             keep = np.isfinite(p_row)
-            pressure_q = p_row[keep] * u.Pa
-            temperature_q = t_row[keep] * u.K
-            h2o_q = h_row[keep] * u.dimensionless_unscaled
-            grid = build_pwv_grid(
-                pressure_q,
-                temperature_q,
-                h2o_q,
-                freq_min_Hz=freq_min_Hz,
-                freq_max_Hz=freq_max_Hz,
-                profile_source=atm_source,
-                pwv_step_mm=pwv_step_mm,
-                freq_step_Hz=freq_step_Hz,
-                n_workers=n_workers,
+            p_keep = p_row[keep]
+            t_keep = t_row[keep]
+            h_keep = h_row[keep]
+            # Skip level 0 (each scan's interpolated surface value, which
+            # tracks the per-scan surface clip from atmosphere.py). Upper
+            # levels must match exactly; the 0.2 hPa gate below handles the
+            # surface-level differences.
+            key = (
+                p_keep[1:].tobytes()
+                + t_keep[1:].tobytes()
+                + h_keep[1:].tobytes()
+                + np.asarray(
+                    [freq_min_Hz, freq_max_Hz, freq_step_Hz, pwv_step_mm],
+                    dtype=np.float64,
+                ).tobytes()
             )
+            p_scan_hPa: float | None = (
+                float(surface_P_hPa[i])
+                if surface_P_hPa is not None and np.isfinite(surface_P_hPa[i])
+                else None
+            )
+
+            grid: PwvGrid | None = None
+            for cached_key, anchor_P, cached_grid in cache:
+                if cached_key != key:
+                    continue
+                if p_scan_hPa is None and anchor_P is None:
+                    grid = cached_grid
+                    break
+                if (
+                    p_scan_hPa is not None
+                    and anchor_P is not None
+                    # 1e-9 slack handles float repr near the inclusive boundary
+                    # (e.g. 850.2 - 850.0 returns 0.20000000000000018).
+                    and abs(p_scan_hPa - anchor_P) <= 0.2 + 1e-9
+                ):
+                    grid = cached_grid
+                    break
+
+            if grid is None:
+                grid = build_pwv_grid(
+                    p_keep * u.Pa,
+                    t_keep * u.K,
+                    h_keep * u.dimensionless_unscaled,
+                    freq_min_Hz=freq_min_Hz,
+                    freq_max_Hz=freq_max_Hz,
+                    profile_source=atm_source,
+                    pwv_step_mm=pwv_step_mm,
+                    freq_step_Hz=freq_step_Hz,
+                    n_workers=n_workers,
+                )
+                cache.append((key, p_scan_hPa, grid))
+
             self._grids[int(scan_id)] = grid
             sources_arr[i] = atm_source
+
+        _log.info(
+            "PwvGrid cache: built %d unique grid(s) for %d scan(s)",
+            len(cache),
+            scan_ids.size,
+        )
 
         self._ds["pwv_profile_source"] = (("scan",), sources_arr)
 
