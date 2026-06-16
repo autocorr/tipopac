@@ -125,7 +125,7 @@ def test_build_weblog_lists_residual_rms_heatmap_when_present(tmp_path: Path) ->
     _touch(tmp_path / "residual_rms_heatmap.html")
     body = build_weblog(tmp_path).read_text(encoding="utf-8")
     assert "residual_rms_heatmap.html" in body
-    assert "Residual RMS [K]" in body
+    assert "Residual RMS heatmap" in body
 
 
 def test_build_weblog_ignores_existing_index_html(tmp_path: Path) -> None:

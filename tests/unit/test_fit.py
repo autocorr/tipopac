@@ -58,11 +58,11 @@ def _make_tip_ds(
     # Pick exposure_time so radiometer σ_Tsys ≈ max(noise_K, 0.01 K) at the
     # scan-mean Tsys. This keeps synthetic test data consistent with the
     # reader-derived σ that the fit consumes:
-    #   σ = √2 · Tsys² / (Tcal · √(Δν·τ_int))
+    #   σ = 2 · Tsys² / (Tcal · √(Δν·τ_int))  →  τ_int = 4·Tsys⁴ / (Tcal²·σ²·Δν)
     bandwidth_Hz = 2e9
     Tsys_typ = float(np.mean((tsys_R_clean + tsys_L_clean) / 2.0))
     sigma_eff = max(float(noise_K), 0.01)
-    expo_s = float(2.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz))
+    expo_s = float(4.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz))
     # Tsys = (switched_sum/2) / switched_diff * tcal_ref
     # With switched_diff=1, switched_sum = 2 * tsys / tcal
     switched_diff = np.ones((n_scan, n_ant, n_spw, 2, n_time), dtype=np.float32)
@@ -303,7 +303,8 @@ def _make_tcal_ds(
     bandwidth_Hz = 2e9
     Tsys_typ = float(np.mean((tsys_R_clean + tsys_L_clean) / 2.0))
     sigma_eff = max(float(noise_K), 0.01)
-    expo_s = float(2.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz))
+    # σ = 2·Tsys²/(Tcal·√(Δν·τ_int))  →  τ_int = 4·Tsys⁴/(Tcal²·σ²·Δν)
+    expo_s = float(4.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz))
     switched_diff = np.ones((1, n_ant, 1, 2, n_time), dtype=np.float32)
     switched_sum = np.zeros((1, n_ant, 1, 2, n_time), dtype=np.float32)
     for ia in range(n_ant):

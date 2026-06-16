@@ -44,13 +44,18 @@ def _make_tip_ds(
     tcal = 5.0
     T0 = 50.0
 
+    noise_K = 0.3
+    bandwidth_Hz = 2e9
+    Tsys_typ = float(np.mean(physics.tsys_model(z, T0, tau0, Twmt)))
+    # σ = 2·Tsys²/(Tcal·√(Δν·τ_int))  →  τ_int = 4·Tsys⁴/(Tcal²·σ²·Δν)
+    expo_s = float(4.0 * Tsys_typ**4 / (tcal**2 * noise_K**2 * bandwidth_Hz))
     switched_diff = np.ones((n_scan, n_ant, n_spw, 2, n_time), dtype=np.float32)
     switched_sum = np.zeros((n_scan, n_ant, n_spw, 2, n_time), dtype=np.float32)
     for i_sc in range(n_scan):
         for i_a in range(n_ant):
             for i_w in range(n_spw):
                 tsys = physics.tsys_model(z, T0, tau0, Twmt) + rng.normal(
-                    0.0, 0.3, n_time
+                    0.0, noise_K, n_time
                 )
                 switched_sum[i_sc, i_a, i_w, 0, :] = (2.0 * tsys / tcal).astype(
                     np.float32
@@ -93,7 +98,7 @@ def _make_tip_ds(
             ),
             "exposure_time": (
                 ("scan", "time"),
-                np.full((n_scan, n_time), 1.0, dtype=np.float32),
+                np.full((n_scan, n_time), expo_s, dtype=np.float32),
             ),
             "flag": (
                 ("scan", "antenna", "spw", "polarization", "time"),
