@@ -36,6 +36,7 @@ dev = [
     "pytest>=9.0.3",
     "ruff>=0.15.12",
     "ty>=0.0.35",
+    "zensical>=0.0.45",
 ]
 
 [tool.ruff]

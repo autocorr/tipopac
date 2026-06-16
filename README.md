@@ -39,11 +39,9 @@ from tipopac import tipopac
 
 result = tipopac(
     "data/tip_test.ms",
-    mode="independent_tau_solve",          # default; per-spw τ + PWV anchor
+    mode="independent_tau",                # default; per-spw τ + PWV anchor
     n_workers=8,                           # process-pool parallelism
-    plot_dir="run/plots",                  # optional
-    caltable_opacity="run/topac.cal",      # optional
-    caltable_tcal="run/tcal.cal",          # optional
+    output_dir="run",                      # optional
 )
 
 ds = result.dataset                        # xarray.Dataset

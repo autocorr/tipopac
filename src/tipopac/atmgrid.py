@@ -37,6 +37,11 @@ DEFAULT_PWV_MAX_MM: float = 50.0
 DEFAULT_PWV_STEP_MM: float = 0.5
 DEFAULT_FREQ_STEP_HZ: float = 100e6  # 100 MHz, matches warm-am ≈ 25 ms
 
+# Per-worker cache dir parent. tmpfs avoids HDD-backed /tmp on hosts where
+# TMPDIR isn't pointed at RAM; falls back to tempfile's default if /dev/shm
+# isn't present. Mirrors amwrap's own default (vendor/amwrap/amwrap/__init__.py:80).
+_DEFAULT_CACHE_BASE: str | None = "/dev/shm" if Path("/dev/shm").is_dir() else None
+
 # Physical constants for the PWV integral.
 _M_WATER_OVER_M_DRY: float = 18.015 / 28.9647
 _G_EARTH: float = 9.80665  # m s⁻²
@@ -288,7 +293,7 @@ def build_pwv_grid(
     pwv_max_mm: float = DEFAULT_PWV_MAX_MM,
     pwv_step_mm: float = DEFAULT_PWV_STEP_MM,
     freq_step_Hz: float = DEFAULT_FREQ_STEP_HZ,
-    n_workers: int | None = None,
+    n_workers: int | None = 8,
 ) -> PwvGrid:
     """Run am over a PWV grid and return a populated :class:`PwvGrid`.
 
@@ -306,7 +311,7 @@ def build_pwv_grid(
     freq_step_Hz:
         am output frequency step. 100 MHz keeps each run ~25 ms warm.
     n_workers:
-        Process-pool size. Defaults to ``min(40, n_grid, os.cpu_count())``.
+        Process-pool size. If `None` then ``min(grid, cpu_count)``.
 
     Notes
     -----
@@ -351,17 +356,21 @@ def build_pwv_grid(
 
     n_grid = pwv_axis.size
     cpu = os.cpu_count() or 1
-    n_eff = n_workers if n_workers is not None else min(40, n_grid, cpu)
+    n_eff = min(n_workers, cpu) if n_workers is not None else min(n_grid, cpu)
     n_eff = max(1, min(n_eff, n_grid))
 
     if n_eff == 1:
-        with tempfile.TemporaryDirectory(prefix="tipopac_amcache_") as tmp:
+        with tempfile.TemporaryDirectory(
+            prefix="tipopac_amcache_", dir=_DEFAULT_CACHE_BASE
+        ) as tmp:
             init_kwargs_t = {**init_kwargs, "base_cache_dir": tmp}
             results = _run_serial(scalings, init_kwargs_t)
     else:
-        with tempfile.TemporaryDirectory(prefix="tipopac_amcache_") as tmp:
+        with tempfile.TemporaryDirectory(
+            prefix="tipopac_amcache_", dir=_DEFAULT_CACHE_BASE
+        ) as tmp:
             init_kwargs_t = {**init_kwargs, "base_cache_dir": tmp}
-            ctx = mp.get_context("spawn")
+            ctx = mp.get_context("fork")
             with ctx.Pool(
                 processes=n_eff,
                 initializer=_worker_init,
