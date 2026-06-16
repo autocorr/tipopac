@@ -580,13 +580,18 @@ class AtmosphericProfile(Plot):
         self.temperature_unit = temperature_unit
 
     def build(self) -> alt.LayerChart | alt.FacetChart:
-        pressure_hPa = self.ds["atm_pressure"].values / 100.0
         if self.scan is None:
+            pressure_hPa = self.ds["atm_pressure"].mean(dim="scan").values / 100.0
             temp_K = self.ds["atm_temperature"].mean(dim="scan").values
             vmr = self.ds["atm_h2o_vmr"].mean(dim="scan").values
         else:
+            pressure_hPa = self.ds["atm_pressure"].sel(scan=self.scan).values / 100.0
             temp_K = self.ds["atm_temperature"].sel(scan=self.scan).values
             vmr = self.ds["atm_h2o_vmr"].sel(scan=self.scan).values
+        keep = np.isfinite(pressure_hPa)
+        pressure_hPa = pressure_hPa[keep]
+        temp_K = temp_K[keep]
+        vmr = vmr[keep]
 
         temp_C = temp_K - 273.15
         temp_col = "temperature_C" if self.temperature_unit == "C" else "temperature_K"

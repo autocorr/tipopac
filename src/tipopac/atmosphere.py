@@ -5,8 +5,8 @@ Public entry point
 ``attach_profile(ds, *, source, afgl_climatology, …)``
     The single network-touching stage. Runs open-meteo once (full hourly
     grid for the observation date range) or builds an AFGL profile, picks
-    the closest hour per scan, clips to the median surface pressure, and
-    writes ``atm_pressure``, ``atm_temperature``, ``atm_h2o_vmr``, and
+    the closest hour per scan, clips at each scan's own surface pressure,
+    and writes ``atm_pressure``, ``atm_temperature``, ``atm_h2o_vmr``, and
     ``surface_pressure_hPa(scan,)`` to *ds*. Provenance lands in
     ``ds.attrs`` (``atm_profile_source``, ``open_meteo_query``).
 """
@@ -46,6 +46,9 @@ _log = logging.getLogger(__name__)
 
 _VLA_LAT: float = 34.0784  # degrees N
 _VLA_LON: float = -107.6177  # degrees E
+# Fallback when no scan has a finite weather_P sample (~794 hPa for the VLA
+# site at ~2115 m altitude).
+_VLA_DEFAULT_SURFACE_P_hPa: float = 794.0
 
 # ---------------------------------------------------------------------------
 # open-meteo configuration
@@ -113,8 +116,8 @@ def attach_profile(
 ) -> None:
     """Fetch the atmospheric profile once and attach it to *ds*.
 
-    Adds data vars ``atm_pressure(atm_level)``, ``atm_temperature(scan,
-    atm_level)``, ``atm_h2o_vmr(scan, atm_level)``,
+    Adds data vars ``atm_pressure(scan, atm_level)``, ``atm_temperature(
+    scan, atm_level)``, ``atm_h2o_vmr(scan, atm_level)``,
     ``surface_pressure_hPa(scan,)`` (omitted when no scan has finite
     weather_P) and attrs ``atm_profile_source``, ``open_meteo_query``.
 
@@ -132,10 +135,12 @@ def attach_profile(
     * ``afgl_climatology="auto"`` resolves to summer/winter from the
       observation's median month.
 
-    The surface-pressure clip uses the median of per-scan WEATHER-table
-    samples. Per-scan surface variation is <2 hPa at the VLA, well below
-    am modeling precision; collapsing to median keeps the ``atm_level``
-    dim constant across scans.
+    The surface clip is applied per scan: index 0 of ``atm_level`` is
+    each scan's own surface, increasing index moves up in altitude.
+    Scans whose clip lands one level shorter than the longest get
+    trailing NaN padding. Scans without a finite ``surface_pressure_hPa``
+    fall back to the cross-scan median; if no scan has WEATHER data, to
+    the VLA site default (~794 hPa).
     """
     if source not in ("open-meteo", "afgl"):
         raise ValueError(f"unknown atmospheric profile source: {source!r}")
@@ -147,12 +152,12 @@ def attach_profile(
     if afgl_climatology == "auto":
         afgl_climatology = _pick_climatology_for_date(median_obs_time_mjd_s)
 
-    # Per-scan median surface pressure → median across scans for the clip.
-    surface_pressure, surface_pressures_hPa = _compute_surface_pressure(ds)
+    surface_pressures_hPa = _compute_surface_pressure(ds)
+    per_scan_surface_hPa = _resolve_per_scan_surface_hPa(surface_pressures_hPa)
 
     open_meteo_query: dict | None = None
     used_source: str | None = None
-    pressure_q: u.Quantity | None = None
+    pressure_per_scan: u.Quantity | None = None
     temperature_per_scan: u.Quantity | None = None
     h2o_vmr_per_scan: u.Quantity | None = None
 
@@ -182,7 +187,7 @@ def attach_profile(
                         _VLA_LAT, _VLA_LON, date_start, date_end
                     )
                     (
-                        pressure_q,
+                        pressure_per_scan,
                         temperature_per_scan,
                         h2o_vmr_per_scan,
                     ) = _pick_hourly_per_scan_and_clip(
@@ -191,7 +196,7 @@ def attach_profile(
                         h_grid,
                         hour_unix_s,
                         scan_starts,
-                        surface_pressure,
+                        per_scan_surface_hPa,
                     )
                     open_meteo_query = meta
                     used_source = "open_meteo"
@@ -217,31 +222,20 @@ def attach_profile(
                 )
 
     if used_source is None:
-        # source="afgl" path or open-meteo failure
-        afgl_p, afgl_t, afgl_h = _afgl_profile(
-            afgl_climatology, surface_pressure=surface_pressure
-        )
-        pressure_q = afgl_p
-        n_scan = ds.sizes["scan"]
-        # Broadcast the (constant) AFGL profile to every scan.
-        temperature_per_scan = (
-            np.broadcast_to(afgl_t.to(u.K).value, (n_scan, afgl_t.size)).copy() * u.K
-        )
-        h2o_vmr_per_scan = (
-            np.broadcast_to(
-                np.asarray(afgl_h, dtype=np.float64), (n_scan, afgl_h.size)
-            ).copy()
-            * u.dimensionless_unscaled
-        )
+        (
+            pressure_per_scan,
+            temperature_per_scan,
+            h2o_vmr_per_scan,
+        ) = _afgl_profile_per_scan(afgl_climatology, per_scan_surface_hPa)
         used_source = f"afgl_{afgl_climatology}"
 
-    assert pressure_q is not None
+    assert pressure_per_scan is not None
     assert temperature_per_scan is not None
     assert h2o_vmr_per_scan is not None
 
     ds["atm_pressure"] = (
-        ("atm_level",),
-        pressure_q.to(u.Pa).value.astype(np.float64),
+        ("scan", "atm_level"),
+        pressure_per_scan.to(u.Pa).value.astype(np.float64),
     )
     ds["atm_temperature"] = (
         ("scan", "atm_level"),
@@ -258,28 +252,18 @@ def attach_profile(
         ds["surface_pressure_hPa"] = (("scan",), surface_pressures_hPa)
 
 
-def _compute_surface_pressure(
-    ds: xr.Dataset,
-) -> tuple[u.Quantity | None, np.ndarray]:
-    """Return ``(median_surface_pressure_quantity, per_scan_hPa_array)``.
-
-    The Quantity is the median across scans of each scan's median weather_P
-    sample, used for the single profile clip. The array (length ``n_scan``,
-    NaN where a scan has no finite weather_P samples) is provenance only.
-    """
+def _compute_surface_pressure(ds: xr.Dataset) -> np.ndarray:
+    """Return the per-scan median weather_P sample in hPa (NaN where missing)."""
     n_scan = int(ds.sizes["scan"])
     per_scan_hPa = np.full(n_scan, np.nan, dtype=np.float64)
     if "weather_P" not in ds.data_vars:
-        return None, per_scan_hPa
+        return per_scan_hPa
     weather_P_Pa = ds["weather_P"].values  # (scan, time), Pa
     for i in range(n_scan):
         samples = weather_P_Pa[i][np.isfinite(weather_P_Pa[i])]
         if samples.size:
             per_scan_hPa[i] = float(np.median(samples)) / 100.0
-    finite = per_scan_hPa[np.isfinite(per_scan_hPa)]
-    if finite.size == 0:
-        return None, per_scan_hPa
-    return float(np.median(finite)) * u.hPa, per_scan_hPa
+    return per_scan_hPa
 
 
 def _utc_date_range(
@@ -299,19 +283,17 @@ def _pick_hourly_per_scan_and_clip(
     h_grid: u.Quantity,
     hour_unix_s: np.ndarray,
     scan_starts_mjd_s: np.ndarray,
-    surface_pressure: u.Quantity | None,
+    surface_pressures_hPa: np.ndarray,
 ) -> tuple[u.Quantity, u.Quantity, u.Quantity]:
-    """Pick closest hourly slice per scan, then apply a single surface clip.
+    """Pick closest hourly slice per scan, then apply each scan's own surface clip.
 
     ``p_grid`` is (n_level,); ``t_grid``, ``h_grid`` are (n_hour, n_level).
-    Returns ``(pressure_clipped (n_level',), temperature (n_scan, n_level'),
-    h2o_vmr (n_scan, n_level'))``.
+    ``surface_pressures_hPa`` is (n_scan,) of finite floats (NaN already
+    resolved by the caller). Returns three per-scan arrays NaN-padded at the
+    trailing edge to a common ``n_level'`` (= max clipped length); index 0 is
+    each scan's own surface, increasing index moves up in altitude.
     """
-    import amwrap as _amwrap
-
-    # MJD seconds → Unix seconds.
     scan_unix_s = _mjd_s_to_unix_s(scan_starts_mjd_s)
-    # For each scan, find closest hour. (n_scan, n_hour) abs-diff matrix.
     diff = np.abs(scan_unix_s[:, None] - hour_unix_s[None, :])
     hour_idx = np.argmin(diff, axis=1)  # (n_scan,)
 
@@ -319,49 +301,82 @@ def _pick_hourly_per_scan_and_clip(
     t_K = t_grid.to(u.K).value  # (n_hour, n_level)
     h_vmr = np.asarray(h_grid.value)  # (n_hour, n_level)
 
-    temperature_per_scan_K = t_K[hour_idx, :]  # (n_scan, n_level)
-    h2o_per_scan = h_vmr[hour_idx, :]
-
-    pressure_q: u.Quantity = p_grid
-    if surface_pressure is not None:
-        try:
-            pressure_clipped = _amwrap.interp_by_pressure(
-                p_grid, p_grid, surface_pressure
-            )
-            n_keep = pressure_clipped.size
-
-            # Apply same clip to each scan's T and VMR.
-            t_clipped = np.empty((n_scan, n_keep), dtype=np.float64)
-            h_clipped = np.empty((n_scan, n_keep), dtype=np.float64)
-            for i in range(n_scan):
-                t_q = temperature_per_scan_K[i] * u.K
-                h_q = h2o_per_scan[i] * u.dimensionless_unscaled
-                t_clipped[i] = (
-                    _amwrap.interp_by_pressure(t_q, p_grid, surface_pressure)
-                    .to(u.K)
-                    .value
-                )
-                h_clipped[i] = np.asarray(
-                    _amwrap.interp_by_pressure(h_q, p_grid, surface_pressure).value
-                )
-            pressure_q = pressure_clipped
-            temperature_per_scan_K = t_clipped
-            h2o_per_scan = h_clipped
-        except ValueError as exc:
-            _log.debug(
-                "open-meteo profile not clipped: surface_pressure %.1f hPa "
-                "outside response bounds [%.1f, %.1f] hPa (%s)",
-                surface_pressure.to(u.hPa).value,
-                p_grid.to(u.hPa).value.min(),
-                p_grid.to(u.hPa).value.max(),
-                exc,
-            )
+    p_rows: list[np.ndarray] = []
+    t_rows: list[np.ndarray] = []
+    h_rows: list[np.ndarray] = []
+    for i in range(n_scan):
+        p_q_i = float(surface_pressures_hPa[i]) * u.hPa
+        t_full = t_K[hour_idx[i]] * u.K
+        h_full = h_vmr[hour_idx[i]] * u.dimensionless_unscaled
+        p_rows.append(
+            _clip_or_fallback(p_grid, p_grid, p_q_i, "pressure").to(u.Pa).value
+        )
+        t_rows.append(
+            _clip_or_fallback(t_full, p_grid, p_q_i, "temperature").to(u.K).value
+        )
+        h_rows.append(
+            np.asarray(_clip_or_fallback(h_full, p_grid, p_q_i, "h2o_vmr").value)
+        )
 
     return (
-        pressure_q,
-        temperature_per_scan_K * u.K,
-        h2o_per_scan * u.dimensionless_unscaled,
+        _pad_rows_to_max(p_rows) * u.Pa,
+        _pad_rows_to_max(t_rows) * u.K,
+        _pad_rows_to_max(h_rows) * u.dimensionless_unscaled,
     )
+
+
+def _clip_or_fallback(
+    values: u.Quantity,
+    pressure: u.Quantity,
+    pressure_base: u.Quantity,
+    label: str,
+) -> u.Quantity:
+    """``amwrap.interp_by_pressure`` with graceful out-of-range fallback.
+
+    Returns the unclipped values when ``pressure_base`` is outside the data
+    range — matches the prior single-clip behaviour at atmosphere.py:350-358.
+    """
+    import amwrap as _amwrap
+
+    try:
+        return _amwrap.interp_by_pressure(values, pressure, pressure_base)
+    except ValueError as exc:
+        _log.debug(
+            "%s profile not clipped: surface_pressure %.1f hPa outside "
+            "bounds [%.1f, %.1f] hPa (%s)",
+            label,
+            pressure_base.to(u.hPa).value,
+            pressure.to(u.hPa).value.min(),
+            pressure.to(u.hPa).value.max(),
+            exc,
+        )
+        return values
+
+
+def _pad_rows_to_max(rows: list[np.ndarray]) -> np.ndarray:
+    """Stack 1-D rows into ``(n_row, max_len)`` with trailing NaN padding."""
+    L = max(r.size for r in rows)
+    out = np.full((len(rows), L), np.nan, dtype=np.float64)
+    for i, r in enumerate(rows):
+        out[i, : r.size] = r
+    return out
+
+
+def _resolve_per_scan_surface_hPa(
+    surface_pressures_hPa: np.ndarray,
+) -> np.ndarray:
+    """Return finite per-scan surface pressures in hPa.
+
+    NaN entries fall back to the cross-scan median; if no scan has a finite
+    sample, all fall back to the VLA site default.
+    """
+    out = np.asarray(surface_pressures_hPa, dtype=np.float64).copy()
+    finite = out[np.isfinite(out)]
+    if finite.size == 0:
+        out[:] = _VLA_DEFAULT_SURFACE_P_hPa
+    else:
+        out[~np.isfinite(out)] = float(np.median(finite))
+    return out
 
 
 def _pick_climatology_for_date(obs_time_mjd_s: float) -> str:
@@ -508,21 +523,43 @@ def _fetch_open_meteo(
     return pressure_q, temperature_q, h2o_vmr, hour_unix_s, query_meta
 
 
-def _afgl_profile(
+def _afgl_profile_per_scan(
     name: str,
-    *,
-    surface_pressure: u.Quantity | None = None,
+    surface_pressures_hPa: np.ndarray,
 ) -> tuple[u.Quantity, u.Quantity, u.Quantity]:
-    """Return (pressure, temperature, h2o_vmr) from an AFGL climatology.
+    """Return per-scan ``(pressure, temperature, h2o_vmr)`` from an AFGL climatology.
 
-    When ``surface_pressure`` is given, the climatology is clipped via
-    :class:`amwrap.Climatology`'s ``pressure_base`` so the lowest level
-    corresponds to the site's surface. AFGL profiles start at sea-level
-    (~1018 hPa); without this clip a high-elevation site like the VLA
-    (~794 hPa) gets ~3 mm of phantom sub-surface water vapour and a
-    correspondingly inflated dry-air column.
+    Each scan's profile is clipped at its own surface pressure (finite floats
+    only — caller resolves NaN beforehand). AFGL profiles run from sea-level
+    (~1018 hPa) up, so the clip drops sub-surface levels and interpolates a
+    new lowest level at each scan's surface — without it a high-elevation site
+    like the VLA (~794 hPa) gets several mm of phantom sub-surface H₂O.
+
+    Returns three ``(n_scan, n_level)`` Quantities, NaN-padded at the trailing
+    end when per-scan clip lengths differ.
     """
     import amwrap as _amwrap
 
-    clim = _amwrap.Climatology(name, pressure_base=surface_pressure)
-    return clim.pressure, clim.temperature, clim.mixing_ratio["h2o"]
+    clim = _amwrap.Climatology(name)
+    p_full, t_full, h_full = clim.pressure, clim.temperature, clim.mixing_ratio["h2o"]
+
+    p_rows: list[np.ndarray] = []
+    t_rows: list[np.ndarray] = []
+    h_rows: list[np.ndarray] = []
+    for p_hPa in surface_pressures_hPa:
+        p_base = float(p_hPa) * u.hPa
+        p_rows.append(
+            _clip_or_fallback(p_full, p_full, p_base, "pressure").to(u.Pa).value
+        )
+        t_rows.append(
+            _clip_or_fallback(t_full, p_full, p_base, "temperature").to(u.K).value
+        )
+        h_rows.append(
+            np.asarray(_clip_or_fallback(h_full, p_full, p_base, "h2o_vmr").value)
+        )
+
+    return (
+        _pad_rows_to_max(p_rows) * u.Pa,
+        _pad_rows_to_max(t_rows) * u.K,
+        _pad_rows_to_max(h_rows) * u.dimensionless_unscaled,
+    )

@@ -164,7 +164,7 @@ def test_attach_profile_afgl_writes_atm_vars() -> None:
     assert "atm_pressure" in ds.data_vars
     assert "atm_temperature" in ds.data_vars
     assert "atm_h2o_vmr" in ds.data_vars
-    assert ds["atm_pressure"].dims == ("atm_level",)
+    assert ds["atm_pressure"].dims == ("scan", "atm_level")
     assert ds["atm_temperature"].dims == ("scan", "atm_level")
     assert ds.attrs["atm_profile_source"] == "afgl_midlatitude_summer"
 
@@ -177,6 +177,32 @@ def test_attach_profile_afgl_writes_atm_vars() -> None:
         ds["surface_pressure_hPa"].values,
         np.full(ds.sizes["scan"], 850.0),
     )
+
+
+def test_attach_profile_afgl_per_scan_surface_clip_differs() -> None:
+    """Per-scan weather_P drives a per-scan surface clip on atm_pressure[i, 0]."""
+    ds = _make_fitted_ds(n_scan=2, freqs_Hz=[22.2e9])
+    # Distinct per-scan surface pressures: scan 0 has 850 hPa, scan 1 has 800 hPa.
+    weather_P_Pa = ds["weather_P"].values.copy()
+    weather_P_Pa[0, :] = 85000.0
+    weather_P_Pa[1, :] = 80000.0
+    ds["weather_P"] = (ds["weather_P"].dims, weather_P_Pa)
+
+    attach_profile(ds, source="afgl", afgl_climatology="midlatitude_summer")
+
+    atm_p_Pa = ds["atm_pressure"].values  # (scan, atm_level)
+    assert atm_p_Pa.shape[0] == 2
+    np.testing.assert_allclose(atm_p_Pa[0, 0], 85000.0)
+    np.testing.assert_allclose(atm_p_Pa[1, 0], 80000.0)
+
+
+def test_attach_profile_no_weather_P_uses_vla_default() -> None:
+    """No weather_P at all → fall back to the VLA site default (~794 hPa)."""
+    ds = _make_fitted_ds(freqs_Hz=[22.2e9]).drop_vars("weather_P")
+    attach_profile(ds, source="afgl", afgl_climatology="midlatitude_summer")
+
+    atm_p_Pa = ds["atm_pressure"].values
+    np.testing.assert_allclose(atm_p_Pa[:, 0], 79400.0, rtol=0, atol=1.0)
 
 
 def test_attach_profile_omits_surface_pressure_when_no_weather_P() -> None:

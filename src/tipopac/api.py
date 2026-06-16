@@ -277,7 +277,7 @@ class TippingAnalysis:
         Idempotent: re-running on a dataset that already has
         ``atm_pressure`` is a no-op.
 
-        Adds ``atm_pressure(atm_level)``, ``atm_temperature(scan,
+        Adds ``atm_pressure(scan, atm_level)``, ``atm_temperature(scan,
         atm_level)``, ``atm_h2o_vmr(scan, atm_level)``,
         ``surface_pressure_hPa(scan,)`` (omitted when no scan has finite
         weather_P). Writes attrs ``atm_profile_source``,
@@ -324,15 +324,19 @@ class TippingAnalysis:
 
         scan_ids = self._ds.coords["scan"].values
         atm_source = str(self._ds.attrs.get("atm_profile_source", "unknown"))
-        pressure_Pa = self._ds["atm_pressure"].values  # (atm_level,)
-        pressure_q = pressure_Pa * u.Pa
+        pressure_Pa = self._ds["atm_pressure"].values  # (scan, atm_level)
         temp_K = self._ds["atm_temperature"].values  # (scan, atm_level)
         vmr = self._ds["atm_h2o_vmr"].values  # (scan, atm_level)
 
         sources_arr = np.full(scan_ids.size, "", dtype=object)
         for i, scan_id in enumerate(scan_ids):
-            temperature_q = temp_K[i].astype(np.float64) * u.K
-            h2o_q = vmr[i].astype(np.float64) * u.dimensionless_unscaled
+            p_row = pressure_Pa[i].astype(np.float64)
+            t_row = temp_K[i].astype(np.float64)
+            h_row = vmr[i].astype(np.float64)
+            keep = np.isfinite(p_row)
+            pressure_q = p_row[keep] * u.Pa
+            temperature_q = t_row[keep] * u.K
+            h2o_q = h_row[keep] * u.dimensionless_unscaled
             grid = build_pwv_grid(
                 pressure_q,
                 temperature_q,

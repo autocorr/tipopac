@@ -255,7 +255,7 @@ Data variables — fit results (filled by fit.py)
   fit_reason    (scan, antenna, spw)                       str
 
 Data variables — atmospheric profile (filled by atmosphere.attach_profile)
-  atm_pressure         (atm_level,)                        float64   Pa
+  atm_pressure         (scan, atm_level)                   float64   Pa  per-scan; NaN-padded at trailing edge
   atm_temperature      (scan, atm_level)                   float32   K
   atm_h2o_vmr          (scan, atm_level)                   float32   volumetric mixing ratio
   surface_pressure_hPa (scan,)                             float64   hPa  per-scan median (NaN when no weather_P)
@@ -489,14 +489,16 @@ dataset that already has `atm_pressure` is a no-op.
   median UTC month. Explicit names are passed through to
   `amwrap.Climatology`.
 
-The fetched profile is clipped at a single surface pressure (median
-of per-scan `weather_P` medians; per-scan variation is <2 hPa at the
-VLA, well below am modelling precision) so `atm_level` is constant
-across scans.
+The fetched profile is clipped at each scan's own `weather_P` median.
+Scans without a finite sample fall back to the cross-scan median; if
+no scan has WEATHER data, to the VLA site default (~794 hPa).
+`atm_level` is per-scan-local: index 0 is each scan's own surface,
+increasing index moves up; ragged clip lengths are NaN-padded at the
+trailing edge.
 
 **Writes to `ds`:**
 
-- Data vars `atm_pressure(atm_level)` (Pa, 1-D),
+- Data vars `atm_pressure(scan, atm_level)` (Pa),
   `atm_temperature(scan, atm_level)` (K),
   `atm_h2o_vmr(scan, atm_level)` (dimensionless VMR),
   `surface_pressure_hPa(scan,)` (per-scan provenance; omitted when no

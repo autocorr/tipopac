@@ -119,7 +119,10 @@ def _make_plot_ds(
         atm_p_Pa = atm_p_hPa * 100.0
         atm_T = np.linspace(280.0, 210.0, atm_p_hPa.size, dtype=np.float32)
         atm_vmr = np.logspace(-3, -6, atm_p_hPa.size).astype(np.float32)
-        data_vars["atm_pressure"] = (("atm_level",), atm_p_Pa)
+        data_vars["atm_pressure"] = (
+            ("scan", "atm_level"),
+            np.broadcast_to(atm_p_Pa, (n_scan, atm_p_hPa.size)).copy(),
+        )
         data_vars["atm_temperature"] = (
             ("scan", "atm_level"),
             np.broadcast_to(atm_T, (n_scan, atm_p_hPa.size)).copy(),
