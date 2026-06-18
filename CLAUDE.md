@@ -1,12 +1,8 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository.
-
-## What this repo is
-
-A clean-Python rewrite of the legacy CASA task `tipopac` (VLA
-tipping-curve opacity / Tcal estimation). The package is `tipopac`
-under `src/tipopac/`.
+This is a clean-Python rewrite of the legacy CASA task `tipopac` (VLA
+tipping-curve opacity / Tcal estimation). The package is `tipopac` under
+`src/tipopac/`.
 
 - `design/design.md` — the spec / requirements contract. Check it
   first for ambiguities concerning API shape, schema, fit modes, the

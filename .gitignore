@@ -15,5 +15,6 @@ vendor/amwrap/
 # Other local use directories
 benchmarks/
 run/
+old_context/
+sdm_archive
 notes.md
-sdm_archive/
