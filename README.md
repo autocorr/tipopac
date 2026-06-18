@@ -1,12 +1,13 @@
 # tipopac
 
 Fit VLA tipping scans to measure zenith opacity and calibration device
-temperatures. This module reads either CASA Measurement Sets or SDM files (no
+temperatures. This library reads either CASA Measurement Sets or SDM files (no
 BDF required). It then fits a per-(scan, antenna, spw) atmospheric model using
 predictions from the atmospheric radiative transfer code AM using vertical
-atmospheric profiles from ERA-5 re-analysis. This rewrite is based off prior
-work written by Chris Hales (see `vendor/tipopac_v1.0`) with contributions from
-Pedro Beaklini (`vendor/tipopac_v2.6`).
+atmospheric profiles from NCEP's High-Resolution Rapid Refresh forecast
+analysis. This rewrite is based off prior work written by Chris Hales (see
+`vendor/tipopac_v1.0`) with contributions from Pedro Beaklini
+(`vendor/tipopac_v2.6`).
 
 ## Installation
 
