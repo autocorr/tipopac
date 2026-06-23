@@ -11,6 +11,7 @@ Both require fit results to be present in `ds` (call `fit_dataset` first).
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -99,77 +100,70 @@ def write_tcal(ds: xr.Dataset, path: str | Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_opacity_rows(ds: xr.Dataset) -> list[dict[str, Any]]:
-    """Return one TOpac row dict per (scan, antenna, spw) in that order."""
+def _iter_cells(ds: xr.Dataset) -> Iterator[tuple[int, int, int, int, int, float]]:
+    """Yield ``(i, scan_num, a, s, spw_id, midtime)`` over (scan, antenna, spw)."""
     scan_vals = ds.coords["scan"].values
     spw_vals = ds.coords["spw"].values
     t_start = ds.coords["scan_time_start"].values
     t_end = ds.coords["scan_time_end"].values
-
-    tau = ds["tau_zenith"].values  # (scan, antenna, spw)
-    tau_err = ds["tau_err"].values  # (scan, antenna, spw)
-    success = ds["fit_success"].values  # (scan, antenna, spw)
-
     n_ant = ds.sizes["antenna"]
 
-    rows: list[dict[str, Any]] = []
     for i, (scan_num, t0, t1) in enumerate(zip(scan_vals, t_start, t_end)):
         midtime = float((t0 + t1) / 2.0)
         for a in range(n_ant):
             for s, spw_id in enumerate(spw_vals):
-                ok = bool(success[i, a, s])
-                tau_val = float(tau[i, a, s]) if ok else 0.0
-                err_val = float(tau_err[i, a, s]) if ok else 0.0
-                snr_val = (
-                    float(abs(tau_val) / err_val) if (ok and err_val > 0.0) else 1.0
-                )
-                rows.append(
-                    {
-                        "TIME": midtime,
-                        "FIELD_ID": -1,
-                        "SPECTRAL_WINDOW_ID": int(spw_id),
-                        "ANTENNA1": a,
-                        "ANTENNA2": -1,
-                        "SCAN_NUMBER": int(scan_num),
-                        "FPARAM": np.array([[tau_val]]),
-                        "PARAMERR": np.array([[err_val]]),
-                        "FLAG": np.array([[not ok]], dtype=bool),
-                        "SNR": np.array([[snr_val]]),
-                    }
-                )
+                yield i, int(scan_num), a, s, int(spw_id), midtime
+
+
+def _build_opacity_rows(ds: xr.Dataset) -> list[dict[str, Any]]:
+    """Return one TOpac row dict per (scan, antenna, spw) in that order."""
+    tau = ds["tau_zenith"].values  # (scan, antenna, spw)
+    tau_err = ds["tau_err"].values  # (scan, antenna, spw)
+    success = ds["fit_success"].values  # (scan, antenna, spw)
+
+    rows: list[dict[str, Any]] = []
+    for i, scan_num, a, s, spw_id, midtime in _iter_cells(ds):
+        ok = bool(success[i, a, s])
+        tau_val = float(tau[i, a, s]) if ok else 0.0
+        err_val = float(tau_err[i, a, s]) if ok else 0.0
+        snr_val = float(abs(tau_val) / err_val) if (ok and err_val > 0.0) else 1.0
+        rows.append(
+            {
+                "TIME": midtime,
+                "FIELD_ID": -1,
+                "SPECTRAL_WINDOW_ID": spw_id,
+                "ANTENNA1": a,
+                "ANTENNA2": -1,
+                "SCAN_NUMBER": scan_num,
+                "FPARAM": np.array([[tau_val]]),
+                "PARAMERR": np.array([[err_val]]),
+                "FLAG": np.array([[not ok]], dtype=bool),
+                "SNR": np.array([[snr_val]]),
+            }
+        )
     return rows
 
 
 def _build_tcal_rows(ds: xr.Dataset) -> list[dict[str, Any]]:
     """Return one CALDEVICE row dict per (scan, antenna, spw) in that order."""
-    scan_vals = ds.coords["scan"].values
-    spw_vals = ds.coords["spw"].values
-    t_start = ds.coords["scan_time_start"].values
-    t_end = ds.coords["scan_time_end"].values
-
     # tcal_fit: (scan, antenna, spw, polarization) with polarization = [R, L]
     tcal = ds["tcal_fit"].values
 
-    n_ant = ds.sizes["antenna"]
-
     rows: list[dict[str, Any]] = []
-    for i, (scan_num, t0, t1) in enumerate(zip(scan_vals, t_start, t_end)):
-        midtime = float((t0 + t1) / 2.0)
-        for a in range(n_ant):
-            for s, spw_id in enumerate(spw_vals):
-                tcal_R = float(tcal[i, a, s, 0])
-                tcal_L = float(tcal[i, a, s, 1])
-                # Row 0: fitted noise-tube Tcal values; row 1: solar-filter slot (zeroed).
-                noise_cal = np.array([[tcal_R, tcal_L], [0.0, 0.0]])
-                rows.append(
-                    {
-                        "ANTENNA_ID": a,
-                        "SPECTRAL_WINDOW_ID": int(spw_id),
-                        "TIME": midtime,
-                        "NUM_CAL_LOAD": 2,
-                        "CAL_LOAD_NAMES": _CAL_LOAD_NAMES,
-                        "NUM_RECEPTOR": 2,
-                        "NOISE_CAL": noise_cal,
-                    }
-                )
+    for i, _scan_num, a, s, spw_id, midtime in _iter_cells(ds):
+        tcal_R = float(tcal[i, a, s, 0])
+        tcal_L = float(tcal[i, a, s, 1])
+        # Row 0: fitted noise-tube Tcal values; row 1: solar-filter slot (zeroed).
+        noise_cal = np.array([[tcal_R, tcal_L], [0.0, 0.0]])
+        rows.append(
+            {
+                "ANTENNA_ID": a,
+                "SPECTRAL_WINDOW_ID": spw_id,
+                "TIME": midtime,
+                "NUM_CAL_LOAD": 2,
+                "CAL_LOAD_NAMES": _CAL_LOAD_NAMES,
+                "NUM_RECEPTOR": 2,
+                "NOISE_CAL": noise_cal,
+            }
+        )
     return rows

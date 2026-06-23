@@ -5,16 +5,13 @@ Constants match v2.6 (task_tipopac.py:109-112).
 
 from __future__ import annotations
 
-from typing import Union
-
 import numpy as np
 import xarray as xr
 
 # Scalar-or-array type accepted by all public functions here.
-_Numeric = Union[float, np.ndarray]
+_Numeric = float | np.ndarray
 
 __all__ = [
-    "airmass",
     "k2nt",
     "predicted_tsys",
     "tsys_model",
@@ -25,7 +22,7 @@ _H: float = 6.6261e-34  # J·s
 _K: float = 1.3806e-23  # J/K
 
 
-def k2nt(T_K: _Numeric, nu_Hz: float) -> _Numeric:
+def k2nt(T_K: _Numeric, nu_Hz: _Numeric) -> _Numeric:
     """Nyquist-correct kinetic temperature to noise temperature.
 
     In the Rayleigh-Jeans limit (hν ≪ kT) this approaches T_K.
@@ -68,11 +65,6 @@ def predicted_tsys(
         1.0 - np.exp(-ds["tau_zenith"] / np.cos(np.deg2rad(z_deg)))
     )
     return pred / c
-
-
-def airmass(zenith_angle_deg: _Numeric) -> _Numeric:
-    """Flat-earth airmass: 1/cos(z). Matches v2.6 (no refraction correction)."""
-    return 1.0 / np.cos(np.deg2rad(zenith_angle_deg))
 
 
 def weighted_mean_atm_T(T_surf_K: _Numeric) -> _Numeric:

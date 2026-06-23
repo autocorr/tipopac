@@ -26,34 +26,26 @@ _INDEPENDENT_TO_BACKEND: dict[str, str] = {
 }
 
 
+def _module_version(name: str) -> str:
+    """Return ``module.__version__``, or a sentinel if import/attr fails."""
+    import importlib
+
+    try:
+        mod = importlib.import_module(name)
+    except Exception:
+        return "unavailable"
+    return str(getattr(mod, "__version__", "unknown"))
+
+
 def _software_versions() -> dict[str, str]:
-    versions: dict[str, str] = {}
-    try:
-        import casatools
-
-        versions["casatools"] = str(getattr(casatools, "__version__", "unknown"))
-    except Exception:
-        versions["casatools"] = "unavailable"
-    try:
-        import sdmpy
-
-        versions["sdmpy"] = str(getattr(sdmpy, "__version__", "unknown"))
-    except Exception:
-        versions["sdmpy"] = "unavailable"
-    try:
-        import amwrap
-
-        versions["amwrap"] = str(getattr(amwrap, "__version__", "unknown"))
-    except Exception:
-        versions["amwrap"] = "unavailable"
+    versions = {n: _module_version(n) for n in ("casatools", "sdmpy", "amwrap")}
     try:
         import subprocess
 
         r = subprocess.run(["am", "--version"], capture_output=True, text=True)
-        line = (
+        versions["am"] = (
             (r.stdout or r.stderr).splitlines()[0] if r.returncode == 0 else "unknown"
         )
-        versions["am"] = line
     except Exception:
         versions["am"] = "unavailable"
     try:

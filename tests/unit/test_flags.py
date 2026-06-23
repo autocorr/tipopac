@@ -104,25 +104,17 @@ def _flag_vals(ds: xr.Dataset) -> np.ndarray:
 def test_no_overlap() -> None:
     """Flag interval entirely before scan data → no flags added."""
     ds = _make_flag_ds()
-    flag = _flag_vals(ds)
-    time_utc = ds["time_utc"].values
-    ant = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw = ds.coords["spw"].values
-
-    _apply_interval(flag, time_utc, ant, spw, "*", "*", t_start=-20.0, t_end=-10.0)
-    assert not flag.any(), "No flags should be set for a non-overlapping interval"
+    _apply_interval(ds, "*", "*", t_start=-20.0, t_end=-10.0)
+    assert not _flag_vals(ds).any(), (
+        "No flags should be set for a non-overlapping interval"
+    )
 
 
 def test_fully_contained() -> None:
     """Flag interval strictly inside scan → exactly those samples are flagged."""
     ds = _make_flag_ds()
-    flag = _flag_vals(ds)
-    time_utc = ds["time_utc"].values
-    ant = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw = ds.coords["spw"].values
-
-    _apply_interval(flag, time_utc, ant, spw, "*", "*", t_start=3.0, t_end=6.0)
-    flagged_times = flag[0, 0, 0, 0, :]  # (n_time,)
+    _apply_interval(ds, "*", "*", t_start=3.0, t_end=6.0)
+    flagged_times = _flag_vals(ds)[0, 0, 0, 0, :]  # (n_time,)
     expected = np.array(
         [False, False, False, True, True, True, True, False, False, False, False]
     )
@@ -132,13 +124,8 @@ def test_fully_contained() -> None:
 def test_partial_left() -> None:
     """Flag starts before scan, ends inside → overlap portion flagged."""
     ds = _make_flag_ds()
-    flag = _flag_vals(ds)
-    time_utc = ds["time_utc"].values
-    ant = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw = ds.coords["spw"].values
-
-    _apply_interval(flag, time_utc, ant, spw, "*", "*", t_start=-5.0, t_end=3.0)
-    flagged_times = flag[0, 0, 0, 0, :]
+    _apply_interval(ds, "*", "*", t_start=-5.0, t_end=3.0)
+    flagged_times = _flag_vals(ds)[0, 0, 0, 0, :]
     expected = np.array(
         [True, True, True, True, False, False, False, False, False, False, False]
     )
@@ -148,13 +135,8 @@ def test_partial_left() -> None:
 def test_partial_right() -> None:
     """Flag starts inside scan, ends after → overlap portion flagged."""
     ds = _make_flag_ds()
-    flag = _flag_vals(ds)
-    time_utc = ds["time_utc"].values
-    ant = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw = ds.coords["spw"].values
-
-    _apply_interval(flag, time_utc, ant, spw, "*", "*", t_start=7.0, t_end=20.0)
-    flagged_times = flag[0, 0, 0, 0, :]
+    _apply_interval(ds, "*", "*", t_start=7.0, t_end=20.0)
+    flagged_times = _flag_vals(ds)[0, 0, 0, 0, :]
     expected = np.array(
         [False, False, False, False, False, False, False, True, True, True, True]
     )
@@ -164,13 +146,10 @@ def test_partial_right() -> None:
 def test_spanning() -> None:
     """Flag spans entire scan → all time samples flagged."""
     ds = _make_flag_ds()
-    flag = _flag_vals(ds)
-    time_utc = ds["time_utc"].values
-    ant = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw = ds.coords["spw"].values
-
-    _apply_interval(flag, time_utc, ant, spw, "*", "*", t_start=-5.0, t_end=100.0)
-    assert flag.all(), "All samples should be flagged when interval spans the full scan"
+    _apply_interval(ds, "*", "*", t_start=-5.0, t_end=100.0)
+    assert _flag_vals(ds).all(), (
+        "All samples should be flagged when interval spans the full scan"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -181,12 +160,8 @@ def test_spanning() -> None:
 def test_antenna_selectivity() -> None:
     """Flagging ea01 must not affect ea05 flags."""
     ds = _make_flag_ds()
+    _apply_interval(ds, "ea01", "*", t_start=0.0, t_end=10.0)
     flag = _flag_vals(ds)
-    time_utc = ds["time_utc"].values
-    ant = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw = ds.coords["spw"].values
-
-    _apply_interval(flag, time_utc, ant, spw, "ea01", "*", t_start=0.0, t_end=10.0)
     # antenna index 0 = ea01, index 1 = ea05
     assert flag[:, 0, :, :, :].all(), "ea01 should be fully flagged"
     assert not flag[:, 1, :, :, :].any(), "ea05 must not be flagged"
@@ -195,12 +170,8 @@ def test_antenna_selectivity() -> None:
 def test_spw_selectivity() -> None:
     """Flagging spw=7 must not affect spw=0 or spw=15."""
     ds = _make_flag_ds()
+    _apply_interval(ds, "*", "7", t_start=0.0, t_end=10.0)
     flag = _flag_vals(ds)
-    time_utc = ds["time_utc"].values
-    ant = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw = ds.coords["spw"].values
-
-    _apply_interval(flag, time_utc, ant, spw, "*", "7", t_start=0.0, t_end=10.0)
     # spw index 1 = id 7
     assert flag[:, :, 1, :, :].all(), "spw=7 should be fully flagged"
     assert not flag[:, :, 0, :, :].any(), "spw=0 must not be flagged"
@@ -210,13 +181,8 @@ def test_spw_selectivity() -> None:
 def test_unknown_antenna_is_skipped() -> None:
     """Flagging an antenna not in the dataset silently does nothing."""
     ds = _make_flag_ds()
-    flag = _flag_vals(ds)
-    time_utc = ds["time_utc"].values
-    ant = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw = ds.coords["spw"].values
-
-    _apply_interval(flag, time_utc, ant, spw, "ea99", "*", t_start=0.0, t_end=10.0)
-    assert not flag.any()
+    _apply_interval(ds, "ea99", "*", t_start=0.0, t_end=10.0)
+    assert not _flag_vals(ds).any()
 
 
 # ---------------------------------------------------------------------------

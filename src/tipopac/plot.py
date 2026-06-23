@@ -221,17 +221,13 @@ class ElevationCurve(Plot):
         T0_R = float(cell["T0"].sel(polarization="R"))
         T0_L = float(cell["T0"].sel(polarization="L"))
 
-        z_grid = xr.DataArray(_Z_GRID, dims=("z",))
-        pred = predicted_tsys(cell, z_deg=z_grid)
-        fit_R = pred.sel(polarization="R").values
-        fit_L = pred.sel(polarization="L").values
-        model_df = pd.DataFrame(
-            {
-                "zenith_angle": np.concatenate([_Z_GRID, _Z_GRID]),
-                "Tsys": np.concatenate([fit_R, fit_L]),
-                "polarization": ["R"] * _Z_GRID.size + ["L"] * _Z_GRID.size,
-            }
+        z_grid = xr.DataArray(
+            _Z_GRID, dims=("zenith_angle",), coords={"zenith_angle": _Z_GRID}
         )
+        pred = predicted_tsys(cell, z_deg=z_grid).rename("Tsys")
+        model_df = pred.to_dataframe().reset_index()[
+            ["zenith_angle", "Tsys", "polarization"]
+        ]
         _round(model_df, zenith_angle=2, Tsys=2)
 
         pol_scale = alt.Scale(
@@ -1015,15 +1011,11 @@ class Summary:
         utc_starts = [self._format_mjd(t) for t in ds["scan_time_start"].values]
 
         # Row 2: bands observed (unique, in spw order).
-        band = ds["band"].values
+        band = ds["band"].values.astype(str)
         bands_per_scan: list[str] = []
         for s in range(ds.sizes["scan"]):
             observed = per_scan_spw.isel(scan=s).values
-            seen: list[str] = []
-            for b in band[observed]:
-                bs = str(b)
-                if bs and bs not in seen:
-                    seen.append(bs)
+            seen = [b for b in pd.unique(band[observed]) if b]
             bands_per_scan.append(", ".join(seen) if seen else self._MISSING)
 
         # Row 3: center frequency [GHz], mean over observed spws.
@@ -1156,9 +1148,8 @@ class PlotData:
         if "atm_pressure" in self.ds.data_vars:
             self.atmospheric_profile().save(out / "atmospheric_profile")
 
-        # Only generate fitted Tcal and "c" plots when fit.
-        if self.ds.attrs["mode"] == "independent_tau":
-            pass
-        else:
+        # Fitted Tcal and "c" plots are only meaningful when a per-cell tcal
+        # was solved; independent_tau leaves tcal_fit == tcal_ref.
+        if self.ds.attrs["mode"] != "independent_tau":
             self.tcal_vs_frequency(kind="fit").save(out / "tcal_fit_vs_frequency")
             self.c_vs_frequency().save(out / "c_vs_frequency")

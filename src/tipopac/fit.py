@@ -85,14 +85,10 @@ def fit_dataset(
     if mode not in _ALLOWED_MODES:
         raise ValueError(f"mode must be one of {_ALLOWED_MODES!r}, got {mode!r}")
 
-    Tsys_arr = _compute_tsys(ds)
-    ds["Tsys"] = (("scan", "antenna", "spw", "polarization", "time"), Tsys_arr)
-
-    sigma_Tsys_arr = _compute_sigma_tsys(ds, Tsys_arr)
-    ds["sigma_Tsys"] = (
-        ("scan", "antenna", "spw", "polarization", "time"),
-        sigma_Tsys_arr,
-    )
+    ds["Tsys"] = _compute_tsys(ds)
+    ds["sigma_Tsys"] = _compute_sigma_tsys(ds)
+    Tsys_arr = ds["Tsys"].values
+    sigma_vals = ds["sigma_Tsys"].values
 
     n_scan = ds.sizes["scan"]
     n_ant = ds.sizes["antenna"]
@@ -115,7 +111,6 @@ def fit_dataset(
     zenith_vals = ds["zenith_angle"].values  # (scan, ant, time)
     weather_T_vals = ds["weather_T"].values  # (scan, time)
     tcal_ref_vals = ds["tcal_ref"].values  # (ant, spw, pol)
-    sigma_vals = sigma_Tsys_arr  # (scan, ant, spw, pol, time)
     freq_vals = ds.coords["frequency"].values  # (spw,) Hz
 
     twmt_out = _compute_twmt_grid(weather_T_vals, freq_vals, t_mean)
@@ -227,24 +222,20 @@ def fit_dataset(
 # ---------------------------------------------------------------------------
 
 
-def _compute_tsys(ds: xr.Dataset) -> np.ndarray:
+def _compute_tsys(ds: xr.Dataset) -> xr.DataArray:
     """Compute Tsys = (switched_sum/2) / switched_diff * tcal_ref (float32).
 
     Cells where switched_diff ≤ 0 or switched_sum ≤ 0 are NaN (v2.6:1230-1234).
+    ``tcal_ref(antenna, spw, polarization)`` broadcasts by dim name.
     """
-    diff = ds["switched_diff"].values  # (scan, ant, spw, pol, time)
-    ssum = ds["switched_sum"].values
-    tcal = ds["tcal_ref"].values  # (ant, spw, pol)
-    tcal_b = tcal[None, :, :, :, None]  # → (1, ant, spw, pol, 1)
-
+    diff = ds["switched_diff"]  # (scan, ant, spw, pol, time)
+    ssum = ds["switched_sum"]
     with np.errstate(divide="ignore", invalid="ignore"):
-        tsys = (ssum / 2.0) / diff * tcal_b
-
-    tsys = np.where((diff > 0) & (ssum > 0), tsys, np.nan)
-    return tsys.astype(np.float32)
+        tsys = (ssum / 2.0) / diff * ds["tcal_ref"]
+    return tsys.where((diff > 0) & (ssum > 0)).astype(np.float32)
 
 
-def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
+def _compute_sigma_tsys(ds: xr.Dataset) -> xr.DataArray:
     """Per-sample σ_Tsys from error propagation on the switched-power.
 
     The system temperature (Tsys) is calculated from the VLA switched power as:
@@ -272,23 +263,19 @@ def _compute_sigma_tsys(ds: xr.Dataset, tsys: np.ndarray) -> np.ndarray:
         τ_int   — ``exposure_time`` (per scan, time), s
         T_c     — ``tcal_ref`` (per antenna, spw, pol), K
 
-    See ``design/design.md`` §5.3 and ``old_context/sigma_tsys_derivation.md``.
+    See ``design/design.md`` §5.2 and ``old_context/sigma_tsys_derivation.md``.
+
+    ``tcal_ref(ant, spw, pol)``, ``bandwidth(spw)``, and ``exposure_time(scan,
+    time)`` broadcast against ``Tsys`` by dim name; the result follows ``Tsys``'s
+    canonical (scan, ant, spw, pol, time) order.
     """
-    n_scan, n_ant, n_spw, n_pol, n_time = tsys.shape
-    tcal = ds["tcal_ref"].values  # (ant, spw, pol)
-    bw = ds.coords["bandwidth"].values  # (spw,) Hz
-    expo = ds["exposure_time"].values  # (scan, time) seconds
-
-    tcal_b = tcal[None, :, :, :, None]  # (1, ant, spw, pol, 1)
-    bw_b = bw[None, None, :, None, None]  # (1, 1, spw, 1, 1)
-    expo_b = expo[:, None, None, None, :]  # (scan, 1, 1, 1, time)
-
+    tsys = ds["Tsys"]  # (scan, ant, spw, pol, time)
     with np.errstate(divide="ignore", invalid="ignore"):
-        denom = tcal_b * np.sqrt(bw_b * expo_b)
+        denom = ds["tcal_ref"] * np.sqrt(ds["bandwidth"] * ds["exposure_time"])
         sigma = 2.0 * (tsys * tsys) / denom
 
     finite = np.isfinite(tsys) & np.isfinite(denom) & (denom > 0)
-    return np.where(finite, sigma, np.nan).astype(np.float32)
+    return sigma.where(finite).astype(np.float32)
 
 
 def _compute_twmt_grid(
@@ -301,21 +288,16 @@ def _compute_twmt_grid(
     Mirrors `_screen_antenna`'s resolution rule: take `t_mean[scan, spw]`
     when finite, else fall back to `k2nt(70.2 + 0.72·<T_surf>, ν)`.
     """
-    n_scan = weather_T_vals.shape[0]
-    n_spw = freq_vals.shape[0]
-    out = np.full((n_scan, n_spw), np.nan, dtype=np.float32)
-    surf_mean = np.nanmean(weather_T_vals, axis=1)  # (scan,)
-    for i_scan in range(n_scan):
-        for i_spw in range(n_spw):
-            if t_mean is not None and np.isfinite(t_mean[i_scan, i_spw]):
-                out[i_scan, i_spw] = float(t_mean[i_scan, i_spw])
-            elif np.isfinite(surf_mean[i_scan]):
-                out[i_scan, i_spw] = float(
-                    k2nt(
-                        weighted_mean_atm_T(surf_mean[i_scan]), float(freq_vals[i_spw])
-                    )
-                )
-    return out
+    surf_mean = np.nanmean(weather_T_vals, axis=1)  # (scan,) — weather, no flags
+    # Bevis fallback per (scan, spw); NaN surf_mean propagates to NaN.
+    surf_T = np.asarray(weighted_mean_atm_T(surf_mean))[:, None]  # (scan, 1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bevis = np.asarray(k2nt(surf_T, freq_vals[None, :]))  # (scan, spw)
+    if t_mean is None:
+        out = bevis
+    else:
+        out = np.where(np.isfinite(t_mean), t_mean, bevis)
+    return out.astype(np.float32)
 
 
 def _residuals(

@@ -167,6 +167,7 @@ def test_ms_reader_schema_validates() -> None:
     reader = MSReader.from_path(MS_PATH)
     ds = reader.read()
     schema.validate(ds)  # raises SchemaError on failure
+    assert ds.attrs["source_format"] == "ms"
 
 
 @pytest.mark.slow

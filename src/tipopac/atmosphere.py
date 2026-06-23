@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from datetime import datetime, timezone
 from typing import Any
 
@@ -254,16 +255,15 @@ def attach_profile(
 
 def _compute_surface_pressure(ds: xr.Dataset) -> np.ndarray:
     """Return the per-scan median weather_P sample in hPa (NaN where missing)."""
-    n_scan = int(ds.sizes["scan"])
-    per_scan_hPa = np.full(n_scan, np.nan, dtype=np.float64)
     if "weather_P" not in ds.data_vars:
-        return per_scan_hPa
-    weather_P_Pa = ds["weather_P"].values  # (scan, time), Pa
-    for i in range(n_scan):
-        samples = weather_P_Pa[i][np.isfinite(weather_P_Pa[i])]
-        if samples.size:
-            per_scan_hPa[i] = float(np.median(samples)) / 100.0
-    return per_scan_hPa
+        return np.full(int(ds.sizes["scan"]), np.nan, dtype=np.float64)
+    # Weather is station-level: skipna over the time pad, no flag masking. An
+    # all-NaN scan medians to NaN; suppress the benign warning, matching the
+    # prior finite-sample loop.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        median_Pa = ds["weather_P"].median("time", skipna=True).values
+    return median_Pa.astype(np.float64) / 100.0
 
 
 def _utc_date_range(

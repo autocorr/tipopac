@@ -231,7 +231,5 @@ def compute_t_mean_grid(
     for i_scan, grid in grids.items():
         _tau, tmean_K = grid.lookup(float(grid.pwv_unscaled_mm), freqs_d)
         # k2nt: kinetic K → Rayleigh-Jeans noise K (per-channel ν dependence).
-        t_mean[i_scan, :] = np.asarray(
-            [float(k2nt(float(t_k), float(f))) for t_k, f in zip(tmean_K, freqs_d)]
-        )
+        t_mean[i_scan, :] = k2nt(tmean_K, freqs_d)
     return t_mean

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tipopac.physics import airmass, k2nt, tsys_model, weighted_mean_atm_T
+from tipopac.physics import k2nt, tsys_model, weighted_mean_atm_T
 
 _H = 6.6261e-34
 _K = 1.3806e-23
@@ -73,24 +73,6 @@ def test_tsys_model_increases_with_airmass() -> None:
     z = np.linspace(30.0, 70.0, 10)
     Tsys = tsys_model(z, T0=50.0, tau0=0.1, Twmt=270.0)
     assert np.all(np.diff(Tsys) > 0), "Tsys should increase with ZA for tau0 > 0"
-
-
-def test_airmass_zenith() -> None:
-    """airmass(0) == 1.0 (looking straight up)."""
-    assert airmass(0.0) == pytest.approx(1.0)
-
-
-def test_airmass_60deg() -> None:
-    """airmass(60°) == 2.0."""
-    assert airmass(60.0) == pytest.approx(2.0, rel=1e-6)
-
-
-def test_airmass_vectorised() -> None:
-    """airmass accepts an array and returns element-wise 1/cos(z)."""
-    z = np.array([0.0, 30.0, 60.0])
-    result = airmass(z)
-    expected = np.array([1.0, 1.0 / np.cos(np.deg2rad(30.0)), 2.0])
-    np.testing.assert_allclose(result, expected, rtol=1e-6)
 
 
 def test_weighted_mean_atm_T_value() -> None:

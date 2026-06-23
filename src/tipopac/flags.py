@@ -15,7 +15,6 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import xarray as xr
 
 __all__ = ["apply"]
@@ -97,46 +96,36 @@ def _parse_user_line(line: str) -> tuple[str, str, float, float] | None:
 
 
 def _apply_interval(
-    flag: np.ndarray,
-    time_utc: np.ndarray,
-    ant_names: np.ndarray,
-    spw_ids: np.ndarray,
+    ds: xr.Dataset,
     antenna: str,
     spw: str,
     t_start: float,
     t_end: float,
 ) -> None:
-    """OR a time-interval flag into `flag` for the selected (antenna, spw).
+    """OR a time-interval flag into ``ds['flag']`` for the selected (antenna, spw).
 
-    `flag` is mutated in-place.  `antenna='*'` and `spw='*'` select all.
-    Unknown antenna or spw names are silently skipped.
+    ``antenna='*'`` and ``spw='*'`` select all. Unknown antenna or spw names
+    are silently skipped. The (scan, time) interval mask broadcasts over the
+    antenna/spw/polarization dims by name.
     """
-    time_mask = (time_utc >= t_start) & (time_utc <= t_end)  # (n_scan, n_time)
-    tm = time_mask[:, np.newaxis, np.newaxis, np.newaxis, :]  # → (n_scan,1,1,1,n_time)
+    mask = (ds["time_utc"] >= t_start) & (ds["time_utc"] <= t_end)  # (scan, time)
 
-    if antenna == "*":
-        ant_sl: slice = slice(None)
-    else:
-        idx = np.where(ant_names == antenna)[0]
-        if len(idx) == 0:
+    if antenna != "*":
+        ant_coord = ds["antenna"].astype(str)
+        if antenna not in ant_coord.values:
             return
-        i = int(idx[0])
-        ant_sl = slice(i, i + 1)
+        mask = mask & (ant_coord == antenna)
 
-    if spw == "*":
-        spw_sl: slice = slice(None)
-    else:
+    if spw != "*":
         try:
             spw_int = int(spw)
         except ValueError:
             return
-        idx = np.where(spw_ids == spw_int)[0]
-        if len(idx) == 0:
+        if spw_int not in ds["spw"].values:
             return
-        i = int(idx[0])
-        spw_sl = slice(i, i + 1)
+        mask = mask & (ds["spw"] == spw_int)
 
-    flag[:, ant_sl, spw_sl, :, :] |= tm
+    ds["flag"] = ds["flag"] | mask
 
 
 def apply(ds: xr.Dataset, online: bool, file: Path | None) -> xr.Dataset:
@@ -145,34 +134,21 @@ def apply(ds: xr.Dataset, online: bool, file: Path | None) -> xr.Dataset:
     online=True reads FLAG_CMD from the MS at ds.attrs['source_path'].
     Silently skipped for SDM-format datasets (no FLAG_CMD subtable).
     file, if given, is a path to a text file with one flag command per line.
-    Returns ds (same object, flag array mutated).
+    Returns ds (same object, flag variable updated).
     """
-    flag = ds["flag"].values  # (n_scan, n_ant, n_spw, n_pol, n_time)
-    time_utc = ds["time_utc"].values
-    ant_names = np.asarray(ds.coords["antenna"].values, dtype=str)
-    spw_ids = ds.coords["spw"].values
-
     if online:
         if ds.attrs.get("source_format") == "ms":
-            _apply_online_flags(
-                flag, time_utc, ant_names, spw_ids, ds.attrs["source_path"]
-            )
+            _apply_online_flags(ds, ds.attrs["source_path"])
         else:
             _log.debug("online=True ignored: source_format is not 'ms'")
 
     if file is not None:
-        _apply_user_flags(flag, time_utc, ant_names, spw_ids, Path(file))
+        _apply_user_flags(ds, Path(file))
 
     return ds
 
 
-def _apply_online_flags(
-    flag: np.ndarray,
-    time_utc: np.ndarray,
-    ant_names: np.ndarray,
-    spw_ids: np.ndarray,
-    source_path: str,
-) -> None:
+def _apply_online_flags(ds: xr.Dataset, source_path: str) -> None:
     from casatools import table as _table
 
     flag_cmd_path = Path(source_path) / "FLAG_CMD"
@@ -203,20 +179,12 @@ def _apply_online_flags(
             continue
         antenna, t_start, t_end = parsed
         # Online flags apply to all spws (v2.6 does not filter by spw)
-        _apply_interval(
-            flag, time_utc, ant_names, spw_ids, antenna, "*", t_start, t_end
-        )
+        _apply_interval(ds, antenna, "*", t_start, t_end)
         n_applied += 1
     _log.debug("Applied %d online flag commands", n_applied)
 
 
-def _apply_user_flags(
-    flag: np.ndarray,
-    time_utc: np.ndarray,
-    ant_names: np.ndarray,
-    spw_ids: np.ndarray,
-    file: Path,
-) -> None:
+def _apply_user_flags(ds: xr.Dataset, file: Path) -> None:
     n_applied = 0
     for line in file.read_text().splitlines():
         line = line.strip()
@@ -227,8 +195,6 @@ def _apply_user_flags(
             _log.warning("Could not parse user flag line: %r", line)
             continue
         antenna, spw, t_start, t_end = parsed
-        _apply_interval(
-            flag, time_utc, ant_names, spw_ids, antenna, spw, t_start, t_end
-        )
+        _apply_interval(ds, antenna, spw, t_start, t_end)
         n_applied += 1
     _log.debug("Applied %d user flag commands from %s", n_applied, file)

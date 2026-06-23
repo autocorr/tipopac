@@ -314,18 +314,15 @@ Attrs
 - `tsys_model(z_deg, T0, tau0, Twmt) = T0 + Twmt·(1 − exp(−τ₀/cos z))`.
 - `k2nt(T_K, ν_Hz) = T·(hν/kT) / (exp(hν/kT) − 1)` — Nyquist
   (Rayleigh-Jeans) correction.
-- `airmass(z_deg) = 1/cos(z)` — flat-earth, no refraction (matches v2.6).
 - `weighted_mean_atm_T(T_surf_K) = 70.2 + 0.72·T_surf` — Bevis (1992).
   Used inside Stage A only as the fallback when the grid-derived
   `T_mean` is unavailable for a (scan, spw) cell.
 
-### 5.2 Geometry (`geometry.py`)
+Airmass `1/cos(z)` and zenith angle `90° − rad2deg(el_encoder_rad)`
+(flat-earth, no refraction; AZELGEO encoder elevation is geodetic) are
+inlined where used — in the Stage-A T0 init and the readers respectively.
 
-`zenith_angle(el_encoder_rad) = 90° − rad2deg(el_encoder_rad)`,
-vectorized. AZELGEO encoder elevation is geodetic; with refraction
-disabled, no frame transform is needed.
-
-### 5.3 Per-sample noise model
+### 5.2 Per-sample noise model
 
 `sigma_Tsys` is added to the dataset by Stage A. Derivation: `Tsys =
 (S/2)·T_c/D` with `S = switched_sum`, `D = switched_diff`,
@@ -342,9 +339,9 @@ accumulates `τ_int / 2`). The `Tsys / T_c` amplification (~10–60× for
 VLA bands) is the physically essential part — dropping it would
 mis-scale σ and trip 4σ residual rejection on most samples.
 
-### 5.4 Stage A fit
+### 5.3 Stage A fit
 
-Computes `Tsys = (S/2)/D · T_c` and `sigma_Tsys` per §5.3, then fits
+Computes `Tsys = (S/2)/D · T_c` and `sigma_Tsys` per §5.2, then fits
 the tipping curve. Two routings:
 
 | Mode                    | Unit                   | Free parameters per fit                                   |
