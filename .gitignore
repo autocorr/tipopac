@@ -12,6 +12,9 @@ wheels/
 # Local dev checkout of github.com/autocorr/amwrap; pinned via [tool.uv.sources].
 vendor/amwrap/
 
+# Zensical documentation build output
+site/
+
 # Other local use directories
 benchmarks/
 run/
