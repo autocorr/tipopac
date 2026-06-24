@@ -53,6 +53,10 @@ alt.data_transformers.disable_max_rows()
 # is ~13 px between samples at the 800-px chart width — visually smooth.
 _Z_GRID: np.ndarray = np.linspace(30.0, 75.0, 60)
 
+# Upper bound on the residual-RMS heatmap colour scale [K]; the scale tops
+# out at min(data max, this) so a few outliers don't wash out the range.
+_RESIDUAL_RMS_COLOR_MAX_K: float = 100.0
+
 
 def _scan_title(scans: list[int]) -> str:
     """Title prefix: ``scan 3`` for one scan, ``scans 3, 5, 7`` for many."""
@@ -862,9 +866,12 @@ class ResidualRmsHeatmap(_Heatmap):
         return rms.astype(np.float64).round(2)
 
     def _color_encoding(self) -> alt.Color:
+        vmax = min(float(self._metric_array().max()), _RESIDUAL_RMS_COLOR_MAX_K)
         return alt.Color(
             "residual_rms_K:Q",
-            scale=alt.Scale(type="log", scheme="viridis"),
+            scale=alt.Scale(
+                type="log", scheme="viridis", domainMax=vmax, clamp=True
+            ),
             legend=alt.Legend(title="Residual RMS [K]"),
         )
 
