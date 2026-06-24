@@ -450,6 +450,18 @@ broadcast equal across antennas, so the per-antenna anchor returns
 identical `pwv[ant]` (shared-PWV semantics fall out of the per-antenna
 fit).
 
+**Spillover de-bias.** Before the anchor, `spillover.apply_spillover`
+subtracts a constant frequency-flat offset δτ (nepers) from finite
+`tau_zenith` cells, so `tau_zenith` is the atmospheric opacity and PWV
+is anchored to it (`run/spillover/findings.md`). The `tipopac(...,
+spillover=)` parameter sets it (default `0.0036`; `None`/`0` disables);
+the applied value is recorded in `ds.attrs["spillover_tau"]` (0.0 when
+disabled). No clamp — a negative τ honestly signals over-subtraction,
+reachable only in opt-in low bands. The measured Tsys still contains the
+offset, so `physics.predicted_tsys` adds `spillover_tau` back when
+reconstructing the curve (exact inverse — round-trips to the raw fit);
+every opacity consumer keeps the de-biased τ.
+
 **Outputs on the dataset.**
 
 - `pwv(antenna)`, `pwv_err(antenna)`.

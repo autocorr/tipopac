@@ -56,14 +56,19 @@ def predicted_tsys(
     ``z_deg=None`` the per-sample ``ds["zenith_angle"]`` is used and the
     result has shape ``(scan, antenna, spw, polarization, time)``; pass a
     1-D DataArray (e.g. ``dims=("z",)``) for a dense-grid overlay.
+
+    ``tau_zenith`` is de-biased by the Stage-B spillover offset, but the
+    *measured* Tsys still contains it, so the offset is added back here
+    (``ds.attrs["spillover_tau"]``, 0.0 when disabled) to keep the
+    reconstruction matched to the data. This is the exact inverse of the
+    de-bias — the curve round-trips to the raw fit.
     """
     if z_deg is None:
         z_deg = ds["zenith_angle"]
     c = ds["tcal_fit"] / ds["tcal_ref"]
     c = c.where(np.isfinite(c) & (c > 0), 1.0)
-    pred = ds["T0"] + ds["Twmt"] * (
-        1.0 - np.exp(-ds["tau_zenith"] / np.cos(np.deg2rad(z_deg)))
-    )
+    tau = ds["tau_zenith"] + ds.attrs.get("spillover_tau", 0.0)
+    pred = ds["T0"] + ds["Twmt"] * (1.0 - np.exp(-tau / np.cos(np.deg2rad(z_deg))))
     return pred / c
 
 
