@@ -50,3 +50,9 @@ markers = [
     "slow: integration tests requiring data/tip_test.ms",
     "network: tests exercising the live open-meteo endpoint",
 ]
+filterwarnings = [
+    # netcdf4's abi3 wheel is Cython-built against an older numpy than the
+    # pinned 2.4.4, so its baked-in ndarray struct size differs at runtime.
+    # Benign C-ABI forward-compat warning; the netCDF round-trips still pass.
+    "ignore:numpy.ndarray size changed:RuntimeWarning",
+]
