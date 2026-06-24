@@ -40,7 +40,10 @@ def _make_ds(
         "atm_h2o_vmr": (("scan", "atm_level"), atm_h),
     }
     if surface_P_hPa is not None:
-        data_vars["surface_pressure_hPa"] = (("scan",), surface_P_hPa.astype(np.float64))
+        data_vars["surface_pressure_hPa"] = (
+            ("scan",),
+            surface_P_hPa.astype(np.float64),
+        )
 
     return xr.Dataset(
         data_vars=data_vars,
@@ -100,7 +103,9 @@ def test_build_atm_grids_rebuilds_when_surface_pressure_exceeds_tolerance(
     call_count = {"n": 0}
     monkeypatch.setattr(
         "tipopac.atmgrid.build_pwv_grid",
-        lambda *a, **kw: (call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()),
+        lambda *a, **kw: (
+            call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()
+        ),
     )
 
     TippingAnalysis(ds, Path("fake.ms")).build_atm_grids()
@@ -124,7 +129,9 @@ def test_build_atm_grids_reuses_at_exact_tolerance(
     call_count = {"n": 0}
     monkeypatch.setattr(
         "tipopac.atmgrid.build_pwv_grid",
-        lambda *a, **kw: (call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()),
+        lambda *a, **kw: (
+            call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()
+        ),
     )
 
     TippingAnalysis(ds, Path("fake.ms")).build_atm_grids()
@@ -144,7 +151,9 @@ def test_build_atm_grids_reuses_when_no_surface_pressure_data_var(
     call_count = {"n": 0}
     monkeypatch.setattr(
         "tipopac.atmgrid.build_pwv_grid",
-        lambda *a, **kw: (call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()),
+        lambda *a, **kw: (
+            call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()
+        ),
     )
 
     TippingAnalysis(ds, Path("fake.ms")).build_atm_grids()
