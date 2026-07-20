@@ -21,7 +21,6 @@ import xarray as xr
 from scipy.optimize import minimize_scalar
 
 from tipopac.atmgrid import PwvGrid
-from tipopac.physics import k2nt
 
 __all__ = ["anchor_pwv", "compute_t_mean_grid", "write_am_curve"]
 
@@ -196,11 +195,12 @@ def compute_t_mean_grid(
     """Sample Stage-A T_mean (noise K) from each scan's grid.
 
     For each scan present in *grids*, looks up the bilinear-interpolated
-    kinetic ``T_mean(ν_spw)`` at the grid's ``pwv_unscaled_mm`` (the
-    profile's native PWV) and converts to Rayleigh-Jeans-corrected noise
-    temperature via :func:`tipopac.physics.k2nt`. Rows for scans missing
-    from *grids* are filled with NaN, signalling Stage A to fall back to
-    the Bevis surface-temperature heuristic for those cells.
+    ``T_mean(ν_spw)`` at the grid's ``pwv_unscaled_mm`` (the profile's
+    native PWV). :attr:`PwvGrid.tmean` is already Rayleigh-Jeans noise K,
+    so no further :func:`tipopac.physics.k2nt` is applied here. Rows for
+    scans missing from *grids* are filled with NaN, signalling Stage A to
+    fall back to the Bevis surface-temperature heuristic for those cells
+    — that path *does* apply ``k2nt``, since its input is kinetic.
 
     Parameters
     ----------
@@ -229,7 +229,9 @@ def compute_t_mean_grid(
     t_mean = np.full((n_scan, n_spw), np.nan, dtype=np.float64)
     freqs_d = freqs_Hz.astype(np.float64)
     for i_scan, grid in grids.items():
-        _tau, tmean_K = grid.lookup(float(grid.pwv_unscaled_mm), freqs_d)
-        # k2nt: kinetic K → Rayleigh-Jeans noise K (per-channel ν dependence).
-        t_mean[i_scan, :] = k2nt(tmean_K, freqs_d)
+        # PwvGrid.tmean is already Rayleigh-Jeans noise K — the Planck→RJ
+        # conversion happens inside the grid, before the CMB subtraction.
+        # Applying k2nt here too would double-convert.
+        _tau, tmean_rj = grid.lookup(float(grid.pwv_unscaled_mm), freqs_d)
+        t_mean[i_scan, :] = tmean_rj
     return t_mean

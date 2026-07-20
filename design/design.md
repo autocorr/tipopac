@@ -15,7 +15,8 @@ tipping-scan data, without requiring a CASA runtime.
 
 ### Preserved from `tipopac_v2.6`
 
-- The physical model: `Tsys = T0 + Twmt'·(1 − exp(−τ₀/cos z))`, with
+- The physical model, plus the attenuated CMB v2.6 omitted:
+  `Tsys = T0 + Tcmb·exp(−τ₀/cos z) + Twmt'·(1 − exp(−τ₀/cos z))`, with
   `Twmt'` the Nyquist-corrected weighted-mean atmospheric temperature.
 - VLA-specific assumptions: dual circular (R/L) polarization,
   two-row CALDEVICE (noise-tube + solar-filter), AZELGEO encoder
@@ -311,7 +312,11 @@ Attrs
 
 ### 5.1 Physics primitives (`physics.py`)
 
-- `tsys_model(z_deg, T0, tau0, Twmt) = T0 + Twmt·(1 − exp(−τ₀/cos z))`.
+- `tsys_model(z_deg, T0, tau0, Twmt, Tcmb) = T0 + Tcmb·exp(−τ₀/cos z)
+  + Twmt·(1 − exp(−τ₀/cos z))`, `Tcmb = k2nt(T_CMB, ν)`. The tipping
+  amplitude is `(Twmt − Tcmb)`; omitting the term biases τ low by
+  ~0.8% (`run/cmb_term/findings.md`).
+- `T_CMB = 2.725` K (Fixsen 2009).
 - `k2nt(T_K, ν_Hz) = T·(hν/kT) / (exp(hν/kT) − 1)` — Nyquist
   (Rayleigh-Jeans) correction.
 - `weighted_mean_atm_T(T_surf_K) = 70.2 + 0.72·T_surf` — Bevis (1992).
@@ -361,9 +366,10 @@ sparse path to pay.
 
 **T_mean atmospheric input.** Per (scan, spw), noise-K
 `T_mean(spw)` is sampled from each scan's `PwvGrid` at the profile's
-native PWV via `anchor.compute_t_mean_grid` and Rayleigh-Jeans-
-corrected through `k2nt`. NaN cells fall back to `k2nt(0.95 ·
-T_surface)` per the v2.6 Bevis heuristic.
+native PWV via `anchor.compute_t_mean_grid`; it is already
+Rayleigh-Jeans noise K, so no further `k2nt` is applied. NaN cells fall
+back to `k2nt(0.95 · T_surface)` per the v2.6 Bevis heuristic — that
+path *does* apply `k2nt`, its input being kinetic.
 
 **Single physical bound set** (no escalation ladder):
 
@@ -462,6 +468,11 @@ offset, so `physics.predicted_tsys` adds `spillover_tau` back when
 reconstructing the curve (exact inverse — round-trips to the raw fit);
 every opacity consumer keeps the de-biased τ.
 
+The `0.0036` default is **stale**: it was tuned before the attenuated-CMB
+term was restored, which raises τ ~0.8% while δτ lowers it. The residual
+δτ must absorb is therefore larger, and τ-proportional rather than flat,
+so it must be re-derived (`run/cmb_term/findings.md` §4) — not patched.
+
 **Outputs on the dataset.**
 
 - `pwv(antenna)`, `pwv_err(antenna)`.
@@ -541,10 +552,12 @@ class PwvGrid:
 
 Two read methods:
 
-- `lookup(pwv_mm, freqs_Hz) -> (τ, T_mean_K)` — `T_mean` is the
-  atmosphere-only mean brightness, derived from `tb_z` with the CMB
-  contribution subtracted and divided by the absorbed fraction
-  `(1 − e^{−τ})`.
+- `lookup(pwv_mm, freqs_Hz) -> (τ, T_mean)` — `T_mean` is the
+  atmosphere-only mean brightness in **RJ noise K**, derived from
+  `trj_z = k2nt(tb_z, ν)` with `k2nt(T_CMB, ν)·e^{−τ}` subtracted and
+  divided by the absorbed fraction `(1 − e^{−τ})`. am still emits Planck
+  `tb_z`; the Planck→RJ conversion precedes the subtraction, since the
+  decomposition is linear in radiance, not in Planck temperature.
 - `lookup_with_grad(pwv_mm, freqs_Hz) -> (τ, T_mean, ∂τ/∂pwv,
   ∂T_mean/∂pwv)` — same plus the analytical slope of the linear
   interpolant in the PWV direction; used by Stage B's Cramér–Rao

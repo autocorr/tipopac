@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tipopac.physics import k2nt, tsys_model, weighted_mean_atm_T
+from tipopac.physics import T_CMB, k2nt, tsys_model, weighted_mean_atm_T
 
 _H = 6.6261e-34
 _K = 1.3806e-23
@@ -92,3 +92,53 @@ def test_weighted_mean_atm_T_vectorised() -> None:
     result = weighted_mean_atm_T(T)
     expected = 70.2 + 0.72 * T
     np.testing.assert_allclose(result, expected)
+
+
+# ---------------------------------------------------------------------------
+# Attenuated-CMB term (run/cmb_term/findings.md §1)
+# ---------------------------------------------------------------------------
+
+
+def _fit_tau(z, tsys, Twmt, Tcmb):
+    """Recover (T0, τ) from a tipping curve at a fixed amplitude."""
+    from scipy.optimize import least_squares
+
+    res = least_squares(
+        lambda p: tsys - tsys_model(z, p[0], p[1], Twmt, Tcmb),
+        [40.0, 0.05],
+        bounds=([0.0, 0.0], [300.0, 1.0]),
+    )
+    return float(res.x[0]), float(res.x[1])
+
+
+def test_tsys_model_with_cmb_round_trips() -> None:
+    """Fitting with the CMB term recovers the generating (T0, τ) exactly."""
+    nu = 22e9
+    Tcmb = float(k2nt(T_CMB, nu))
+    Twmt = float(k2nt(270.0, nu))
+    z = 90.0 - np.array([18.0, 20, 25, 30, 40, 50, 60, 75, 90])
+    tsys = tsys_model(z, 40.0, 0.075, Twmt, Tcmb)
+
+    T0_fit, tau_fit = _fit_tau(z, tsys, Twmt, Tcmb)
+    assert tau_fit == pytest.approx(0.075, rel=1e-6)
+    assert T0_fit == pytest.approx(40.0, rel=1e-6)
+
+
+def test_omitting_cmb_term_biases_tau_low() -> None:
+    """Regression guard: Tcmb=0 reproduces the historical ~0.8% low-τ bias.
+
+    The tipping amplitude should be (Twmt − Tcmb); using Twmt makes it too
+    large, which the fit compensates with a τ that is too small. Pins the
+    defect so it cannot be silently reintroduced.
+    """
+    nu = 22e9
+    Tcmb = float(k2nt(T_CMB, nu))
+    Twmt = float(k2nt(270.0, nu))
+    z = 90.0 - np.array([18.0, 20, 25, 30, 40, 50, 60, 75, 90])
+    tsys = tsys_model(z, 40.0, 0.075, Twmt, Tcmb)
+
+    _T0_bad, tau_bad = _fit_tau(z, tsys, Twmt, 0.0)
+    bias = (tau_bad - 0.075) / 0.075
+    assert -0.012 < bias < -0.006, f"expected ~-0.8% bias, got {bias:.4%}"
+    # The linearised prediction is -Tcmb/Twmt.
+    assert bias == pytest.approx(-Tcmb / Twmt, rel=0.25)

@@ -46,11 +46,15 @@ def _make_tip_ds(
 
     T_surf = 280.0  # K
     Twmt = float(physics.k2nt(physics.weighted_mean_atm_T(T_surf), freq_Hz))
+    # Generate with the attenuated CMB the fitter now models, so the round-trip
+    # tests parameter recovery rather than a model mismatch. Omitting it makes
+    # the recovered T0 low by ~Tcmb.
+    Tcmb = float(physics.k2nt(physics.T_CMB, freq_Hz))
 
     z = np.linspace(*za_range, n_time) if not flat_za else np.full(n_time, za_range[0])
 
-    tsys_R_clean = physics.tsys_model(z, T0_R, tau0, Twmt)
-    tsys_L_clean = physics.tsys_model(z, T0_L, tau0, Twmt)
+    tsys_R_clean = physics.tsys_model(z, T0_R, tau0, Twmt, Tcmb)
+    tsys_L_clean = physics.tsys_model(z, T0_L, tau0, Twmt, Tcmb)
     tsys_R = tsys_R_clean + rng.normal(0.0, noise_K, n_time)
     tsys_L = tsys_L_clean + rng.normal(0.0, noise_K, n_time)
 
@@ -565,3 +569,69 @@ def test_fit_n_workers_pool_matches_serial_tcal() -> None:
         rtol=1e-10,
         atol=1e-10,
     )
+
+
+# ---------------------------------------------------------------------------
+# Analytic Jacobian (guards the (Twmt − Tcmb) amplitude)
+# ---------------------------------------------------------------------------
+
+
+def test_jac_tcal_matches_finite_difference() -> None:
+    """Analytic _jac_tcal must match a central difference of _residuals_tcal.
+
+    ∂pred/∂τ carries amplitude (Twmt − Tcmb), not Twmt — the CMB term falls
+    with airmass while the atmospheric term rises. A wrong amplitude here
+    still converges, but on an inconsistent gradient and a wrong tau_err.
+    """
+    from tipopac.fit import _jac_tcal, _residuals_tcal
+
+    rng = np.random.default_rng(7)
+    n_ant, n_time = 2, 12
+    z_list = [np.linspace(30.0, 70.0, n_time) for _ in range(n_ant)]
+    tsys_R_list = [rng.uniform(40.0, 60.0, n_time) for _ in range(n_ant)]
+    tsys_L_list = [rng.uniform(40.0, 60.0, n_time) for _ in range(n_ant)]
+    sigma_R_list = [np.full(n_time, 0.4) for _ in range(n_ant)]
+    sigma_L_list = [np.full(n_time, 0.5) for _ in range(n_ant)]
+    Twmt, Tcmb = 265.0, 2.231  # k2nt(2.725, 22 GHz)
+
+    # Non-trivial point: c != 1 and asymmetric T0 so every column is exercised.
+    p = np.array([50.0, 1.1, 47.0, 0.95, 52.0, 1.05, 49.0, 1.2, 0.06])
+    args = (z_list, tsys_R_list, tsys_L_list, sigma_R_list, sigma_L_list, Twmt, Tcmb)
+
+    analytic = _jac_tcal(p, *args).toarray()
+
+    numeric = np.zeros_like(analytic)
+    for j in range(p.size):
+        h = 1e-6 * max(abs(p[j]), 1.0)
+        p_hi, p_lo = p.copy(), p.copy()
+        p_hi[j] += h
+        p_lo[j] -= h
+        numeric[:, j] = (
+            _residuals_tcal(p_hi, *args) - _residuals_tcal(p_lo, *args)
+        ) / (2 * h)
+
+    np.testing.assert_allclose(analytic, numeric, rtol=1e-5, atol=1e-7)
+
+
+def test_jac_tcal_tau_column_uses_twmt_minus_tcmb() -> None:
+    """The τ column must scale as (Twmt − Tcmb), not Twmt."""
+    from tipopac.fit import _jac_tcal
+
+    z_list = [np.linspace(30.0, 70.0, 8)]
+    tsys_R_list = [np.full(8, 50.0)]
+    tsys_L_list = [np.full(8, 48.0)]
+    sigma_R_list = [np.ones(8)]
+    sigma_L_list = [np.ones(8)]
+    p = np.array([50.0, 1.0, 48.0, 1.0, 0.05])
+
+    def tau_col(Twmt, Tcmb):
+        j = _jac_tcal(
+            p, z_list, tsys_R_list, tsys_L_list, sigma_R_list, sigma_L_list, Twmt, Tcmb
+        ).toarray()
+        return j[:, -1]
+
+    Twmt = 265.0
+    Tcmb = 2.231
+    # Ratio of τ-column with/without the CMB term is exactly (Twmt−Tcmb)/Twmt.
+    ratio = tau_col(Twmt, Tcmb) / tau_col(Twmt, 0.0)
+    np.testing.assert_allclose(ratio, (Twmt - Tcmb) / Twmt, rtol=1e-12)

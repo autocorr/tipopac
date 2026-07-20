@@ -167,7 +167,12 @@ def test_anchor_shape_validation() -> None:
 
 
 def test_compute_t_mean_grid_matches_lookup() -> None:
-    """T_mean values must equal k2nt(grid.lookup(pwv_unscaled).tmean) per channel."""
+    """T_mean must equal grid.lookup(pwv_unscaled).tmean verbatim — no extra k2nt.
+
+    ``PwvGrid.tmean`` is already Rayleigh-Jeans noise K (the Planck→RJ
+    conversion happens inside the grid, before the CMB subtraction), so
+    ``compute_t_mean_grid`` must pass it through untouched.
+    """
     grid = _toy_grid(pwv_unscaled_mm=6.0)
     grids = {0: grid, 2: grid}
     freqs = np.linspace(12e9, 28e9, 5)
@@ -180,12 +185,15 @@ def test_compute_t_mean_grid_matches_lookup() -> None:
     # Scans 0 and 2 share the same grid → identical T_mean rows
     np.testing.assert_allclose(t_mean[0, :], t_mean[2, :])
 
-    # Spot-check: T_mean = k2nt(tmean_kinetic, ν) at pwv_unscaled
-    _tau, tmean_K = grid.lookup(grid.pwv_unscaled_mm, freqs)
-    expected = np.array(
-        [float(k2nt(float(t), float(f))) for t, f in zip(tmean_K, freqs)]
+    _tau, tmean_rj = grid.lookup(grid.pwv_unscaled_mm, freqs)
+    np.testing.assert_allclose(t_mean[0, :], tmean_rj, rtol=1e-12)
+
+    # Guard against a re-introduced double conversion: applying k2nt again
+    # would shift every channel by ~0.3–0.7 K, so the two must NOT agree.
+    double = np.array(
+        [float(k2nt(float(t), float(f))) for t, f in zip(tmean_rj, freqs)]
     )
-    np.testing.assert_allclose(t_mean[0, :], expected, rtol=1e-12)
+    assert not np.allclose(t_mean[0, :], double, rtol=1e-6)
 
 
 def test_compute_t_mean_grid_empty_raises() -> None:

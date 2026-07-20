@@ -15,6 +15,8 @@ __all__ = ["SPILLOVER_TAU_DEFAULT", "apply_spillover"]
 
 # Campaign-measured offset in nepers (run/spillover/findings.md §8;
 # HRRR-validated, C/X gives +0.0036–0.0044, am-floor-limited → central +0.0036).
+# STALE: tuned before the attenuated-CMB term was restored, which raises τ
+# ~0.8% while this lowers it. Must be re-derived — see run/cmb_term/findings.md §4.
 SPILLOVER_TAU_DEFAULT: float = 0.0036
 
 

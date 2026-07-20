@@ -10,7 +10,9 @@ many times in a process pool — one am call per grid point, never
 
 The fitter consumes the grid via :meth:`PwvGrid.lookup` (τ_z, T_mean)
 and :meth:`PwvGrid.lookup_with_grad` (adds ∂/∂PWV via the linear
-interpolant's analytical slope).
+interpolant's analytical slope). ``T_mean`` is returned in Rayleigh-Jeans
+noise K — am's Planck ``Tb`` is converted via :attr:`PwvGrid.trj_z` before
+any sky-term arithmetic, never after.
 """
 
 from __future__ import annotations
@@ -25,6 +27,9 @@ from pathlib import Path
 
 import astropy.units as u
 import numpy as np
+
+from tipopac.physics import T_CMB as _T_CMB
+from tipopac.physics import k2nt
 
 __all__ = ["PwvGrid", "build_pwv_grid", "pwv_mm_from_profile"]
 
@@ -47,11 +52,11 @@ _M_WATER_OVER_M_DRY: float = 18.015 / 28.9647
 _G_EARTH: float = 9.80665  # m s⁻²
 _RHO_LIQ_WATER: float = 1000.0  # kg m⁻³
 
-# am's brightness_temperature column includes the CMB attenuated through the
-# atmosphere (Tb = T_atm·(1−e^−τ) + T_cmb·e^−τ). Stage A's T_mean needs the
-# atmosphere-only mean, so the CMB term is subtracted before dividing by the
-# absorbed fraction.
-_T_CMB: float = 2.725  # K (Fixsen 2009)
+# am's brightness_temperature column is the *Planck* Tb and includes the CMB
+# attenuated through the atmosphere. Stage A's T_mean needs the atmosphere-only
+# mean, so the CMB is subtracted before dividing by the absorbed fraction — but
+# that decomposition is linear in radiance, so it must be done on `trj_z`, not
+# on `tb_z`. See run/cmb_term/findings.md §2.
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,9 @@ class PwvGrid:
     tau_z:
         Zenith opacity, shape ``(n_pwv, n_freq)``.
     tb_z:
-        Zenith brightness temperature (K), shape ``(n_pwv, n_freq)``.
+        Zenith *Planck* brightness temperature (K), shape ``(n_pwv, n_freq)``
+        — am's ``brightness_temperature`` column. Not radiance-linear; use
+        :attr:`trj_z` for any arithmetic that combines sky terms.
     pwv_unscaled_mm:
         PWV (mm) of the unscaled atmospheric profile. The grid was built by
         running am with ``troposphere_h2o_scaling = pwv_mm / pwv_unscaled_mm``;
@@ -101,21 +108,33 @@ class PwvGrid:
             raise ValueError("freq_Hz must be strictly ascending")
 
     @cached_property
+    def trj_z(self) -> np.ndarray:
+        """Zenith brightness in Rayleigh-Jeans noise K — the linear coordinate.
+
+        am emits Planck ``Tb``; radiative transfer and noise power are linear
+        in radiance, so any arithmetic combining sky terms must use this, not
+        ``tb_z``. Equal to am's ``Trj`` column to ~1e-6 relative.
+        """
+        return np.asarray(k2nt(self.tb_z, self.freq_Hz[None, :]))
+
+    @cached_property
     def tmean(self) -> np.ndarray:
-        """Atmosphere-only effective radiating temperature.
+        """Atmosphere-only effective radiating temperature, in RJ noise K.
 
-        ``T_mean = (Tb_z − T_cmb·exp(−τ_z)) / (1 − exp(−τ_z))``
+        ``T_mean = (Trj_z − k2nt(T_cmb)·exp(−τ_z)) / (1 − exp(−τ_z))``
 
-        am's ``brightness_temperature`` includes the CMB attenuated through
-        the atmosphere; the CMB term is subtracted so the returned value is
-        the kinetic mean of the atmospheric emission alone. Without the
-        subtraction, the second term ``T_cmb·exp(−τ)/(1−exp(−τ))`` diverges
-        at low τ and inflates T_mean by hundreds of K at low-opacity bands.
+        The CMB is subtracted so the returned value describes the atmospheric
+        emission alone; without it the term ``T_cmb·exp(−τ)/(1−exp(−τ))``
+        diverges at low τ and inflates T_mean by hundreds of K at low-opacity
+        bands. The decomposition is linear in radiance, so it runs on
+        ``trj_z`` and uses the CMB's *radiation* temperature ``k2nt(T_cmb, ν)``
+        — not Planck ``tb_z`` and a flat 2.725 K. The result is already noise
+        K; callers must not apply ``k2nt`` again.
         """
         absorb = -np.expm1(-self.tau_z)  # = 1 − exp(−τ), accurate for small τ
         eps = 1e-8
-        tb_atm = self.tb_z - _T_CMB * np.exp(-self.tau_z)
-        return tb_atm / np.maximum(absorb, eps)
+        trj_atm = self.trj_z - k2nt(_T_CMB, self.freq_Hz[None, :]) * np.exp(-self.tau_z)
+        return trj_atm / np.maximum(absorb, eps)
 
     def lookup(
         self,

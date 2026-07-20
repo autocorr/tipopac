@@ -552,6 +552,8 @@ def test_predicted_tsys_dense_grid_overlay_matches_tsys_model() -> None:
     """Dense-grid call must equal tsys_model evaluated point-wise."""
     from tipopac.physics import predicted_tsys, tsys_model
 
+    from tipopac.physics import T_CMB, k2nt
+
     ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
     cell = ds.sel(scan=1, antenna="ea01", spw=0)
     z_grid = xr.DataArray(np.linspace(35.0, 75.0, 9), dims=("z",))
@@ -561,6 +563,7 @@ def test_predicted_tsys_dense_grid_overlay_matches_tsys_model() -> None:
         float(cell["T0"].sel(polarization="R")),
         float(cell["tau_zenith"]),
         float(cell["Twmt"]),
+        float(k2nt(T_CMB, float(cell["frequency"]))),
     )
     # tcal_fit == tcal_ref in the fixture, so c == 1 and pred == tsys_model.
     np.testing.assert_allclose(pred, expected, rtol=1e-5)
@@ -569,6 +572,8 @@ def test_predicted_tsys_dense_grid_overlay_matches_tsys_model() -> None:
 def test_predicted_tsys_divides_by_c_in_tcal_solve_mode() -> None:
     """When tcal_fit/tcal_ref != 1, the prediction must divide by c."""
     from tipopac.physics import predicted_tsys, tsys_model
+
+    from tipopac.physics import T_CMB, k2nt
 
     ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
     ds["tcal_fit"].values[:] *= 1.2  # c = 1.2 for both pols
@@ -580,6 +585,7 @@ def test_predicted_tsys_divides_by_c_in_tcal_solve_mode() -> None:
         float(cell["T0"].sel(polarization="R")),
         float(cell["tau_zenith"]),
         float(cell["Twmt"]),
+        float(k2nt(T_CMB, float(cell["frequency"]))),
     )
     np.testing.assert_allclose(pred, base / 1.2, rtol=1e-5)
 

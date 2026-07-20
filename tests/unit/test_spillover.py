@@ -78,7 +78,8 @@ def test_predicted_tsys_round_trips_to_raw_fit() -> None:
                 ("scan", "antenna", "time"),
                 np.full((1, 2, 3), 45.0, np.float32),
             ),
-        }
+        },
+        coords={"frequency": ("spw", np.array([22e9, 33e9]))},
     )
     raw = predicted_tsys(ds)  # spillover_tau absent → treated as 0.0
 

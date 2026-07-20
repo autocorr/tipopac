@@ -8,10 +8,12 @@ from __future__ import annotations
 import numpy as np
 import xarray as xr
 
-# Scalar-or-array type accepted by all public functions here.
-_Numeric = float | np.ndarray
+# Scalar-or-array type accepted by all public functions here. DataArray is
+# included so callers can keep xarray's broadcast-by-dim-name semantics.
+_Numeric = float | np.ndarray | xr.DataArray
 
 __all__ = [
+    "T_CMB",
     "k2nt",
     "predicted_tsys",
     "tsys_model",
@@ -20,6 +22,8 @@ __all__ = [
 
 _H: float = 6.6261e-34  # J·s
 _K: float = 1.3806e-23  # J/K
+
+T_CMB: float = 2.725  # K (Fixsen 2009)
 
 
 def k2nt(T_K: _Numeric, nu_Hz: _Numeric) -> _Numeric:
@@ -36,19 +40,23 @@ def tsys_model(
     T0: float,
     tau0: float,
     Twmt: float,
+    Tcmb: float = 0.0,
 ) -> _Numeric:
-    """Tipping-curve Tsys model: T0 + Twmt·(1 − exp(−τ₀/cos z)).
+    """Tipping-curve Tsys model: T0 + Tcmb·e^{−τ₀/cos z} + Twmt·(1 − e^{−τ₀/cos z}).
 
-    All temperatures in noise K; z_deg in degrees.
+    All temperatures in noise K; z_deg in degrees. ``Tcmb`` is the CMB
+    radiation temperature ``k2nt(T_CMB, ν)``; ``Tcmb=0`` reproduces the
+    pre-2026-07 model, which biased τ low by ~0.8% (run/cmb_term/findings.md).
     """
-    return T0 + Twmt * (1.0 - np.exp(-tau0 / np.cos(np.deg2rad(z_deg))))
+    transp = np.exp(-tau0 / np.cos(np.deg2rad(z_deg)))
+    return T0 + Tcmb * transp + Twmt * (1.0 - transp)
 
 
 def predicted_tsys(
     ds: xr.Dataset,
     z_deg: xr.DataArray | None = None,
 ) -> xr.DataArray:
-    """xarray-aware Tsys reconstruction: ``(T0 + Twmt·(1−exp(−τ/cos z))) / c``.
+    """xarray-aware Tsys reconstruction: ``(T0 + Tcmb·e^−τa + Twmt·(1−e^−τa)) / c``.
 
     Uses fitted ``T0``, ``tau_zenith``, ``Twmt``, ``tcal_fit``, and ``tcal_ref``
     persisted on the dataset, with ``c = tcal_fit / tcal_ref`` (≡ 1 in
@@ -62,13 +70,18 @@ def predicted_tsys(
     (``ds.attrs["spillover_tau"]``, 0.0 when disabled) to keep the
     reconstruction matched to the data. This is the exact inverse of the
     de-bias — the curve round-trips to the raw fit.
+
+    ``Tcmb`` is derived from the ``frequency`` coord rather than persisted:
+    it is a pure function of ν, so storing it would be redundant state.
     """
     if z_deg is None:
         z_deg = ds["zenith_angle"]
     c = ds["tcal_fit"] / ds["tcal_ref"]
     c = c.where(np.isfinite(c) & (c > 0), 1.0)
     tau = ds["tau_zenith"] + ds.attrs.get("spillover_tau", 0.0)
-    pred = ds["T0"] + ds["Twmt"] * (1.0 - np.exp(-tau / np.cos(np.deg2rad(z_deg))))
+    transp = np.exp(-tau / np.cos(np.deg2rad(z_deg)))
+    tcmb = k2nt(T_CMB, ds["frequency"])
+    pred = ds["T0"] + tcmb * transp + ds["Twmt"] * (1.0 - transp)
     return pred / c
 
 

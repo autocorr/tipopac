@@ -25,7 +25,7 @@ import scipy.sparse as _sp
 import xarray as xr
 from scipy.optimize import least_squares
 
-from tipopac.physics import k2nt, weighted_mean_atm_T
+from tipopac.physics import T_CMB, k2nt, weighted_mean_atm_T
 
 __all__ = ["fit_dataset"]
 
@@ -308,10 +308,12 @@ def _residuals(
     sigma_R: np.ndarray,
     sigma_L: np.ndarray,
     Twmt: float,
+    Tcmb: float = 0.0,
 ) -> np.ndarray:
     """σ-weighted concatenated residuals for tau_per_antenna: [R..., L...]."""
     T0_R, T0_L, tau0 = p
-    pred = Twmt * (1.0 - np.exp(-tau0 / np.cos(np.deg2rad(z))))
+    transp = np.exp(-tau0 / np.cos(np.deg2rad(z)))
+    pred = Tcmb * transp + Twmt * (1.0 - transp)
     return np.concatenate(
         [(tsys_R - (T0_R + pred)) / sigma_R, (tsys_L - (T0_L + pred)) / sigma_L]
     )
@@ -325,11 +327,12 @@ def _residuals_tcal(
     sigma_R_list: list[np.ndarray],
     sigma_L_list: list[np.ndarray],
     Twmt: float,
+    Tcmb: float = 0.0,
 ) -> np.ndarray:
     """σ-weighted tcal_solve residuals.
 
     p = [T0_R_0, c_R_0, T0_L_0, c_L_0, ..., tau0].
-    Model: Tsys_meas = (T0 + Twmt·(1−exp(−τ/cos z))) / c.
+    Model: Tsys_meas = (T0 + Tcmb·e^{−τ/cos z} + Twmt·(1−e^{−τ/cos z})) / c.
     """
     tau0 = p[-1]
     parts = []
@@ -338,7 +341,8 @@ def _residuals_tcal(
         c_R = p[4 * k + 1]
         T0_L = p[4 * k + 2]
         c_L = p[4 * k + 3]
-        pred = Twmt * (1.0 - np.exp(-tau0 / np.cos(np.deg2rad(z_list[k]))))
+        transp = np.exp(-tau0 / np.cos(np.deg2rad(z_list[k])))
+        pred = Tcmb * transp + Twmt * (1.0 - transp)
         parts.append((tsys_R_list[k] - (T0_R + pred) / c_R) / sigma_R_list[k])
         parts.append((tsys_L_list[k] - (T0_L + pred) / c_L) / sigma_L_list[k])
     return np.concatenate(parts)
@@ -352,6 +356,7 @@ def _jac_tcal(
     sigma_R_list: list[np.ndarray],
     sigma_L_list: list[np.ndarray],
     Twmt: float,
+    Tcmb: float = 0.0,
 ) -> _sp.csr_matrix:
     """σ-weighted analytical Jacobian for _residuals_tcal."""
     tau0 = p[-1]
@@ -366,8 +371,9 @@ def _jac_tcal(
         T0_L = p[4 * k + 2]
         c_L = p[4 * k + 3]
         cos_z = np.cos(np.deg2rad(z_list[k]))
-        pred = Twmt * (1.0 - np.exp(-tau0 / cos_z))
-        dpred_dtau = Twmt * np.exp(-tau0 / cos_z) / cos_z
+        transp = np.exp(-tau0 / cos_z)
+        pred = Tcmb * transp + Twmt * (1.0 - transp)
+        dpred_dtau = (Twmt - Tcmb) * transp / cos_z
         inv_sR = 1.0 / sigma_R_list[k]
         inv_sL = 1.0 / sigma_L_list[k]
         # r_R = (tsys_R − (T0_R + pred)/c_R) / σ_R
@@ -487,6 +493,9 @@ def _screen_antenna(
         # (e.g. legacy modes, or independent_tau with grid build failure).
         T_surf_mean = float(np.mean(weather_T[valid]))
         Twmt = float(k2nt(weighted_mean_atm_T(T_surf_mean), freq_Hz))
+    # CMB radiation temperature at this spw; attenuated by the atmosphere
+    # in the model, so it is not absorbed by the free T0.
+    Tcmb = float(k2nt(T_CMB, freq_Hz))
 
     # T0 init from Tsys-vs-airmass linear intercept (replaces v2.6 hard-coded
     # T0=50). Per-mode tau init upgrade lands in Task #4.
@@ -527,6 +536,7 @@ def _screen_antenna(
                     sigma_R_v[mask],
                     sigma_L_v[mask],
                     Twmt,
+                    Tcmb,
                 ),
                 bounds=bounds,
                 loss="soft_l1",
@@ -583,6 +593,7 @@ def _screen_antenna(
         "sigma_R_c": sigma_R_c,
         "sigma_L_c": sigma_L_c,
         "Twmt": Twmt,
+        "Tcmb": Tcmb,
         "T0_R": T0_R,
         "T0_L": T0_L,
         "tau0": tau0,
@@ -649,6 +660,7 @@ def _fit_global(screens: list[dict]) -> dict:
     """
     N = len(screens)
     Twmt = screens[0]["Twmt"]
+    Tcmb = screens[0]["Tcmb"]
     z_list = [s["z_c"] for s in screens]
     tsys_R_list = [s["tsys_R_c"] for s in screens]
     tsys_L_list = [s["tsys_L_c"] for s in screens]
@@ -677,6 +689,7 @@ def _fit_global(screens: list[dict]) -> dict:
                 sigma_R_list,
                 sigma_L_list,
                 Twmt,
+                Tcmb,
             ),
             bounds=(lb, ub),
             jac=_jac_tcal,

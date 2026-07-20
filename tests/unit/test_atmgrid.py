@@ -1,8 +1,8 @@
 """Unit tests for atmgrid.PwvGrid and the am-based builder.
 
-The forward-model consistency check (`test_t_sky_at_zenith_equals_tb_z`) is
+The forward-model consistency check (`test_t_sky_at_zenith_equals_trj_z`) is
 the most important here — if T_sky(airmass=1) computed from the grid does not
-equal Tb_z from am at the same PWV, the entire Stage-2 fit is biased.
+equal the RJ sky brightness from am at the same PWV, the entire Stage-2 fit is biased.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from tipopac.atmgrid import (
     build_pwv_grid,
     pwv_mm_from_profile,
 )
+from tipopac.physics import _H, _K, k2nt
 
 
 # ---------------------------------------------------------------------------
@@ -51,20 +52,57 @@ _T_ATM_TOY: float = 270.0
 _T_CMB_TOY: float = 2.725  # must match atmgrid._T_CMB
 
 
+def _tb_from_trj(trj: np.ndarray, nu: np.ndarray) -> np.ndarray:
+    """Exact inverse of :func:`k2nt`: RJ brightness → Planck brightness temp.
+
+    ``k2nt(T,ν) = (hν/k) / (exp(hν/kT) − 1)`` inverts analytically to
+    ``T = (hν/k) / ln(1 + (hν/k)/T_rj)``. Uses physics' own ``_H``/``_K`` so
+    the round-trip is exact to machine precision rather than to CODATA.
+    """
+    hk = _H * nu / _K
+    return hk / np.log1p(hk / trj)
+
+
+def _toy_tb(tau: np.ndarray, freq: np.ndarray) -> np.ndarray:
+    """am-style *Planck* Tb for a 270 K atmosphere over the attenuated CMB.
+
+    Radiative transfer is linear in radiance, so the mixing is done in RJ
+    space and the result is converted back to the Planck coordinate that am's
+    ``brightness_temperature`` column actually reports. Building ``tb``
+    linearly (as this fixture used to) is an RJ construction masquerading as
+    a Planck one, and silently breaks the T_mean round-trip.
+    """
+    nu = freq[None, :]
+    trj = np.asarray(k2nt(_T_ATM_TOY, nu)) * (1.0 - np.exp(-tau)) + np.asarray(
+        k2nt(_T_CMB_TOY, nu)
+    ) * np.exp(-tau)
+    return _tb_from_trj(trj, nu)
+
+
 def _toy_grid() -> PwvGrid:
-    """Analytic mock with am-style brightness (atmosphere + attenuated CMB).
+    """Analytic mock with am-style Planck brightness.
 
-    τ(PWV, ν) = PWV · (1 + 0.01·ν/1 GHz)
-    Tb(PWV, ν) = T_atm · (1 − exp(−τ)) + T_cmb · exp(−τ)
+    τ(PWV, ν) = PWV · (1 + 0.01·ν/1 GHz) · 0.01
+    Trj(PWV, ν) = k2nt(T_atm)·(1 − exp(−τ)) + k2nt(T_cmb)·exp(−τ)
+    Tb = k2nt⁻¹(Trj)
 
-    This matches what am.brightness_temperature actually returns (the
-    atmosphere-only formulation would skip the second term).
+    so that ``PwvGrid.tmean`` recovers ``k2nt(T_atm, ν)`` exactly.
     """
     pwv = np.linspace(1.0, 10.0, 10)
     freq = np.linspace(10e9, 30e9, 21)
     tau = pwv[:, None] * (1.0 + 0.01 * freq[None, :] / 1e9) * 0.01
-    tb = _T_ATM_TOY * (1.0 - np.exp(-tau)) + _T_CMB_TOY * np.exp(-tau)
-    return PwvGrid(pwv_mm=pwv, freq_Hz=freq, tau_z=tau, tb_z=tb)
+    return PwvGrid(pwv_mm=pwv, freq_Hz=freq, tau_z=tau, tb_z=_toy_tb(tau, freq))
+
+
+def test_toy_grid_tmean_recovers_atmosphere() -> None:
+    """The fixture must round-trip: tmean == k2nt(T_atm, ν), in RJ noise K.
+
+    Note the expected value is k2nt(270 K), *not* 270 K — tmean is now a
+    Rayleigh-Jeans noise temperature, not a kinetic one.
+    """
+    g = _toy_grid()
+    expected = np.asarray(k2nt(_T_ATM_TOY, g.freq_Hz))[None, :]
+    np.testing.assert_allclose(g.tmean, np.broadcast_to(expected, g.tmean.shape))
 
 
 def test_pwvgrid_lookup_on_grid_node() -> None:
@@ -122,39 +160,36 @@ def test_pwvgrid_tmean_finite_at_zero_tau() -> None:
     freq = np.array([10e9, 20e9])
     # τ = 0 row + finite rows
     tau = np.array([[0.0, 0.0], [0.05, 0.05], [0.10, 0.10]])
-    # am-style Tb: atmosphere emission + attenuated CMB
-    tb = _T_ATM_TOY * (1.0 - np.exp(-tau)) + _T_CMB_TOY * np.exp(-tau)
-    g = PwvGrid(pwv_mm=pwv, freq_Hz=freq, tau_z=tau, tb_z=tb)
+    g = PwvGrid(pwv_mm=pwv, freq_Hz=freq, tau_z=tau, tb_z=_toy_tb(tau, freq))
     assert np.all(np.isfinite(g.tmean))
 
 
 # ---------------------------------------------------------------------------
-# Forward-model consistency: T_sky(A=1) MUST equal Tb_z
+# Forward-model consistency: T_sky(A=1) MUST equal Trj_z (the linear coordinate)
 # ---------------------------------------------------------------------------
 
 
-def test_t_sky_at_zenith_equals_tb_z() -> None:
-    """Critical: forward model at airmass=1 reproduces am's Tb_z exactly.
+def test_t_sky_at_zenith_equals_trj_z() -> None:
+    """Critical: forward model at airmass=1 reproduces am's sky brightness exactly.
 
-    am's Tb_z is total sky brightness (atmosphere + attenuated CMB).
-    Stage A's T_mean is atmosphere-only, so the reconstruction adds the
-    CMB term back: Tb_z = T_mean·(1−e^−τ) + T_cmb·e^−τ. If this drifts,
-    every per_antenna_pwv fit is biased — the bias would look like a
-    solver issue but it would be a coordinate mismatch between am's
-    output and our reconstruction.
+    The reconstruction is ``T_sky = T_mean·(1−e^−τ) + k2nt(T_cmb)·e^−τ``, and
+    it must close against ``trj_z`` — the Rayleigh-Jeans coordinate — because
+    that is the one in which the terms add. Closing it against Planck ``tb_z``
+    (as this test used to) is the coordinate mismatch that biased every fit.
+    If this drifts, the bias looks like a solver issue but is not.
     """
     g = _toy_grid()
     airmass = 1.0
     f = np.array([12e9, 18e9, 25e9])
+    t_cmb_rj = np.asarray(k2nt(_T_CMB_TOY, f))
     for pwv_mm in g.pwv_mm[1:-1:2]:  # off-the-end PWV values
         tau_z, tmean = g.lookup(pwv_mm, f)
-        t_sky = tmean * (1.0 - np.exp(-tau_z * airmass)) + _T_CMB_TOY * np.exp(
-            -tau_z * airmass
-        )
-        # Reconstruct Tb_z at the same PWV by direct lookup.
+        transp = np.exp(-tau_z * airmass)
+        t_sky = tmean * (1.0 - transp) + t_cmb_rj * transp
+        # Reconstruct the RJ sky brightness at the same PWV by direct lookup.
         i = int(np.where(g.pwv_mm == pwv_mm)[0][0])
-        tb_expected = np.interp(f, g.freq_Hz, g.tb_z[i, :])
-        np.testing.assert_allclose(t_sky, tb_expected, rtol=1e-10, atol=1e-12)
+        trj_expected = np.interp(f, g.freq_Hz, g.trj_z[i, :])
+        np.testing.assert_allclose(t_sky, trj_expected, rtol=1e-10, atol=1e-12)
 
 
 # ---------------------------------------------------------------------------
