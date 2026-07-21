@@ -2,8 +2,9 @@
 
 A constant, frequency-flat opacity offset δτ is present in the fitted zenith
 opacity, likely ground pickup or an instrumental floor of some sort.
-Subtracting it debiases ``tau_zenith`` and more effectively anchors PWV. This
-is the localized swap-point for an alternative, future per-band η model.
+Subtracting it debiases ``tau_zenith`` and more effectively anchors PWV. Off by
+default pending re-derivation of δτ. This is the localized swap-point for an
+alternative, future per-band η model.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ __all__ = ["SPILLOVER_TAU_DEFAULT", "apply_spillover"]
 
 # Campaign-measured offset in nepers (run/spillover/findings.md §8;
 # HRRR-validated, C/X gives +0.0036–0.0044, am-floor-limited → central +0.0036).
-# STALE: tuned before the attenuated-CMB term was restored, which raises τ
-# ~0.8% while this lowers it. Must be re-derived — see run/cmb_term/findings.md §4.
+# STALE, so the de-bias is off by default and this is opt-in only: tuned before
+# the attenuated-CMB term was restored, which raises τ ~0.8% while this lowers
+# it. Must be re-derived — see run/cmb_term/findings.md §4.
 SPILLOVER_TAU_DEFAULT: float = 0.0036
 
 

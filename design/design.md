@@ -460,7 +460,8 @@ fit).
 subtracts a constant frequency-flat offset δτ (nepers) from finite
 `tau_zenith` cells, so `tau_zenith` is the atmospheric opacity and PWV
 is anchored to it (`run/spillover/findings.md`). The `tipopac(...,
-spillover=)` parameter sets it (default `0.0036`; `None`/`0` disables);
+spillover=)` parameter sets it (default `None`, disabled; pass
+`spillover.SPILLOVER_TAU_DEFAULT` = `0.0036` to opt in);
 the applied value is recorded in `ds.attrs["spillover_tau"]` (0.0 when
 disabled). No clamp — a negative τ honestly signals over-subtraction,
 reachable only in opt-in low bands. The measured Tsys still contains the
@@ -468,10 +469,11 @@ offset, so `physics.predicted_tsys` adds `spillover_tau` back when
 reconstructing the curve (exact inverse — round-trips to the raw fit);
 every opacity consumer keeps the de-biased τ.
 
-The `0.0036` default is **stale**: it was tuned before the attenuated-CMB
-term was restored, which raises τ ~0.8% while δτ lowers it. The residual
-δτ must absorb is therefore larger, and τ-proportional rather than flat,
-so it must be re-derived (`run/cmb_term/findings.md` §4) — not patched.
+The `0.0036` value is **stale**, which is why the de-bias is disabled by
+default: it was tuned before the attenuated-CMB term was restored, which
+raises τ ~0.8% while δτ lowers it. The residual δτ must absorb is therefore
+larger, and τ-proportional rather than flat, so it must be re-derived
+(`run/cmb_term/findings.md` §4) — not patched. The term stays off until then.
 
 **Outputs on the dataset.**
 

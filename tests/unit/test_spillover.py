@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 import xarray as xr
 
@@ -48,6 +50,14 @@ def test_none_and_zero_are_noops() -> None:
         np.testing.assert_array_equal(
             ds["tau_zenith"].values, before, "disabled must not touch tau_zenith"
         )
+
+
+def test_default_is_disabled() -> None:
+    """Both entry points default to no de-bias — δτ is stale (design.md §6)."""
+    from tipopac.api import TippingAnalysis, tipopac
+
+    for fn in (tipopac, TippingAnalysis.fit):
+        assert inspect.signature(fn).parameters["spillover"].default is None
 
 
 def test_predicted_tsys_round_trips_to_raw_fit() -> None:
@@ -101,7 +111,7 @@ def _toy_grid() -> PwvGrid:
 
 
 def test_debias_lowers_anchored_pwv() -> None:
-    """spillover=None ≡ baseline PWV; the default de-bias lowers PWV."""
+    """spillover=None ≡ baseline PWV; the opt-in de-bias lowers PWV."""
     grid = _toy_grid()
     freqs = np.linspace(12e9, 28e9, 16)
     tau_true, _ = grid.lookup(4.3, freqs)

@@ -14,7 +14,7 @@ import xarray as xr
 
 from tipopac.atmgrid import PwvGrid
 from tipopac.readers import detect_reader as _detect_reader
-from tipopac.spillover import SPILLOVER_TAU_DEFAULT, apply_spillover
+from tipopac.spillover import apply_spillover
 
 _log = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ def tipopac(
     flags_file: str | Path | None = None,
     atm_profile_source: str = "open-meteo",
     afgl_climatology: str = "auto",
-    spillover: float | None = SPILLOVER_TAU_DEFAULT,
+    spillover: float | None = None,
     n_workers: int | None = None,
     output_dir: str | Path | None = Path("."),
     caltable_opacity: bool = False,
@@ -187,9 +187,11 @@ def tipopac(
         Constant zenith-opacity offset (nepers) subtracted from
         ``tau_zenith`` in Stage B before the PWV anchor, de-biasing the
         published opacity and re-anchoring PWV (``run/spillover``).
-        Defaults to the campaign-measured ``0.0036``; ``None`` or ``0``
-        disables it. The Tsys-curve reconstruction adds it back so plot
-        overlays still match the measured Tsys.
+        Disabled by default (``None`` or ``0``): the campaign-measured
+        ``0.0036`` predates the attenuated-CMB fix and must be re-derived.
+        Pass ``spillover.SPILLOVER_TAU_DEFAULT`` to reproduce prior runs.
+        The Tsys-curve reconstruction adds it back so plot overlays still
+        match the measured Tsys.
     n_workers:
         Stage-A fit parallelism. ``None`` runs serially. Higher values
         dispatch via a process pool with single-threaded BLAS per worker.
@@ -417,7 +419,7 @@ class TippingAnalysis:
         mode: str = "independent_tau_solve",
         *,
         n_workers: int | None = None,
-        spillover: float | None = SPILLOVER_TAU_DEFAULT,
+        spillover: float | None = None,
     ) -> None:
         if mode not in _INDEPENDENT_TO_BACKEND:
             raise ValueError(
