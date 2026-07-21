@@ -15,6 +15,9 @@ vendor/amwrap/
 # Zensical documentation build output
 site/
 
+# CASA logs
+casa-*.log
+
 # Other local use directories
 benchmarks/
 run/
