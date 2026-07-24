@@ -312,10 +312,11 @@ Attrs
 
 ### 5.1 Physics primitives (`physics.py`)
 
-- `tsys_model(z_deg, T0, tau0, Twmt, Tcmb) = T0 + Tcmb·exp(−τ₀/cos z)
-  + Twmt·(1 − exp(−τ₀/cos z))`, `Tcmb = k2nt(T_CMB, ν)`. The tipping
-  amplitude is `(Twmt − Tcmb)`; omitting the term biases τ low by
-  ~0.8% (`run/cmb_term/findings.md`).
+- `tsys_model(z_deg, T0, tau0, Twmt, Tcmb, spill) = T0 + Tcmb·exp(−τ₀/cos z)
+  + Twmt·(1 − exp(−τ₀/cos z)) + spill`, `Tcmb = k2nt(T_CMB, ν)`. The tipping
+  amplitude is `(Twmt − Tcmb)`; omitting the CMB term biases τ low by
+  ~0.8% (`run/cmb_term/findings.md`). `spill = η(ν)·k2nt(T_surf,ν)·airmass`
+  is the fixed (τ-independent) spillover term (§6); `spill = 0` disables it.
 - `T_CMB = 2.725` K (Fixsen 2009).
 - `k2nt(T_K, ν_Hz) = T·(hν/kT) / (exp(hν/kT) − 1)` — Nyquist
   (Rayleigh-Jeans) correction.
@@ -356,7 +357,9 @@ the tipping curve. Two routings:
 
 Both use `scipy.optimize.least_squares` with `soft_l1` robust loss
 (`f_scale = 3.0`) and σ-weighted residuals
-`r_i = (Tsys_i − model_i) / σ_Tsys,i`.
+`r_i = (Tsys_i − model_i) / σ_Tsys,i`. `model_i` carries the fixed
+spillover term (§6), added before the residual; it is not a fit parameter
+(the stored `η(ν)` supplies it), so `dpred/dτ` is unchanged.
 
 **`independent_tau_solve` Jacobian.** Sparse CSR — block-diagonal in
 the per-antenna `(T0, c)` columns, dense in the shared `τ_z` column.
@@ -456,24 +459,26 @@ broadcast equal across antennas, so the per-antenna anchor returns
 identical `pwv[ant]` (shared-PWV semantics fall out of the per-antenna
 fit).
 
-**Spillover de-bias.** Before the anchor, `spillover.apply_spillover`
-subtracts a constant frequency-flat offset δτ (nepers) from finite
-`tau_zenith` cells, so `tau_zenith` is the atmospheric opacity and PWV
-is anchored to it (`run/spillover/findings.md`). The `tipopac(...,
-spillover=)` parameter sets it (default `None`, disabled; pass
-`spillover.SPILLOVER_TAU_DEFAULT` = `0.0036` to opt in);
-the applied value is recorded in `ds.attrs["spillover_tau"]` (0.0 when
-disabled). No clamp — a negative τ honestly signals over-subtraction,
-reachable only in opt-in low bands. The measured Tsys still contains the
-offset, so `physics.predicted_tsys` adds `spillover_tau` back when
-reconstructing the curve (exact inverse — round-trips to the raw fit);
-every opacity consumer keeps the de-biased τ.
-
-The `0.0036` value is **stale**, which is why the de-bias is disabled by
-default: it was tuned before the attenuated-CMB term was restored, which
-raises τ ~0.8% while δτ lowers it. The residual δτ must absorb is therefore
-larger, and τ-proportional rather than flat, so it must be re-derived
-(`run/cmb_term/findings.md` §4) — not patched. The term stays off until then.
+**Spillover (Tsys forward model).** Instrumental ground pickup enters the
+antenna sidelobes unattenuated by the sky, adding a Tsys term
+`η(ν)·k2nt(T_surf,ν)·airmass` that a naive fit absorbs into `tau_zenith`.
+Rather than de-bias post-hoc, Stage A carries this term *inside* the model
+(§5.1, §5.3): `η(ν)` is the stored, sampling-independent spillover efficiency
+(`spillover.ETA_POLY_COEF`, a quadratic in ν over the trusted 12–45 GHz band,
+0 outside — both edges are untrusted), and the fit supplies each scan's airmass
+integral, so the emergent δτ is sampling-independent by construction
+(`run/spillover_band/findings_roundtrip.md`). `tau_zenith` is therefore
+spillover-free at the Stage-A output and Stage B anchors PWV on it directly —
+no add-back. The term is `∝ airmass` and τ-independent, i.e. a fixed additive
+offset (no new fit parameter, `dpred/dτ` unchanged). The `tipopac(...,
+spillover_model=)` flag toggles it (default `True`, the physically-correct
+post-CMB model; `False` reproduces the pre-spillover fit).
+`ds.attrs["spillover_model"]` / `["spillover_eta_coef"]` record the applied η,
+and `physics.predicted_tsys` re-adds `η·Bg·airmass` (inside `/c`) so the Tsys
+overlay matches the measured data. This supersedes the retired flat δτ de-bias;
+its stale `0.0036` is intentionally not preserved (η is freshly derived post-CMB
+from the `THIG0007_wide_CXUKAQ` campaign — a single config, so a config-dependent
+η may be needed later).
 
 **Outputs on the dataset.**
 

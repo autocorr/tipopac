@@ -14,7 +14,6 @@ import xarray as xr
 
 from tipopac.atmgrid import PwvGrid
 from tipopac.readers import detect_reader as _detect_reader
-from tipopac.spillover import apply_spillover
 
 _log = logging.getLogger(__name__)
 
@@ -144,7 +143,7 @@ def tipopac(
     flags_file: str | Path | None = None,
     atm_profile_source: str = "open-meteo",
     afgl_climatology: str = "auto",
-    spillover: float | None = None,
+    spillover_model: bool = True,
     n_workers: int | None = None,
     output_dir: str | Path | None = Path("."),
     caltable_opacity: bool = False,
@@ -183,15 +182,14 @@ def tipopac(
         ``atm_profile_source="afgl"``. Default ``"auto"`` picks
         ``midlatitude_summer`` / ``midlatitude_winter`` from the
         observation's month.
-    spillover:
-        Constant zenith-opacity offset (nepers) subtracted from
-        ``tau_zenith`` in Stage B before the PWV anchor, de-biasing the
-        published opacity and re-anchoring PWV (``run/spillover``).
-        Disabled by default (``None`` or ``0``): the campaign-measured
-        ``0.0036`` predates the attenuated-CMB fix and must be re-derived.
-        Pass ``spillover.SPILLOVER_TAU_DEFAULT`` to reproduce prior runs.
-        The Tsys-curve reconstruction adds it back so plot overlays still
-        match the measured Tsys.
+    spillover_model:
+        When ``True`` (default), model instrumental ground pickup as a
+        ``η(ν)·k2nt(T_surf,ν)·airmass`` term inside the Stage-A Tsys forward
+        model, so ``tau_zenith`` is fit spillover-free and PWV anchors on it
+        directly (``run/spillover_band/findings_roundtrip.md``). ``False``
+        reproduces the pre-spillover fit for parity/repro. This replaces the
+        retired flat post-hoc δτ de-bias; the old ``0.0036`` behaviour is
+        intentionally not preserved.
     n_workers:
         Stage-A fit parallelism. ``None`` runs serially. Higher values
         dispatch via a process pool with single-threaded BLAS per worker.
@@ -224,7 +222,7 @@ def tipopac(
         afgl_climatology=afgl_climatology,
     )
     ta.build_atm_grids()
-    ta.fit(mode=mode, n_workers=n_workers, spillover=spillover)
+    ta.fit(mode=mode, n_workers=n_workers, spillover_model=spillover_model)
 
     if output_dir is not None:
         ta.write_outputs(
@@ -419,7 +417,7 @@ class TippingAnalysis:
         mode: str = "independent_tau_solve",
         *,
         n_workers: int | None = None,
-        spillover: float | None = None,
+        spillover_model: bool = True,
     ) -> None:
         if mode not in _INDEPENDENT_TO_BACKEND:
             raise ValueError(
@@ -452,12 +450,11 @@ class TippingAnalysis:
             mode=_INDEPENDENT_TO_BACKEND[mode],
             t_mean=t_mean,
             n_workers=n_workers,
+            spillover_model=spillover_model,
         )
 
-        # De-bias τ_z before anchoring so PWV is anchored to the atmospheric
-        # opacity; predicted_tsys adds the offset back for the Tsys overlay.
-        apply_spillover(self._ds, spillover)
-
+        # tau_zenith is fit spillover-free (the η·Bg·airmass term lives inside
+        # the Stage-A model), so PWV anchors on it directly — no de-bias step.
         pwv, pwv_err = anchor_pwv(
             self._ds["tau_zenith"].values,
             self._ds["tau_err"].values,

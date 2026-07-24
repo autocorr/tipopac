@@ -26,6 +26,7 @@ import xarray as xr
 from scipy.optimize import least_squares
 
 from tipopac.physics import T_CMB, k2nt, weighted_mean_atm_T
+from tipopac.spillover import ETA_MODEL_NAME, ETA_POLY_COEF, spillover_tsys
 
 __all__ = ["fit_dataset"]
 
@@ -48,6 +49,7 @@ def fit_dataset(
     *,
     t_mean: np.ndarray | None = None,
     n_workers: int | None = None,
+    spillover_model: bool = True,
 ) -> None:
     """Fit tipping curves and write result variables into *ds* in-place.
 
@@ -76,6 +78,12 @@ def fit_dataset(
         ``≤ 1`` runs serially in the calling process. Stage-A
         parallelism unit is ``(scan, ant, spw)`` for opacity mode and
         ``(scan, spw)`` for global/tcal modes.
+    spillover_model:
+        When ``True`` (default), the ground-pickup term
+        :func:`tipopac.spillover.spillover_tsys` is added to the Stage-A
+        model so ``tau_zenith`` is fit spillover-free (no Stage-B
+        subtraction). ``False`` reproduces the pre-spillover fit and clears
+        the ``spillover_model`` dataset attrs.
 
     Raises
     ------
@@ -128,6 +136,7 @@ def fit_dataset(
                 weather_T_vals,
                 freq_vals,
                 t_mean,
+                spillover_model,
             )
         )
         for (i_scan, i_ant, i_spw), result in _dispatch(
@@ -161,6 +170,7 @@ def fit_dataset(
                 weather_T_vals,
                 freq_vals,
                 t_mean,
+                spillover_model,
             )
         )
         for (i_scan, i_spw), packaged in _dispatch(tasks, _global_worker, n_workers):
@@ -215,6 +225,12 @@ def fit_dataset(
     ds["fit_success"] = (("scan", "antenna", "spw"), fit_success)
     ds["fit_reason"] = (("scan", "antenna", "spw"), fit_reason)
     ds.attrs["mode"] = mode
+    if spillover_model:
+        ds.attrs["spillover_model"] = ETA_MODEL_NAME
+        ds.attrs["spillover_eta_coef"] = list(ETA_POLY_COEF)
+    else:
+        ds.attrs.pop("spillover_model", None)
+        ds.attrs.pop("spillover_eta_coef", None)
 
 
 # ---------------------------------------------------------------------------
@@ -309,11 +325,15 @@ def _residuals(
     sigma_L: np.ndarray,
     Twmt: float,
     Tcmb: float = 0.0,
+    spill: np.ndarray | float = 0.0,
 ) -> np.ndarray:
-    """σ-weighted concatenated residuals for tau_per_antenna: [R..., L...]."""
+    """σ-weighted concatenated residuals for tau_per_antenna: [R..., L...].
+
+    ``spill`` is the fixed (τ-independent) spillover term aligned to ``z``.
+    """
     T0_R, T0_L, tau0 = p
     transp = np.exp(-tau0 / np.cos(np.deg2rad(z)))
-    pred = Tcmb * transp + Twmt * (1.0 - transp)
+    pred = Tcmb * transp + Twmt * (1.0 - transp) + spill
     return np.concatenate(
         [(tsys_R - (T0_R + pred)) / sigma_R, (tsys_L - (T0_L + pred)) / sigma_L]
     )
@@ -328,11 +348,14 @@ def _residuals_tcal(
     sigma_L_list: list[np.ndarray],
     Twmt: float,
     Tcmb: float = 0.0,
+    spill_list: list[np.ndarray] | None = None,
 ) -> np.ndarray:
     """σ-weighted tcal_solve residuals.
 
     p = [T0_R_0, c_R_0, T0_L_0, c_L_0, ..., tau0].
-    Model: Tsys_meas = (T0 + Tcmb·e^{−τ/cos z} + Twmt·(1−e^{−τ/cos z})) / c.
+    Model: Tsys_meas = (T0 + Tcmb·e^{−τ/cos z} + Twmt·(1−e^{−τ/cos z}) + spill) / c.
+    ``spill_list[k]`` is the fixed spillover term for antenna ``k`` (inside /c
+    — ground pickup precedes the Tcal gain); ``None`` disables it.
     """
     tau0 = p[-1]
     parts = []
@@ -342,7 +365,8 @@ def _residuals_tcal(
         T0_L = p[4 * k + 2]
         c_L = p[4 * k + 3]
         transp = np.exp(-tau0 / np.cos(np.deg2rad(z_list[k])))
-        pred = Tcmb * transp + Twmt * (1.0 - transp)
+        spill = 0.0 if spill_list is None else spill_list[k]
+        pred = Tcmb * transp + Twmt * (1.0 - transp) + spill
         parts.append((tsys_R_list[k] - (T0_R + pred) / c_R) / sigma_R_list[k])
         parts.append((tsys_L_list[k] - (T0_L + pred) / c_L) / sigma_L_list[k])
     return np.concatenate(parts)
@@ -357,8 +381,13 @@ def _jac_tcal(
     sigma_L_list: list[np.ndarray],
     Twmt: float,
     Tcmb: float = 0.0,
+    spill_list: list[np.ndarray] | None = None,
 ) -> _sp.csr_matrix:
-    """σ-weighted analytical Jacobian for _residuals_tcal."""
+    """σ-weighted analytical Jacobian for _residuals_tcal.
+
+    ``spill`` enters ``pred`` (so the ``c``-derivative columns stay exact) but
+    ``dpred_dtau`` is unchanged — the spillover term is independent of τ.
+    """
     tau0 = p[-1]
     N = len(z_list)
     n_total = sum(2 * len(z) for z in z_list)
@@ -372,7 +401,8 @@ def _jac_tcal(
         c_L = p[4 * k + 3]
         cos_z = np.cos(np.deg2rad(z_list[k]))
         transp = np.exp(-tau0 / cos_z)
-        pred = Tcmb * transp + Twmt * (1.0 - transp)
+        spill = 0.0 if spill_list is None else spill_list[k]
+        pred = Tcmb * transp + Twmt * (1.0 - transp) + spill
         dpred_dtau = (Twmt - Tcmb) * transp / cos_z
         inv_sR = 1.0 / sigma_R_list[k]
         inv_sL = 1.0 / sigma_L_list[k]
@@ -448,6 +478,7 @@ def _screen_antenna(
     freq_Hz: float,
     tau_upper: float,
     Twmt_override: float | None = None,
+    apply_spillover: bool = False,
 ) -> dict:
     """σ-weighted robust per-antenna tipping fit (one scan, one spw).
 
@@ -459,9 +490,9 @@ def _screen_antenna(
     design/model_refactor.md §1.2–1.3.
 
     Returns {"reason": "ok" | "poorly_identified", "z_c", "tsys_R_c",
-             "tsys_L_c", "sigma_R_c", "sigma_L_c", "Twmt", "T0_R", "T0_L",
-             "tau0", "tau_err", "jac", "fun", "reduced_chi2"} on numerical
-    success. Returns {"reason": <code>} on early failure.
+             "tsys_L_c", "sigma_R_c", "sigma_L_c", "spill_c", "Twmt", "T0_R",
+             "T0_L", "tau0", "tau_err", "jac", "fun", "reduced_chi2"} on
+    numerical success. Returns {"reason": <code>} on early failure.
     """
     valid = (
         ~flag_R
@@ -497,18 +528,29 @@ def _screen_antenna(
     # in the model, so it is not absorbed by the free T0.
     Tcmb = float(k2nt(T_CMB, freq_Hz))
 
+    # Fixed (τ-independent) spillover term η(ν)·Bg·airmass, aligned to z_v.
+    # Bg uses the scan's mean surface temperature (Rayleigh-Jeans-insensitive);
+    # a missing weather record → no spillover on that cell rather than a NaN fit.
+    T_surf_spill = float(np.nanmean(weather_T[valid]))
+    if apply_spillover and np.isfinite(T_surf_spill):
+        spill_v = np.asarray(spillover_tsys(freq_Hz, T_surf_spill, z_v))
+    else:
+        spill_v = np.zeros_like(z_v)
+
     # T0 init from Tsys-vs-airmass linear intercept (replaces v2.6 hard-coded
-    # T0=50). Per-mode tau init upgrade lands in Task #4.
+    # T0=50). Per-mode tau init upgrade lands in Task #4. Subtract spill so the
+    # intercept is not spillover-inflated (init only; the residual term carries
+    # the correctness).
     airmass = 1.0 / np.cos(np.deg2rad(z_v))
     if float(np.ptp(airmass)) < 1e-6:
         # No airmass leverage (flat tipping); fall back to sample mean. The
         # identifiability check below will flag this as poorly_identified.
-        T0_R_init = float(np.clip(np.mean(tsys_R_v), 0.0, _TR_UPPER))
-        T0_L_init = float(np.clip(np.mean(tsys_L_v), 0.0, _TR_UPPER))
+        T0_R_init = float(np.clip(np.mean(tsys_R_v - spill_v), 0.0, _TR_UPPER))
+        T0_L_init = float(np.clip(np.mean(tsys_L_v - spill_v), 0.0, _TR_UPPER))
     else:
         try:
-            pR = np.polyfit(airmass, tsys_R_v, 1)
-            pL = np.polyfit(airmass, tsys_L_v, 1)
+            pR = np.polyfit(airmass, tsys_R_v - spill_v, 1)
+            pL = np.polyfit(airmass, tsys_L_v - spill_v, 1)
             T0_R_init = float(np.clip(pR[1], 0.0, _TR_UPPER))
             T0_L_init = float(np.clip(pL[1], 0.0, _TR_UPPER))
         except (np.linalg.LinAlgError, ValueError):
@@ -537,6 +579,7 @@ def _screen_antenna(
                     sigma_L_v[mask],
                     Twmt,
                     Tcmb,
+                    spill_v[mask],
                 ),
                 bounds=bounds,
                 loss="soft_l1",
@@ -571,6 +614,7 @@ def _screen_antenna(
     tsys_L_c = tsys_L_v[mask]
     sigma_R_c = sigma_R_v[mask]
     sigma_L_c = sigma_L_v[mask]
+    spill_c = spill_v[mask]
     n_data = len(res.fun)
     dof = max(1, n_data - 3)
     reduced_chi2 = float(np.sum(res.fun**2)) / dof
@@ -592,6 +636,7 @@ def _screen_antenna(
         "tsys_L_c": tsys_L_c,
         "sigma_R_c": sigma_R_c,
         "sigma_L_c": sigma_L_c,
+        "spill_c": spill_c,
         "Twmt": Twmt,
         "Tcmb": Tcmb,
         "T0_R": T0_R,
@@ -616,6 +661,7 @@ def _fit_tau_per_antenna(
     freq_Hz: float,
     tau_upper: float,
     Twmt_override: float | None = None,
+    apply_spillover: bool = False,
 ) -> dict:
     """Per-(scan, antenna, spw) σ-weighted robust fit. Thin wrapper around
     `_screen_antenna` — the fit and the screen are now the same call.
@@ -635,6 +681,7 @@ def _fit_tau_per_antenna(
         freq_Hz,
         tau_upper,
         Twmt_override=Twmt_override,
+        apply_spillover=apply_spillover,
     )
     if sc["reason"] not in ("ok", "poorly_identified"):
         return sc
@@ -666,6 +713,7 @@ def _fit_global(screens: list[dict]) -> dict:
     tsys_L_list = [s["tsys_L_c"] for s in screens]
     sigma_R_list = [s["sigma_R_c"] for s in screens]
     sigma_L_list = [s["sigma_L_c"] for s in screens]
+    spill_list = [s["spill_c"] for s in screens]
 
     tau_init = float(np.median([s["tau0"] for s in screens]))
     T0_R_init = [float(s["T0_R"]) for s in screens]
@@ -690,6 +738,7 @@ def _fit_global(screens: list[dict]) -> dict:
                 sigma_L_list,
                 Twmt,
                 Tcmb,
+                spill_list,
             ),
             bounds=(lb, ub),
             jac=_jac_tcal,
@@ -736,6 +785,7 @@ def _build_opacity_tasks(
     weather_T_vals: np.ndarray,
     freq_vals: np.ndarray,
     t_mean: np.ndarray | None,
+    apply_spillover: bool,
 ):
     """Yield ``((i_scan, i_ant, i_spw), kwargs)`` for every opacity cell."""
     for i_scan in range(n_scan):
@@ -759,6 +809,7 @@ def _build_opacity_tasks(
                     "freq_Hz": freq_Hz,
                     "tau_upper": _TAU_HI,
                     "Twmt_override": twmt,
+                    "apply_spillover": apply_spillover,
                 }
                 yield ((i_scan, i_ant, i_spw), kw)
 
@@ -774,6 +825,7 @@ def _build_global_tasks(
     weather_T_vals: np.ndarray,
     freq_vals: np.ndarray,
     t_mean: np.ndarray | None,
+    apply_spillover: bool,
 ):
     """Yield ``((i_scan, i_spw), kwargs)`` for every tcal_solve cell.
 
@@ -808,6 +860,7 @@ def _build_global_tasks(
                 "freq_Hz": freq_Hz,
                 "tau_upper": _TAU_HI,
                 "Twmt_override": twmt,
+                "apply_spillover": apply_spillover,
             }
             yield ((i_scan, i_spw), kw)
 
@@ -826,6 +879,7 @@ def _global_worker(args: tuple) -> tuple:
     freq_Hz = kwargs["freq_Hz"]
     tau_upper = kwargs["tau_upper"]
     Twmt_override = kwargs["Twmt_override"]
+    apply_spillover = kwargs["apply_spillover"]
 
     screens: list[dict | None] = []
     screen_reasons: list[str] = []
@@ -836,6 +890,7 @@ def _global_worker(args: tuple) -> tuple:
             freq_Hz=freq_Hz,
             tau_upper=tau_upper,
             Twmt_override=Twmt_override,
+            apply_spillover=apply_spillover,
         )
         screen_reasons.append(sc["reason"])
         screens.append(sc if sc["reason"] in ("ok", "poorly_identified") else None)

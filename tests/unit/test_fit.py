@@ -437,6 +437,31 @@ def test_fit_tcal_solve_forces_global_tau() -> None:
     assert np.all(np.isclose(tau_arr, tau_arr[0]))
 
 
+def test_fit_tcal_solve_spillover_effect_and_attrs() -> None:
+    """Default tcal_solve path: the in-fit spillover term affects the fit and logs attrs.
+
+    Exercises fit_dataset → _build_global_tasks → _global_worker → _screen_antenna
+    at 22 GHz (inside the trusted band). The fixed η·Bg·airmass term perturbs the
+    solution; direction is not asserted because it is partly absorbed by the free
+    per-antenna `c` (the spillover↔c degeneracy — modeling the term is what stops
+    spillover leaking into `c` on real data). Off at 10 GHz (outside the band) is
+    a no-op, covered by the other tcal_solve tests.
+    """
+    from tipopac.spillover import ETA_MODEL_NAME
+
+    ds_on = _make_tcal_ds(tau0=0.10, freq_Hz=22e9, noise_K=0.0)
+    ds_off = _make_tcal_ds(tau0=0.10, freq_Hz=22e9, noise_K=0.0)
+    fit_dataset(ds_on, mode="tcal_solve", spillover_model=True)
+    fit_dataset(ds_off, mode="tcal_solve", spillover_model=False)
+
+    tau_on = float(ds_on["tau_zenith"].values[0, 0, 0])
+    tau_off = float(ds_off["tau_zenith"].values[0, 0, 0])
+    assert abs(tau_on - tau_off) > 1e-3  # the term has a real effect on the fit
+    assert ds_on.attrs["spillover_model"] == ETA_MODEL_NAME
+    assert list(ds_on.attrs["spillover_eta_coef"])  # non-empty
+    assert "spillover_model" not in ds_off.attrs
+
+
 def test_fit_multi_scan_multi_ant() -> None:
     """fit_dataset handles multiple scans and antennas without error."""
     ds = _make_tip_ds(n_scan=2, n_ant=3, n_spw=2)

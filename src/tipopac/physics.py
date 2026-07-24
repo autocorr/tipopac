@@ -41,22 +41,25 @@ def tsys_model(
     tau0: float,
     Twmt: float,
     Tcmb: float = 0.0,
+    spillover: _Numeric = 0.0,
 ) -> _Numeric:
     """Tipping-curve Tsys model: T0 + Tcmb·e^{−τ₀/cos z} + Twmt·(1 − e^{−τ₀/cos z}).
 
     All temperatures in noise K; z_deg in degrees. ``Tcmb`` is the CMB
     radiation temperature ``k2nt(T_CMB, ν)``; ``Tcmb=0`` reproduces the
     pre-2026-07 model, which biased τ low by ~0.8% (run/cmb_term/findings.md).
+    ``spillover`` is a pre-evaluated per-z ground-pickup term (0 disables it);
+    see :func:`tipopac.spillover.spillover_tsys`.
     """
     transp = np.exp(-tau0 / np.cos(np.deg2rad(z_deg)))
-    return T0 + Tcmb * transp + Twmt * (1.0 - transp)
+    return T0 + Tcmb * transp + Twmt * (1.0 - transp) + spillover
 
 
 def predicted_tsys(
     ds: xr.Dataset,
     z_deg: xr.DataArray | None = None,
 ) -> xr.DataArray:
-    """xarray-aware Tsys reconstruction: ``(T0 + Tcmb·e^−τa + Twmt·(1−e^−τa)) / c``.
+    """xarray-aware Tsys reconstruction: ``(T0 + Tcmb·e^−τa + Twmt·(1−e^−τa) + spill) / c``.
 
     Uses fitted ``T0``, ``tau_zenith``, ``Twmt``, ``tcal_fit``, and ``tcal_ref``
     persisted on the dataset, with ``c = tcal_fit / tcal_ref`` (≡ 1 in
@@ -65,11 +68,13 @@ def predicted_tsys(
     result has shape ``(scan, antenna, spw, polarization, time)``; pass a
     1-D DataArray (e.g. ``dims=("z",)``) for a dense-grid overlay.
 
-    ``tau_zenith`` is de-biased by the Stage-B spillover offset, but the
-    *measured* Tsys still contains it, so the offset is added back here
-    (``ds.attrs["spillover_tau"]``, 0.0 when disabled) to keep the
-    reconstruction matched to the data. This is the exact inverse of the
-    de-bias — the curve round-trips to the raw fit.
+    When the fit ran with the spillover forward model
+    (``ds.attrs["spillover_model"]`` set), ``tau_zenith`` is already
+    spillover-free, so the same ``η(ν)·Bg·airmass`` term is *added* to the
+    model here (inside ``/c`` — ground pickup precedes the Tcal gain) to match
+    the measured Tsys. ``Bg`` uses the per-scan mean surface temperature,
+    ``ds["weather_T"].mean("time")``, which broadcasts cleanly over both the
+    per-sample and dense-grid ``z_deg`` shapes.
 
     ``Tcmb`` is derived from the ``frequency`` coord rather than persisted:
     it is a pure function of ν, so storing it would be redundant state.
@@ -78,10 +83,14 @@ def predicted_tsys(
         z_deg = ds["zenith_angle"]
     c = ds["tcal_fit"] / ds["tcal_ref"]
     c = c.where(np.isfinite(c) & (c > 0), 1.0)
-    tau = ds["tau_zenith"] + ds.attrs.get("spillover_tau", 0.0)
-    transp = np.exp(-tau / np.cos(np.deg2rad(z_deg)))
+    transp = np.exp(-ds["tau_zenith"] / np.cos(np.deg2rad(z_deg)))
     tcmb = k2nt(T_CMB, ds["frequency"])
     pred = ds["T0"] + tcmb * transp + ds["Twmt"] * (1.0 - transp)
+    if ds.attrs.get("spillover_model"):
+        from tipopac.spillover import spillover_tsys
+
+        T_surf = ds["weather_T"].mean(dim="time")
+        pred = pred + spillover_tsys(ds["frequency"], T_surf, z_deg)
     return pred / c
 
 

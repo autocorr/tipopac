@@ -1,4 +1,4 @@
-"""Unit tests for tipopac.spillover — Stage-B spillover de-bias (DESIGN.md §6)."""
+"""Unit tests for tipopac.spillover — Tsys forward-model η(ν) term (DESIGN.md §5, §6)."""
 
 from __future__ import annotations
 
@@ -7,65 +7,72 @@ import inspect
 import numpy as np
 import xarray as xr
 
-from tipopac.anchor import anchor_pwv
-from tipopac.atmgrid import PwvGrid
-from tipopac.physics import predicted_tsys
-from tipopac.spillover import SPILLOVER_TAU_DEFAULT, apply_spillover
+from tipopac.physics import k2nt, predicted_tsys
+from tipopac.spillover import (
+    ETA_MODEL_NAME,
+    ETA_POLY_COEF,
+    ETA_VALID_GHZ,
+    eta_of_nu,
+    spillover_tsys,
+)
 
 
-def _tau_ds() -> xr.Dataset:
-    """Dataset with a `tau_zenith(scan, antenna, spw)` holding a NaN pad cell."""
-    tau = np.array([[[0.05, 0.02], [0.04, np.nan]]], dtype=np.float32)  # (1, 2, 2)
-    return xr.Dataset({"tau_zenith": (("scan", "antenna", "spw"), tau)})
+def test_eta_of_nu_matches_quadratic_in_range() -> None:
+    """η(ν) equals the stored quadratic inside the trusted band."""
+    c2, c1, c0 = ETA_POLY_COEF
+    for nu_GHz in (12.0, 22.0, 33.0, 45.0):
+        expected = c2 * nu_GHz**2 + c1 * nu_GHz + c0
+        got = float(eta_of_nu(nu_GHz * 1e9))
+        assert got == expected
 
 
-def test_subtracts_constant_and_records_attr() -> None:
-    ds = _tau_ds()
-    apply_spillover(ds, SPILLOVER_TAU_DEFAULT)
-    assert ds.attrs["spillover_tau"] == SPILLOVER_TAU_DEFAULT
-    finite = np.array([[[0.05, 0.02], [0.04, np.nan]]]) - SPILLOVER_TAU_DEFAULT
-    np.testing.assert_allclose(ds["tau_zenith"].values[0, 0], finite[0, 0], rtol=1e-6)
+def test_eta_of_nu_zero_outside_range() -> None:
+    """η→0 below 12 GHz and above 45 GHz (both edges untrusted)."""
+    lo, hi = ETA_VALID_GHZ
+    for nu_GHz in (4.0, lo - 0.01, hi + 0.01, 50.0):
+        assert float(eta_of_nu(nu_GHz * 1e9)) == 0.0
 
 
-def test_nan_cells_stay_nan() -> None:
-    ds = _tau_ds()
-    apply_spillover(ds, SPILLOVER_TAU_DEFAULT)
-    assert np.isnan(ds["tau_zenith"].values[0, 1, 1])
+def test_eta_of_nu_vectorized() -> None:
+    """Array input evaluates element-wise with the same clamp."""
+    freqs = np.array([5e9, 12e9, 33e9, 45e9, 48e9])
+    eta = eta_of_nu(freqs)
+    assert eta[0] == 0.0 and eta[4] == 0.0
+    assert np.all(eta[1:4] > 0.0)
 
 
-def test_allows_negative_no_clamp() -> None:
-    ds = xr.Dataset(
-        {"tau_zenith": (("scan", "antenna", "spw"), np.array([[[0.001]]], np.float32))}
+def test_spillover_tsys_formula() -> None:
+    """spillover_tsys == η(ν)·k2nt(Tsurf,ν)·(1/cos z) at known inputs."""
+    nu, T_surf, z = 33e9, 282.0, 40.0
+    expected = eta_of_nu(nu) * float(k2nt(T_surf, nu)) / np.cos(np.deg2rad(z))
+    got = float(spillover_tsys(nu, T_surf, z))
+    np.testing.assert_allclose(got, expected, rtol=1e-12)
+
+
+def test_spillover_tsys_scales_with_airmass() -> None:
+    """The term is ∝ airmass = 1/cos z (grows toward the horizon)."""
+    nu, T_surf = 22e9, 280.0
+    s30 = float(spillover_tsys(nu, T_surf, 30.0))
+    s60 = float(spillover_tsys(nu, T_surf, 60.0))
+    np.testing.assert_allclose(
+        s60 / s30, np.cos(np.deg2rad(30.0)) / np.cos(np.deg2rad(60.0)), rtol=1e-12
     )
-    apply_spillover(ds, SPILLOVER_TAU_DEFAULT)
-    assert ds["tau_zenith"].values[0, 0, 0] < 0.0
 
 
-def test_none_and_zero_are_noops() -> None:
-    for disabled in (None, 0, 0.0):
-        ds = _tau_ds()
-        before = ds["tau_zenith"].values.copy()
-        apply_spillover(ds, disabled)
-        assert ds.attrs["spillover_tau"] == 0.0
-        np.testing.assert_array_equal(
-            ds["tau_zenith"].values, before, "disabled must not touch tau_zenith"
-        )
-
-
-def test_default_is_disabled() -> None:
-    """Both entry points default to no de-bias — δτ is stale (design.md §6)."""
+def test_default_toggle_is_on() -> None:
+    """Both entry points default ``spillover_model=True`` (the correct model)."""
     from tipopac.api import TippingAnalysis, tipopac
 
     for fn in (tipopac, TippingAnalysis.fit):
-        assert inspect.signature(fn).parameters["spillover"].default is None
+        assert inspect.signature(fn).parameters["spillover_model"].default is True
 
 
-def test_predicted_tsys_round_trips_to_raw_fit() -> None:
-    """De-bias + add-back reproduces the raw-fit Tsys; attr survives `.isel`."""
+def _recon_ds() -> xr.Dataset:
+    """Minimal dataset for a predicted_tsys reconstruction with weather_T."""
     rng = np.random.default_rng(0)
     dims = ("scan", "antenna", "spw", "polarization")
     shape = (1, 2, 2, 1)
-    ds = xr.Dataset(
+    return xr.Dataset(
         {
             "tau_zenith": (
                 ("scan", "antenna", "spw"),
@@ -76,10 +83,7 @@ def test_predicted_tsys_round_trips_to_raw_fit() -> None:
                 ("scan", "spw"),
                 rng.uniform(260.0, 280.0, (1, 2)).astype(np.float32),
             ),
-            "tcal_fit": (
-                ("scan", "antenna", "spw", "polarization"),
-                np.ones(shape, np.float32),
-            ),
+            "tcal_fit": (dims, np.ones(shape, np.float32)),
             "tcal_ref": (
                 ("antenna", "spw", "polarization"),
                 np.ones((2, 2, 1), np.float32),
@@ -88,44 +92,30 @@ def test_predicted_tsys_round_trips_to_raw_fit() -> None:
                 ("scan", "antenna", "time"),
                 np.full((1, 2, 3), 45.0, np.float32),
             ),
+            "weather_T": (("scan", "time"), np.full((1, 3), 282.0, np.float32)),
         },
         coords={"frequency": ("spw", np.array([22e9, 33e9]))},
     )
-    raw = predicted_tsys(ds)  # spillover_tau absent → treated as 0.0
-
-    de_biased = ds.copy()
-    apply_spillover(de_biased, SPILLOVER_TAU_DEFAULT)
-    reconstructed = predicted_tsys(de_biased)
-
-    xr.testing.assert_allclose(raw, reconstructed)
-    # attr must survive subsetting so per-cell overlays add the offset back
-    assert de_biased.isel(scan=0).attrs["spillover_tau"] == SPILLOVER_TAU_DEFAULT
 
 
-def _toy_grid() -> PwvGrid:
-    pwv = np.linspace(1.0, 10.0, 19)
-    freq = np.linspace(10e9, 30e9, 41)
-    tau = pwv[:, None] * (1.0 + 0.01 * freq[None, :] / 1e9) * 0.01
-    tb = 270.0 * (1.0 - np.exp(-tau))
-    return PwvGrid(pwv_mm=pwv, freq_Hz=freq, tau_z=tau, tb_z=tb, pwv_unscaled_mm=5.0)
+def test_predicted_tsys_adds_term_when_enabled() -> None:
+    """With ``spillover_model`` set, predicted_tsys adds η·Bg·airmass inside /c."""
+    ds = _recon_ds()
+    baseline = predicted_tsys(ds)  # attr absent → no spillover
+
+    enabled = ds.copy()
+    enabled.attrs["spillover_model"] = ETA_MODEL_NAME
+    reconstructed = predicted_tsys(enabled)
+
+    T_surf = ds["weather_T"].mean(dim="time")
+    spill = spillover_tsys(ds["frequency"], T_surf, ds["zenith_angle"])  # c == 1
+    xr.testing.assert_allclose(reconstructed - baseline, spill.broadcast_like(baseline))
 
 
-def test_debias_lowers_anchored_pwv() -> None:
-    """spillover=None ≡ baseline PWV; the opt-in de-bias lowers PWV."""
-    grid = _toy_grid()
-    freqs = np.linspace(12e9, 28e9, 16)
-    tau_true, _ = grid.lookup(4.3, freqs)
-    tau_z = np.tile(tau_true, (1, 2, 1)).astype(np.float32)
-    tau_err = np.full_like(tau_z, 1e-3)
-    grids = {0: grid}
-
-    ds_base = xr.Dataset({"tau_zenith": (("scan", "antenna", "spw"), tau_z.copy())})
-    apply_spillover(ds_base, None)
-    np.testing.assert_array_equal(ds_base["tau_zenith"].values, tau_z)
-    pwv_base, _ = anchor_pwv(ds_base["tau_zenith"].values, tau_err, grids, freqs)
-
-    ds_deb = xr.Dataset({"tau_zenith": (("scan", "antenna", "spw"), tau_z.copy())})
-    apply_spillover(ds_deb, SPILLOVER_TAU_DEFAULT)
-    pwv_deb, _ = anchor_pwv(ds_deb["tau_zenith"].values, tau_err, grids, freqs)
-
-    assert np.all(pwv_deb < pwv_base)
+def test_predicted_tsys_no_term_when_disabled() -> None:
+    """No ``spillover_model`` attr → reconstruction carries no spillover term."""
+    ds = _recon_ds()
+    # 22 GHz is inside the trusted band, so a term *would* be non-zero if applied.
+    pred = predicted_tsys(ds)
+    manual = predicted_tsys(ds.assign_attrs(spillover_model=ETA_MODEL_NAME))
+    assert not np.allclose(pred.values, manual.values)
