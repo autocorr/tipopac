@@ -50,12 +50,12 @@ ETA_POLY_COEF: tuple[float, float, float] = (
 )
 ETA_MODEL_NAME: str = "eta_poly_v1"
 
-# Trusted frequency range, GHz. The JSON fit spans 4–50 GHz, but both edges
-# are untrusted: C/X (<12 GHz) is diagnostic-only extrapolation (not in the
-# default high-band set), and above ~45 GHz the binned δτ scatters to ~zero
-# while the quadratic still gives η ≈ 0.14 %, over-correcting the Q-band top
-# (findings_roundtrip.md). η is set to 0 outside this range.
-ETA_VALID_GHZ: tuple[float, float] = (12.0, 45.0)
+# Frequency range over which η is applied, GHz — the full JSON validity range
+# (eta_forward_model.json "valid_freq_GHz"); η is set to 0 outside it. The edges
+# are less constrained: C/X (<~12 GHz) is diagnostic-only extrapolation, and
+# above ~45 GHz the binned δτ scatters to ~zero while the quadratic still gives
+# η ≈ 0.14 %, so the Q-band top is mildly over-corrected (findings_roundtrip.md).
+ETA_VALID_GHZ: tuple[float, float] = (4.0, 50.0)
 
 
 def eta_of_nu(freq_Hz: _Numeric) -> _Numeric:

@@ -20,22 +20,22 @@ from tipopac.spillover import (
 def test_eta_of_nu_matches_quadratic_in_range() -> None:
     """η(ν) equals the stored quadratic inside the trusted band."""
     c2, c1, c0 = ETA_POLY_COEF
-    for nu_GHz in (12.0, 22.0, 33.0, 45.0):
+    for nu_GHz in (4.0, 12.0, 22.0, 33.0, 45.0, 50.0):
         expected = c2 * nu_GHz**2 + c1 * nu_GHz + c0
         got = float(eta_of_nu(nu_GHz * 1e9))
         assert got == expected
 
 
 def test_eta_of_nu_zero_outside_range() -> None:
-    """η→0 below 12 GHz and above 45 GHz (both edges untrusted)."""
+    """η→0 below 4 GHz and above 50 GHz (edges of the JSON validity range)."""
     lo, hi = ETA_VALID_GHZ
-    for nu_GHz in (4.0, lo - 0.01, hi + 0.01, 50.0):
+    for nu_GHz in (3.5, lo - 0.01, hi + 0.01, 60.0):
         assert float(eta_of_nu(nu_GHz * 1e9)) == 0.0
 
 
 def test_eta_of_nu_vectorized() -> None:
     """Array input evaluates element-wise with the same clamp."""
-    freqs = np.array([5e9, 12e9, 33e9, 45e9, 48e9])
+    freqs = np.array([3e9, 12e9, 33e9, 45e9, 55e9])
     eta = eta_of_nu(freqs)
     assert eta[0] == 0.0 and eta[4] == 0.0
     assert np.all(eta[1:4] > 0.0)

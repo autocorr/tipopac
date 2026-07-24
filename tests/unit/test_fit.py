@@ -176,7 +176,8 @@ def test_fit_tau_per_antenna_recovers_params() -> None:
     T0_R_true, T0_L_true = 50.0, 48.0
     ds = _make_tip_ds(T0_R=T0_R_true, T0_L=T0_L_true, tau0=tau_true, noise_K=0.3)
 
-    fit_dataset(ds, mode="tau_per_antenna")
+    # Synthetic data has no spillover; fit without the term to test core recovery.
+    fit_dataset(ds, mode="tau_per_antenna", spillover_model=False)
 
     assert bool(ds["fit_success"].values[0, 0, 0]), ds["fit_reason"].values[0, 0, 0]
     assert ds["fit_reason"].values[0, 0, 0] == "ok"
@@ -396,7 +397,8 @@ def test_fit_tcal_solve_recovers_params() -> None:
     c_L_true = [1.0, 0.98, 1.03]
 
     ds = _make_tcal_ds(tau0=tau_true, c_R=c_R_true, c_L=c_L_true, noise_K=0.002)
-    fit_dataset(ds, mode="tcal_solve")
+    # Synthetic data has no spillover; fit without the term to test core recovery.
+    fit_dataset(ds, mode="tcal_solve", spillover_model=False)
 
     assert ds["fit_success"].values.all(), ds["fit_reason"].values
 

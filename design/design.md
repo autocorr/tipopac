@@ -464,8 +464,8 @@ antenna sidelobes unattenuated by the sky, adding a Tsys term
 `η(ν)·k2nt(T_surf,ν)·airmass` that a naive fit absorbs into `tau_zenith`.
 Rather than de-bias post-hoc, Stage A carries this term *inside* the model
 (§5.1, §5.3): `η(ν)` is the stored, sampling-independent spillover efficiency
-(`spillover.ETA_POLY_COEF`, a quadratic in ν over the trusted 12–45 GHz band,
-0 outside — both edges are untrusted), and the fit supplies each scan's airmass
+(`spillover.ETA_POLY_COEF`, a quadratic in ν over the full 4–50 GHz JSON
+validity range, 0 outside — edges less constrained), and the fit supplies each scan's airmass
 integral, so the emergent δτ is sampling-independent by construction
 (`run/spillover_band/findings_roundtrip.md`). `tau_zenith` is therefore
 spillover-free at the Stage-A output and Stage B anchors PWV on it directly —
