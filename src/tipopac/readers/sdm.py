@@ -16,7 +16,8 @@ Unit notes (verified against tip_test.sdm):
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +26,29 @@ import xarray as xr
 
 from tipopac import schema
 from tipopac.bands import attach_selection_attrs, band_for_spw_name
+from tipopac.readers import _fastbin
 from tipopac.readers.base import (
     SkydipScanInfo,
     _apply_selection,
     _nearest_idx,
     build_canonical_dataset,
 )
+
+_log = logging.getLogger(__name__)
+
+
+def _fast_or_sdmpy(table: Any, fast: Callable[[Any], np.ndarray]) -> np.ndarray:
+    """Return ``fast(table)``, falling back to sdmpy ``table.data`` on drift.
+
+    The fast binary readers assume the VLA column layout; if a future sdmpy
+    changes it, degrade to the (slow but correct) sdmpy unpack rather than
+    returning wrong bytes.
+    """
+    try:
+        return fast(table)
+    except _fastbin.FastBinLayoutError as exc:
+        _log.warning("fast binary reader disabled for %s: %s", table.name, exc)
+        return table.data
 
 
 class SDMReader:
@@ -78,8 +96,9 @@ class SDMReader:
         import sdmpy
 
         sdm = sdmpy.SDM(str(Path(path)), use_xsd=False)
+        sp_data = _fast_or_sdmpy(sdm["SysPower"], _fastbin.unpack_syspower)
         _, _, spw_bands, _ = _read_spectral_window(sdm)
-        scan_ids, scan_spws, scan_t_start, _ = _read_scan_meta(sdm)
+        scan_ids, scan_spws, scan_t_start, _ = _read_scan_meta(sdm, sp_data)
 
         out: list[SkydipScanInfo] = []
         for sc in scan_ids:
@@ -100,9 +119,13 @@ class SDMReader:
 
         sdm = sdmpy.SDM(str(self._path), use_xsd=False)
 
+        # SysPower is the largest binary table; parse it once (fast reader,
+        # sdmpy fallback on layout drift) and thread it to both consumers.
+        sp_data = _fast_or_sdmpy(sdm["SysPower"], _fastbin.unpack_syspower)
+
         ant_names, ant_positions, ant_id_to_idx = _read_antenna(sdm)
         spw_freq, spw_bw, spw_bands, spw_id_to_idx = _read_spectral_window(sdm)
-        scan_ids, scan_spws, scan_t_start, scan_t_end = _read_scan_meta(sdm)
+        scan_ids, scan_spws, scan_t_start, scan_t_end = _read_scan_meta(sdm, sp_data)
 
         scan_ids, scan_spws, scan_t_start, scan_t_end, tip_spws = _apply_selection(
             scan_ids,
@@ -120,8 +143,6 @@ class SDMReader:
         )
         point_t, point_za = _read_pointing(sdm, len(ant_names), ant_id_to_idx)
         wx_t, wx_T, wx_P, wx_RH = _read_weather(sdm)
-
-        sp_data = sdm["SysPower"].data
 
         ds = _build_dataset(
             path=self._path,
@@ -205,13 +226,13 @@ def _read_spectral_window(
 
 def _read_scan_meta(
     sdm: Any,
+    sp_data: np.ndarray,
 ) -> tuple[list[int], dict[int, list[int]], dict[int, float], dict[int, float]]:
     """Return (scan_ids, scan_spws, scan_t_start, scan_t_end) for DO_SKYDIP scans.
 
     Times are MJD-seconds.  Per-scan SPW lists are integer indices derived
     from the SysPower binary table contents for that scan's time window.
     """
-    sp_data = sdm["SysPower"].data  # type: ignore[index]
     scan_rows = list(sdm["Scan"])  # type: ignore[index]
 
     skydip_rows = [r for r in scan_rows if "DO_SKYDIP" in str(r.scanIntent)]
@@ -295,7 +316,7 @@ def _read_pointing(
     Each list entry is a 1-D float64 array sorted by time.
     encoder[row, 0, 1] is the AZELGEO elevation in radians.
     """
-    pt_data = sdm["Pointing"].data  # type: ignore[index]
+    pt_data = _fast_or_sdmpy(sdm["Pointing"], _fastbin.unpack_pointing)
 
     times_ns = pt_data["timeMid"]
     encoders = pt_data["encoder"]  # (n_rows, 1, 2)
