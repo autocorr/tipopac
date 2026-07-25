@@ -33,6 +33,7 @@ dev = [
     "fastparquet>=2026.5.0",
     "ipdb>=0.13.13",
     "ipython>=9.13.0",
+    "line-profiler>=5.0.2",
     "mkdocstrings[python]>=0.27",
     "pytest>=9.0.3",
     "ruff>=0.15.12",
