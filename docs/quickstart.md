@@ -108,7 +108,8 @@ When `output_dir` is set, every run writes into that directory:
 | File | Contents |
 | --- | --- |
 | `tipopac.nc` | The full canonical `xarray.Dataset` as NetCDF. |
-| `model_opacity.tsv` | Stage-B model opacity $\tau(\nu)$ — `frequency_Hz`, `tau_nepers`. |
+| `model_opacity.tsv` | Stage-B model opacity $\tau(\nu)$ on the uniform 1–51 GHz am grid — `frequency_Hz`, `tau_model`. |
+| `measured_opacity.tsv` | Fitted and model $\tau$ at the SPW centre frequencies, one row per `(scan, spw)`. |
 | `*.html` plots | Interactive Vega-Altair charts (opacity vs frequency, Tcal, fit-quality and residual heatmaps, atmospheric profile, …). |
 | `index.html` | The **weblog** — a self-contained browser for all the plots. |
 | `tipopac.opacity` / `tipopac.tcal` | Opt-in CASA caltables (`caltable_opacity` / `caltable_tcal`). |
