@@ -42,7 +42,7 @@ dev = [
 ]
 
 [tool.ruff]
-extend-exclude = ["tipopac_v2.6", "amwrap", "data", ".venv"]
+extend-exclude = ["vendor", "tipopac_v2.6", "amwrap", "data", ".venv"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
