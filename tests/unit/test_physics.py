@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tipopac.physics import T_CMB, k2nt, tsys_model, weighted_mean_atm_T
+from tipopac.physics import T_CMB, k2nt, mean_radiating_T, tsys_model
 
 _H = 6.6261e-34
 _K = 1.3806e-23
@@ -75,22 +75,25 @@ def test_tsys_model_increases_with_airmass() -> None:
     assert np.all(np.diff(Tsys) > 0), "Tsys should increase with ZA for tau0 > 0"
 
 
-def test_weighted_mean_atm_T_value() -> None:
-    """Bevis 1992: weighted_mean_atm_T(280) == 70.2 + 0.72*280 = 271.8 K."""
-    result = weighted_mean_atm_T(280.0)
-    assert result == pytest.approx(271.8, rel=1e-6)
+def test_mean_radiating_T_value() -> None:
+    """Ulvestad 1987: mean_radiating_T(280) == 256.9 + 0.445*6.85 = 259.948 K."""
+    result = mean_radiating_T(280.0)
+    assert result == pytest.approx(259.948, rel=1e-6)
 
 
-def test_weighted_mean_atm_T_zero() -> None:
-    """weighted_mean_atm_T(0) == 70.2 K (y-intercept of Bevis)."""
-    assert weighted_mean_atm_T(0.0) == pytest.approx(70.2, rel=1e-6)
+def test_mean_radiating_T_celsius_conversion() -> None:
+    """Ulvestad takes °C: at 273.15 K (0 °C) the relation returns its intercept.
+
+    Guards the unit trap — dropping the −273.15 gives 378.4 K here.
+    """
+    assert mean_radiating_T(273.15) == pytest.approx(256.9, rel=1e-9)
 
 
-def test_weighted_mean_atm_T_vectorised() -> None:
-    """weighted_mean_atm_T accepts an array."""
+def test_mean_radiating_T_vectorised() -> None:
+    """mean_radiating_T accepts an array."""
     T = np.array([250.0, 280.0, 300.0])
-    result = weighted_mean_atm_T(T)
-    expected = 70.2 + 0.72 * T
+    result = mean_radiating_T(T)
+    expected = 256.9 + 0.445 * (T - 273.15)
     np.testing.assert_allclose(result, expected)
 
 

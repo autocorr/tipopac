@@ -15,9 +15,9 @@ _Numeric = float | np.ndarray | xr.DataArray
 __all__ = [
     "T_CMB",
     "k2nt",
+    "mean_radiating_T",
     "predicted_tsys",
     "tsys_model",
-    "weighted_mean_atm_T",
 ]
 
 _H: float = 6.6261e-34  # J·s
@@ -94,6 +94,9 @@ def predicted_tsys(
     return pred / c
 
 
-def weighted_mean_atm_T(T_surf_K: _Numeric) -> _Numeric:
-    """Bevis (1992) empirical relation: T_atm = 70.2 + 0.72·T_surf (K)."""
-    return 70.2 + 0.72 * T_surf_K
+def mean_radiating_T(T_surf_K: _Numeric) -> _Numeric:
+    """Ulvestad (1987) eq. (A-1): T_atm = 256.9 + 0.445·T_surf, T_surf in °C.
+
+    Takes and returns K; the °C conversion is internal.
+    """
+    return 256.9 + 0.445 * (T_surf_K - 273.15)

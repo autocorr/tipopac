@@ -39,7 +39,7 @@ def _make_synth_ds(
     """
     rng = np.random.default_rng(rng_seed)
     T_surf = 280.0
-    Twmt = float(physics.k2nt(physics.weighted_mean_atm_T(T_surf), freq_Hz))
+    Twmt = float(physics.k2nt(physics.mean_radiating_T(T_surf), freq_Hz))
     z = np.linspace(*za_range, n_time)
 
     tsys_R_clean = physics.tsys_model(z, T0_R, tau0, Twmt)

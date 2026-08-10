@@ -70,7 +70,7 @@ Available fit modes:
   per-antenna PWV anchor against the precomputed `am` grid.
 - `independent_tau` — per-(scan, antenna, spw) opacity fit + PWV anchor.
 - `tau_per_antenna`, `global_tau`, `tcal_solve` — legacy single-stage v2.6
-  modes (use the Bevis `T_mean` heuristic; skip the PWV anchor).
+  modes (use the Ulvestad `T_mean` heuristic; skip the PWV anchor).
 
 ## Development
 

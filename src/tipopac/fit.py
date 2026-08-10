@@ -25,7 +25,7 @@ import scipy.sparse as _sp
 import xarray as xr
 from scipy.optimize import least_squares
 
-from tipopac.physics import T_CMB, k2nt, weighted_mean_atm_T
+from tipopac.physics import T_CMB, k2nt, mean_radiating_T
 from tipopac.spillover import ETA_MODEL_NAME, ETA_POLY_COEF, spillover_tsys
 
 __all__ = ["fit_dataset"]
@@ -66,8 +66,8 @@ def fit_dataset(
         Optional ``(n_scan, n_spw)`` array of effective radiating
         temperatures (noise K, already Rayleigh-Jeans-corrected via
         :func:`tipopac.physics.k2nt`). When provided, the per-cell value
-        replaces the v2.6 ``k2nt(0.95·T_surface)`` Bevis heuristic for
-        Stage A. ``NaN`` entries fall back to the Bevis form on that
+        replaces the v2.6 ``k2nt(0.95·T_surface)`` heuristic for
+        Stage A. ``NaN`` entries fall back to the Ulvestad form on that
         cell — see ``design/independent_tau_fit.md`` §1. ``T_mean`` from
         :func:`tipopac.anchor.compute_t_mean_grid` is the recommended
         feed.
@@ -302,17 +302,17 @@ def _compute_twmt_grid(
     """Per-(scan, spw) Twmt actually used by the fit.
 
     Mirrors `_screen_antenna`'s resolution rule: take `t_mean[scan, spw]`
-    when finite, else fall back to `k2nt(70.2 + 0.72·<T_surf>, ν)`.
+    when finite, else fall back to `k2nt(256.9 + 0.445·<T_surf>°C, ν)`.
     """
     surf_mean = np.nanmean(weather_T_vals, axis=1)  # (scan,) — weather, no flags
-    # Bevis fallback per (scan, spw); NaN surf_mean propagates to NaN.
-    surf_T = np.asarray(weighted_mean_atm_T(surf_mean))[:, None]  # (scan, 1)
+    # Ulvestad fallback per (scan, spw); NaN surf_mean propagates to NaN.
+    surf_T = np.asarray(mean_radiating_T(surf_mean))[:, None]  # (scan, 1)
     with np.errstate(divide="ignore", invalid="ignore"):
-        bevis = np.asarray(k2nt(surf_T, freq_vals[None, :]))  # (scan, spw)
+        ulvestad = np.asarray(k2nt(surf_T, freq_vals[None, :]))  # (scan, spw)
     if t_mean is None:
-        out = bevis
+        out = ulvestad
     else:
-        out = np.where(np.isfinite(t_mean), t_mean, bevis)
+        out = np.where(np.isfinite(t_mean), t_mean, ulvestad)
     return out.astype(np.float32)
 
 
@@ -520,10 +520,10 @@ def _screen_antenna(
     if Twmt_override is not None and np.isfinite(Twmt_override):
         Twmt = float(Twmt_override)
     else:
-        # Bevis fallback: surface-T proxy when no grid T_mean is available
+        # Ulvestad fallback: surface-T proxy when no grid T_mean is available
         # (e.g. legacy modes, or independent_tau with grid build failure).
         T_surf_mean = float(np.mean(weather_T[valid]))
-        Twmt = float(k2nt(weighted_mean_atm_T(T_surf_mean), freq_Hz))
+        Twmt = float(k2nt(mean_radiating_T(T_surf_mean), freq_Hz))
     # CMB radiation temperature at this spw; attenuated by the atmosphere
     # in the model, so it is not absorbed by the free T0.
     Tcmb = float(k2nt(T_CMB, freq_Hz))

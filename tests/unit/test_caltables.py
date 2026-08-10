@@ -39,7 +39,7 @@ def _make_tip_ds(
         rng = np.random.default_rng(0)
 
     T_surf = 280.0
-    Twmt = float(physics.k2nt(physics.weighted_mean_atm_T(T_surf), freq_Hz))
+    Twmt = float(physics.k2nt(physics.mean_radiating_T(T_surf), freq_Hz))
     z = np.linspace(35.0, 65.0, n_time)
     tcal = 5.0
     T0 = 50.0

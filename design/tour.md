@@ -213,7 +213,7 @@ The opacity-fitting kernel. Single public entry `fit_dataset`; everything else i
 
 1. Compute Tsys = (ssum/2)/diff · tcal_ref per `(scan, ant, spw, pol, time)` via `_compute_tsys`. The denominator is the switched-power difference; NaN-mask cells where `diff` is non-finite or non-positive.
 2. Compute σ_Tsys per sample via `_compute_sigma_tsys`, propagating noise from switched power through the radiometer equation. σ_Tsys is the fit weighting; this is one of the rewrite's deliberate departures from v2.6's unit-weight L2.
-3. Resolve the per-`(scan, spw)` Twmt grid via `_compute_twmt_grid`. If the externally-supplied `t_mean=` (from `anchor.compute_t_mean_grid`) has a finite value at this cell, use it; otherwise fall back to the Bevis (1992) form `70.2 + 0.72·T_surf` on weather_T. The same fallback rule appears in `anchor.compute_t_mean_grid` at the other end of the Stage A↔B loop.
+3. Resolve the per-`(scan, spw)` Twmt grid via `_compute_twmt_grid`. If the externally-supplied `t_mean=` (from `anchor.compute_t_mean_grid`) has a finite value at this cell, use it; otherwise fall back to the Ulvestad (1987) form `256.9 + 0.445·T_surf°C` on weather_T. The same fallback rule appears in `anchor.compute_t_mean_grid` at the other end of the Stage A↔B loop.
 4. Build per-cell fit tasks and dispatch through `_opacity_worker` (per-`(scan, ant, spw)` 3-param LM: `T0_R`, `T0_L`, `τ`) or `_global_worker` (per-`(scan, spw)` joint LM: shared `τ`, per-antenna `(T0, c)` for `tcal_solve`).
 5. Inside each worker, `_screen_antenna` runs the robust soft_l1 fit with iterative 4σ rejection on the σ-weighted residuals. The kept-sample arrays are reused — they feed `_fit_global` directly in `tcal_solve` mode, so the screening cost isn't paid twice.
 6. The fit reports a categorical `fit_reason` (one of `ok`, `poorly_identified`, `too_few_samples`, `solver_failed`) which is what `plot.FitQualityHeatmap` colour-codes by.
@@ -223,7 +223,7 @@ The "identifiability ratio" called out in `CLAUDE.md` is checked inside `_screen
 - `fit_dataset` — `src/tipopac/fit.py:45` — public Stage-A driver; writes Tsys, sigma_Tsys, tau_zenith, T0, tcal_fit, fit_success / fit_reason into `ds` in place.
 - `_compute_tsys` — `src/tipopac/fit.py:230` — Tsys = `(ssum/2)/diff · tcal_ref` with NaN-masking on bad denominators.
 - `_compute_sigma_tsys` — `src/tipopac/fit.py:247` — per-sample σ_Tsys from error propagation on switched power; the fit weighting and the σ used in `_tau_err_from_jac`.
-- `_compute_twmt_grid` — `src/tipopac/fit.py:294` — resolve per-`(scan, spw)` Twmt: grid value when finite, else Bevis on weather_T.
+- `_compute_twmt_grid` — `src/tipopac/fit.py:294` — resolve per-`(scan, spw)` Twmt: grid value when finite, else Ulvestad on weather_T.
 - `_residuals` — `src/tipopac/fit.py:321` — σ-weighted residuals for the 3-param per-antenna model (T0_R, T0_L, τ).
 - `_residuals_tcal` — `src/tipopac/fit.py:338` — σ-weighted residuals for the joint `tcal_solve` model (per-antenna T0, c plus shared τ).
 - `_jac_tcal` — `src/tipopac/fit.py:365` — analytical sparse Jacobian of `_residuals_tcal`. Sparse because each row only touches the antenna it belongs to plus the shared τ column.
@@ -260,11 +260,11 @@ The Stage A ↔ Stage B loop is closed via `compute_t_mean_grid`: each scan's `P
 
 Stateless physics shared between `fit`, `anchor`, and the plots. Nothing here touches xarray state apart from `predicted_tsys`.
 
-- `k2nt` — `src/tipopac/physics.py:28` — Nyquist correction of kinetic K → noise K at frequency ν. Important at high ν where `hν/kT` is no longer ≪ 1; used in both the Bevis fallback and `PwvGrid.tmean`.
+- `k2nt` — `src/tipopac/physics.py:28` — Nyquist correction of kinetic K → noise K at frequency ν. Important at high ν where `hν/kT` is no longer ≪ 1; used in both the Ulvestad fallback and `PwvGrid.tmean`.
 - `tsys_model` — `src/tipopac/physics.py:37` — reference scalar tipping-curve formula `T0 + Twmt·(1 − exp(−τ/cos z))`. The "what we're fitting" formula in one place; both `_residuals` variants in `fit.py` and `predicted_tsys` re-derive from it.
 - `predicted_tsys` — `src/tipopac/physics.py:50` — xarray-aware Tsys reconstruction from persisted fit fields. Includes the `c = tcal_fit / tcal_ref` divisor for `tcal_solve` mode so the model line in `plot.ElevationCurve` overlays correctly on observed Tsys.
 - `airmass` — `src/tipopac/physics.py:73` — flat-earth `1/cos z`. No curvature correction — matches v2.6 and is fine at the ZAs DO_SKYDIP covers.
-- `weighted_mean_atm_T` — `src/tipopac/physics.py:78` — Bevis (1992) `T_atm = 70.2 + 0.72·T_surf`. The surface-T proxy when no grid T_mean is available (e.g. AFGL fallback hasn't been wired to that path, or `weather_T` is the only thing finite).
+- `mean_radiating_T` — `src/tipopac/physics.py:97` — Ulvestad (1987) eq. (A-1) `T_atm = 256.9 + 0.445·T_surf°C`; takes and returns K, converting internally. The surface-T proxy when no grid T_mean is available (e.g. AFGL fallback hasn't been wired to that path, or `weather_T` is the only thing finite). Replaced Bevis (1992), which is ~12 K hot against am's grid `T_mean` — see `run/memo_compare/ulvestad_relation.md`.
 
 ### `geometry.py`
 

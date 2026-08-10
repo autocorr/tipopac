@@ -320,8 +320,8 @@ Attrs
 - `T_CMB = 2.725` K (Fixsen 2009).
 - `k2nt(T_K, ν_Hz) = T·(hν/kT) / (exp(hν/kT) − 1)` — Nyquist
   (Rayleigh-Jeans) correction.
-- `weighted_mean_atm_T(T_surf_K) = 70.2 + 0.72·T_surf` — Bevis (1992).
-  Used inside Stage A only as the fallback when the grid-derived
+- `mean_radiating_T(T_surf_K) = 256.9 + 0.445·T_surf°C` — Ulvestad (1987)
+  eq. (A-1). Used inside Stage A only as the fallback when the grid-derived
   `T_mean` is unavailable for a (scan, spw) cell.
 
 Airmass `1/cos(z)` and zenith angle `90° − rad2deg(el_encoder_rad)`
@@ -371,8 +371,8 @@ sparse path to pay.
 `T_mean(spw)` is sampled from each scan's `PwvGrid` at the profile's
 native PWV via `anchor.compute_t_mean_grid`; it is already
 Rayleigh-Jeans noise K, so no further `k2nt` is applied. NaN cells fall
-back to `k2nt(0.95 · T_surface)` per the v2.6 Bevis heuristic — that
-path *does* apply `k2nt`, its input being kinetic.
+back to `k2nt(mean_radiating_T(T_surface))` — that path *does* apply
+`k2nt`, its input being kinetic.
 
 **Single physical bound set** (no escalation ladder):
 
@@ -701,9 +701,9 @@ broken iframes.
 - **am-based forward fit (Stage 2 of `model_refactor.md`).** Reverted.
   PWV is fitted post-hoc against the per-spw τ samples (§6), never as
   an inner LM parameter.
-- **Replacement of Bevis `weighted_mean_atm_T` as the default Twmt.**
-  Stage A uses grid-derived `T_mean` by default; Bevis is the
-  NaN-cell fallback only.
+- **Replacement of `mean_radiating_T` as the default Twmt.**
+  Stage A uses grid-derived `T_mean` by default; the Ulvestad (1987)
+  relation is the NaN-cell fallback only.
 - **Pure-Python CASA-table writer.** Caltable output keeps
   `casatools.table`.
 - **Standalone CLI entry point** (`python -m tipopac ...`). Easy to

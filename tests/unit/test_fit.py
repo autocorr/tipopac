@@ -45,7 +45,7 @@ def _make_tip_ds(
         rng = np.random.default_rng(42)
 
     T_surf = 280.0  # K
-    Twmt = float(physics.k2nt(physics.weighted_mean_atm_T(T_surf), freq_Hz))
+    Twmt = float(physics.k2nt(physics.mean_radiating_T(T_surf), freq_Hz))
     # Generate with the attenuated CMB the fitter now models, so the round-trip
     # tests parameter recovery rather than a model mismatch. Omitting it makes
     # the recovered T0 low by ~Tcmb.
@@ -297,7 +297,7 @@ def _make_tcal_ds(
         rng = np.random.default_rng(99)
 
     T_surf = 280.0
-    Twmt = float(physics.k2nt(physics.weighted_mean_atm_T(T_surf), freq_Hz))
+    Twmt = float(physics.k2nt(physics.mean_radiating_T(T_surf), freq_Hz))
     z = np.linspace(35.0, 65.0, n_time)
     tsys_R_clean = physics.tsys_model(z, T0_R, tau0, Twmt)
     tsys_L_clean = physics.tsys_model(z, T0_L, tau0, Twmt)
@@ -479,16 +479,16 @@ def test_fit_multi_scan_multi_ant() -> None:
 
 
 def test_fit_t_mean_override_matches_default_on_matching_data() -> None:
-    """Passing an explicit `t_mean` equal to the Bevis form recovers the same fit.
+    """Passing an explicit `t_mean` equal to the fallback form recovers the same fit.
 
-    Synthetic data is built against `Twmt = k2nt(weighted_mean_atm_T(280 K), ν)`.
+    Synthetic data is built against `Twmt = k2nt(mean_radiating_T(280 K), ν)`.
     Passing the same value as `t_mean` should produce a fit numerically
     indistinguishable from the no-override default — proves the override path
     threads through to `_screen_antenna` cleanly.
     """
     T_surf = 280.0
     freq_Hz = 10e9
-    Twmt = float(physics.k2nt(physics.weighted_mean_atm_T(T_surf), freq_Hz))
+    Twmt = float(physics.k2nt(physics.mean_radiating_T(T_surf), freq_Hz))
 
     ds_default = _make_tip_ds(n_scan=2, n_ant=3, freq_Hz=freq_Hz)
     fit_dataset(ds_default, mode="tau_per_antenna")
@@ -536,15 +536,18 @@ def test_fit_t_mean_shape_validation() -> None:
         fit_dataset(ds, mode="tau_per_antenna", t_mean=bad)
 
 
-def test_fit_t_mean_nan_falls_back_to_bevis() -> None:
-    """NaN cells in `t_mean` invoke the Bevis fallback for those cells.
+def test_fit_t_mean_nan_falls_back_to_ulvestad() -> None:
+    """NaN cells in `t_mean` invoke the Ulvestad fallback for those cells.
 
-    Result should equal the no-override fit when every cell is NaN.
+    Result should equal the no-override fit when every cell is NaN, and the
+    stored `Twmt` must be the Ulvestad value — the equality check alone would
+    pass under any fallback relation.
     """
-    ds_default = _make_tip_ds(n_ant=2)
+    freq_Hz = 10e9
+    ds_default = _make_tip_ds(n_ant=2, freq_Hz=freq_Hz)
     fit_dataset(ds_default, mode="tau_per_antenna")
 
-    ds_nan = _make_tip_ds(n_ant=2)
+    ds_nan = _make_tip_ds(n_ant=2, freq_Hz=freq_Hz)
     t_mean = np.full(
         (ds_nan.sizes["scan"], ds_nan.sizes["spw"]), np.nan, dtype=np.float64
     )
@@ -556,6 +559,10 @@ def test_fit_t_mean_nan_falls_back_to_bevis() -> None:
         rtol=1e-10,
         atol=1e-12,
     )
+
+    # T_surf = 280 K in the fixture -> k2nt(256.9 + 0.445*6.85, 10 GHz)
+    expected = float(physics.k2nt(physics.mean_radiating_T(280.0), freq_Hz))
+    np.testing.assert_allclose(ds_nan["Twmt"].values, expected, rtol=1e-5, atol=1e-4)
 
 
 def test_fit_n_workers_pool_matches_serial_opacity() -> None:

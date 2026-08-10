@@ -11,7 +11,7 @@ Also exposes :func:`compute_t_mean_grid` — the Stage-A Twmt input
 (noise-K) per (scan, spw) sampled from the grid at each scan's unscaled
 profile PWV. Stage A uses this when the new ``independent_tau`` /
 ``independent_tau_solve`` modes are active; the legacy modes keep the
-v2.6 ``0.95·T_surface`` Bevis form.
+v2.6 ``0.95·T_surface`` form.
 """
 
 from __future__ import annotations
@@ -199,7 +199,7 @@ def compute_t_mean_grid(
     native PWV). :attr:`PwvGrid.tmean` is already Rayleigh-Jeans noise K,
     so no further :func:`tipopac.physics.k2nt` is applied here. Rows for
     scans missing from *grids* are filled with NaN, signalling Stage A to
-    fall back to the Bevis surface-temperature heuristic for those cells
+    fall back to the Ulvestad surface-temperature heuristic for those cells
     — that path *does* apply ``k2nt``, since its input is kinetic.
 
     Parameters
