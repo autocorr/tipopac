@@ -1042,8 +1042,8 @@ class Summary(_HtmlPage):
 </table>
 <p class="note">
   The fitted PWV is the tropospheric column in scaled-total units; the
-  profile PWV integrates the whole column, so sub-mm differences between
-  them are expected.
+  profile PWV is the whole-column integral of the un-scaled input
+  profile, so the two differ even for a perfect fit.
 </p>""",
         )
 
