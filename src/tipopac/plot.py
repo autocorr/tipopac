@@ -60,6 +60,9 @@ _Z_GRID: np.ndarray = np.linspace(30.0, 75.0, 60)
 # out at min(data max, this) so a few outliers don't wash out the range.
 _RESIDUAL_RMS_COLOR_MAX_K: float = 100.0
 
+# Name of the checkbox param gating the mean overlay on the frequency plots.
+_SHOW_MEAN_PARAM = "show_mean"
+
 
 def _scan_title(scans: list[int]) -> str:
     """Title prefix: ``scan 3`` for one scan, ``scans 3, 5, 7`` for many."""
@@ -86,6 +89,8 @@ class Plot:
     POINT_SIZE = 25
     MEAN_POINT_SIZE = 80
     LINE_STROKE = 2.0
+    OPACITY_POINT = 0.7
+    OPACITY_DIMMED = 0.08
 
     def __init__(self, ds: xr.Dataset) -> None:
         self.ds = ds
@@ -174,6 +179,37 @@ class _QuantityVsFrequency(Plot):
         f_max = self.ds_sub["frequency_GHz"].max() + 2
         return float(f_min), float(f_max)
 
+    def _controls(self) -> tuple[alt.Parameter, alt.Parameter]:
+        """Legend-bound antenna selection + a checkbox toggling the mean overlay.
+
+        An empty selection matches every antenna, so the default view is
+        unchanged: click a legend entry to isolate one antenna, shift-click
+        for several, click off to go back to all.
+        """
+        selection = alt.selection_point(fields=["antenna"], bind="legend")
+        show_mean = alt.param(
+            name=_SHOW_MEAN_PARAM,
+            bind=alt.binding_checkbox(name="Mean "),
+            value=True,
+        )
+        return selection, show_mean
+
+    def _antenna_encoding(self, selection: alt.Parameter) -> dict[str, Any]:
+        """Flat-valued shape legend over ``antenna``, plus the selection dim."""
+        n_ant = int(self.ds_sub.sizes["antenna"])
+        return {
+            "shape": alt.Shape(
+                "antenna:N",
+                scale=alt.Scale(range=["circle"] * n_ant),
+                legend=alt.Legend(title="Antenna", symbolLimit=n_ant),
+            ),
+            "opacity": alt.condition(
+                selection,
+                alt.value(self.OPACITY_POINT),
+                alt.value(self.OPACITY_DIMMED),
+            ),
+        }
+
     def _mean_layer(
         self,
         df: pd.DataFrame,
@@ -185,6 +221,7 @@ class _QuantityVsFrequency(Plot):
         return (
             alt.Chart(df)
             .mark_point(filled=True, size=self.MEAN_POINT_SIZE, color=self.COLOR_MEAN)
+            .transform_filter(_SHOW_MEAN_PARAM)
             .encode(
                 x=alt.X("frequency_GHz:Q", title="Frequency [GHz]"),
                 y=alt.Y(f"{value_col}:Q", title=y_title),
@@ -294,6 +331,8 @@ class TauVsFrequency(_QuantityVsFrequency):
     Per-sample scatter (gray=passed, orangered=failed-fit) + antenna-weighted
     mean per spw (firebrick) + optional AM model line (black). Log y-axis.
     Hover discloses (scan, antenna, spw, frequency, τ, σ, fit_success).
+    Click the antenna legend to isolate antennas; the mean stays over all of
+    them and hides with the "Mean" checkbox.
     """
 
     def build(self) -> alt.LayerChart | alt.FacetChart:
@@ -347,6 +386,7 @@ class TauVsFrequency(_QuantityVsFrequency):
         status_scale = alt.Scale(
             domain=[True, False], range=[self.COLOR_GOOD, self.COLOR_FLAGGED]
         )
+        selection, show_mean = self._controls()
         samples = (
             alt.Chart(df)
             .mark_point(filled=True, size=self.POINT_SIZE)
@@ -354,6 +394,7 @@ class TauVsFrequency(_QuantityVsFrequency):
                 x=x_enc,
                 y=y_enc,
                 color=alt.Color("fit_success:N", scale=status_scale, legend=None),
+                **self._antenna_encoding(selection),
                 tooltip=[
                     "scan:N",
                     "antenna:N",
@@ -392,7 +433,9 @@ class TauVsFrequency(_QuantityVsFrequency):
             layers.append(am_line)
 
         return self._finalize(
-            alt.layer(*layers), title=_scan_title(self.scans), width=self.width
+            alt.layer(*layers).add_params(selection, show_mean),
+            title=_scan_title(self.scans),
+            width=self.width,
         )
 
 

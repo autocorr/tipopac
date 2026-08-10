@@ -6,6 +6,7 @@ from pathlib import Path
 
 import altair as alt
 import numpy as np
+import pytest
 import xarray as xr
 
 from tipopac import schema
@@ -234,6 +235,60 @@ def test_tau_vs_frequency_tooltip_carries_identity() -> None:
     fields = _tooltip_fields(samples)
     for required in ("scan", "antenna", "spw", "frequency_GHz", "tau_zenith"):
         assert required in fields
+
+
+def test_tau_vs_frequency_binds_antenna_selection_to_legend() -> None:
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True)
+    spec = PlotData(ds).tau_vs_frequency(scans=1).build().to_dict()
+
+    legend_params = [p for p in spec["params"] if p.get("bind") == "legend"]
+    assert len(legend_params) == 1
+    assert legend_params[0]["select"]["fields"] == ["antenna"]
+    # No preset value — an empty point selection matches every antenna, so the
+    # default view shows all of them undimmed.
+    assert "value" not in legend_params[0]
+
+    samples = spec["layer"][0]["encoding"]
+    # Flat shape range: the legend is a click surface, every entry identical.
+    assert samples["shape"]["field"] == "antenna"
+    assert samples["shape"]["scale"]["range"] == ["circle"] * 4
+    assert samples["opacity"]["condition"]["param"] == legend_params[0]["name"]
+    assert samples["opacity"]["condition"]["value"] == 0.7
+    assert samples["opacity"]["value"] == 0.08
+
+
+def test_tau_vs_frequency_keeps_fit_success_colour() -> None:
+    """The antenna selector must not displace the pass/fail colour coding."""
+    ds = _make_plot_ds(n_ant=3, n_spw=3, success=True)
+    spec = PlotData(ds).tau_vs_frequency(scans=1).build().to_dict()
+    color = spec["layer"][0]["encoding"]["color"]
+    assert color["field"] == "fit_success"
+    assert color["scale"]["range"] == ["gray", "orangered"]
+
+
+def test_tau_vs_frequency_mean_toggle_leaves_mean_unfiltered() -> None:
+    """The checkbox hides the mean; the selection never re-aggregates it."""
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True)
+    spec = PlotData(ds).tau_vs_frequency(scans=1).build().to_dict()
+
+    checkbox = next(p for p in spec["params"] if p["name"] == "show_mean")
+    assert checkbox["bind"]["input"] == "checkbox"
+    assert checkbox["value"] is True
+
+    mean_layer = spec["layer"][1]
+    assert mean_layer["transform"] == [{"filter": "show_mean"}]
+    # Pinned to all antennas: the mean reads its own pre-aggregated frame, so
+    # it carries one row per (scan, spw) rather than one per antenna.
+    mean_rows = spec["datasets"][mean_layer["data"]["name"]]
+    assert "antenna" not in mean_rows[0]
+    assert len(mean_rows) == 3  # n_spw, not n_ant * n_spw
+
+
+def test_tau_vs_frequency_compiles_to_vega() -> None:
+    """Full Vega-Lite → Vega compile: catches invalid params/transforms."""
+    vl_convert = pytest.importorskip("vl_convert")
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True)
+    vl_convert.vegalite_to_vega(PlotData(ds).tau_vs_frequency().build().to_dict())
 
 
 def test_tcal_vs_frequency_returns_layerchart() -> None:
