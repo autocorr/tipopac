@@ -321,7 +321,7 @@ class TippingAnalysis:
         Auto-calls :meth:`fetch_atm_profile` with defaults if the profile
         is not yet on the dataset. Populates ``self._grids[scan_id] =
         PwvGrid`` for every scan and writes the ``pwv_profile_source(scan,)``
-        data var for provenance. Used by the post-fit atmospheric anchor
+        and ``pwv_model(scan,)`` data vars for provenance. Used by the post-fit atmospheric anchor
         (see ``design/independent_tau_fit.md``); not consumed by :meth:`fit`.
         """
         import astropy.units as u
@@ -353,6 +353,7 @@ class TippingAnalysis:
         cache: list[tuple[bytes, float | None, PwvGrid]] = []
 
         sources_arr = np.full(scan_ids.size, "", dtype=object)
+        pwv_model = np.full(scan_ids.size, np.nan, dtype=np.float32)
         for i, scan_id in enumerate(scan_ids):
             p_row = pressure_Pa[i].astype(np.float64)
             t_row = temp_K[i].astype(np.float64)
@@ -413,6 +414,7 @@ class TippingAnalysis:
 
             self._grids[int(scan_id)] = grid
             sources_arr[i] = atm_source
+            pwv_model[i] = grid.pwv_unscaled_mm
 
         _log.info(
             "PwvGrid cache: built %d unique grid(s) for %d scan(s)",
@@ -421,6 +423,7 @@ class TippingAnalysis:
         )
 
         self._ds["pwv_profile_source"] = (("scan",), sources_arr)
+        self._ds["pwv_model"] = (("scan",), pwv_model)
 
     def fit(
         self,

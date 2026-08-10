@@ -771,3 +771,50 @@ def test_save_all_skips_atmospheric_profile_when_absent(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
     PlotData(ds).save_all(tmp_path)
     assert not (tmp_path / "atmospheric_profile.html").exists()
+
+
+# ---------------------------------------------------------------------------
+# Summary page
+# ---------------------------------------------------------------------------
+
+
+def _summary_html(**pwv: object) -> str:
+    """Render the summary page for a 2-scan dataset with the given PWV vars."""
+    ds = _make_plot_ds(n_scan=2, n_ant=2, n_spw=2)
+    ds.attrs["atm_profile_source"] = "open_meteo"
+    for name, values in pwv.items():
+        dim = "antenna" if name.startswith("pwv_e") or name == "pwv" else "scan"
+        ds[name] = ((dim,), np.asarray(values, dtype=np.float32))
+    return PlotData(ds).summary()._render()
+
+
+def test_summary_reports_fitted_pwv_with_error() -> None:
+    body = _summary_html(pwv=[3.21, 3.21], pwv_err=[0.12, 0.12])
+    assert "<dt>Fitted PWV</dt><dd>3.21 ± 0.12 mm</dd>" in body
+
+
+def test_summary_reports_fitted_pwv_without_error_var() -> None:
+    body = _summary_html(pwv=[3.21, 3.21])
+    assert "<dt>Fitted PWV</dt><dd>3.21 mm</dd>" in body
+
+
+def test_summary_fitted_pwv_missing() -> None:
+    assert "<dt>Fitted PWV</dt><dd>—</dd>" in _summary_html()
+
+
+def test_summary_row_labels_hrrr_pwv_on_open_meteo() -> None:
+    body = _summary_html(pwv_model=[4.5, 4.75])
+    assert "<th>HRRR PWV [mm]</th><td>4.50</td><td>4.75</td>" in body
+
+
+def test_summary_row_labels_profile_pwv_on_afgl() -> None:
+    ds = _make_plot_ds(n_scan=1)
+    ds.attrs["atm_profile_source"] = "afgl_midlatitude_winter"
+    ds["pwv_model"] = (("scan",), np.array([6.0], dtype=np.float32))
+    body = PlotData(ds).summary()._render()
+    assert "<th>Profile PWV [mm]</th><td>6.00</td>" in body
+
+
+def test_summary_pwv_row_missing() -> None:
+    body = _summary_html()
+    assert "<th>HRRR PWV [mm]</th><td>—</td><td>—</td>" in body

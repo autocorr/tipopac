@@ -869,9 +869,7 @@ class ResidualRmsHeatmap(_Heatmap):
         vmax = min(float(self._metric_array().max()), _RESIDUAL_RMS_COLOR_MAX_K)
         return alt.Color(
             "residual_rms_K:Q",
-            scale=alt.Scale(
-                type="log", scheme="viridis", domainMax=vmax, clamp=True
-            ),
+            scale=alt.Scale(type="log", scheme="viridis", domainMax=vmax, clamp=True),
             legend=alt.Legend(title="Residual RMS [K]"),
         )
 
@@ -926,6 +924,22 @@ class Summary:
             return self._MISSING
         return format(float(value), spec)
 
+    def _fitted_pwv(self) -> str:
+        """Fitted PWV ± error, ``—`` when the Stage-B anchor didn't run."""
+        if "pwv" not in self.ds.data_vars:
+            return self._MISSING
+        pwv = float(self.ds["pwv"].median(skipna=True))
+        if not np.isfinite(pwv):
+            return self._MISSING
+        err = (
+            float(self.ds["pwv_err"].median(skipna=True))
+            if "pwv_err" in self.ds.data_vars
+            else np.nan
+        )
+        if not np.isfinite(err):
+            return f"{pwv:.2f} mm"
+        return f"{pwv:.2f} ± {err:.2f} mm"
+
     def _render(self) -> str:
         meta_rows = (
             ("Input", self._attr("source_path")),
@@ -934,6 +948,7 @@ class Summary:
             ("Mode", self._attr("mode")),
             ("Atmospheric profile", self._attr("atm_profile_source")),
             ("Selected bands", self._attr("selected_bands")),
+            ("Fitted PWV", self._fitted_pwv()),
         )
         meta_html = "\n".join(
             f"  <dt>{escape(label)}</dt><dd>{escape(value)}</dd>"
@@ -984,6 +999,7 @@ class Summary:
   table.stats tbody th {{
     font-weight: 600; color: #555; text-align: left;
   }}
+  p.note {{ color: #666; font-size: 0.85em; max-width: 42em; }}
 </style>
 </head>
 <body>
@@ -1000,6 +1016,11 @@ class Summary:
 {body_rows}
   </tbody>
 </table>
+<p class="note">
+  The fitted PWV is the tropospheric column in scaled-total units; the
+  profile PWV integrates the whole column, so sub-mm differences between
+  them are expected.
+</p>
 </body>
 </html>
 """
@@ -1045,7 +1066,13 @@ class Summary:
         frac = (flagged / denom.where(denom > 0)).values
         flag_frac_strs = [self._fmt(v, ".1%") for v in frac]
 
-        # Row 6: fit success fraction over observed (ant, spw) cells.
+        # Row 6: PWV of the un-scaled atmospheric profile.
+        if "pwv_model" in ds.data_vars:
+            pwv_model_strs = [self._fmt(v, ".2f") for v in ds["pwv_model"].values]
+        else:
+            pwv_model_strs = [self._MISSING] * len(scans)
+
+        # Row 7: fit success fraction over observed (ant, spw) cells.
         if "fit_success" in ds.data_vars:
             denom_as = per_scan_ant_spw.sum(dim=("antenna", "spw"))
             succ = (ds["fit_success"] & per_scan_ant_spw).sum(dim=("antenna", "spw"))
@@ -1054,11 +1081,15 @@ class Summary:
         else:
             succ_strs = [self._MISSING] * len(scans)
 
+        source = str(ds.attrs.get("atm_profile_source", ""))
+        pwv_label = "HRRR PWV [mm]" if source.startswith("open") else "Profile PWV [mm]"
+
         rows: list[tuple[str, list[str]]] = [
             ("UTC start", utc_starts),
             ("Bands", bands_per_scan),
             ("Center freq [GHz]", center_freq_strs),
             ("Mean τ", mean_tau_strs),
+            (pwv_label, pwv_model_strs),
             ("Flag fraction", flag_frac_strs),
             ("Fit success", succ_strs),
         ]

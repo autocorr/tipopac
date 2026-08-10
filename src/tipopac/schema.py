@@ -90,6 +90,7 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "atm_h2o_vmr": (("scan", "atm_level"), np.dtype(np.float32)),
     "surface_pressure_hPa": (("scan",), np.dtype(np.float64)),
     "pwv_profile_source": (("scan",), np.dtype("O")),
+    "pwv_model": (("scan",), np.dtype(np.float32)),
 }
 
 POL_VALUES: tuple[str, ...] = ("R", "L")

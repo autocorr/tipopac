@@ -262,6 +262,7 @@ Data variables — atmospheric profile (filled by atmosphere.attach_profile)
   atm_h2o_vmr          (scan, atm_level)                   float32   volumetric mixing ratio
   surface_pressure_hPa (scan,)                             float64   hPa  per-scan median (NaN when no weather_P)
   pwv_profile_source   (scan,)                             str       per-scan grid provenance (set by build_atm_grids)
+  pwv_model            (scan,)                             float32   mm   PWV of the un-scaled profile (set by build_atm_grids)
 
 Data variables — atmospheric anchor (filled by anchor.anchor_pwv / write_am_curve)
   pwv              (antenna,)                              float32   mm   per-antenna fitted PWV
