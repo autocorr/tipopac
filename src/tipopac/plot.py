@@ -440,7 +440,10 @@ class TauVsFrequency(_QuantityVsFrequency):
 
 
 class TcalVsFrequency(_QuantityVsFrequency):
-    """Fitted Tcal vs frequency, with per-pol/antenna scatter + summary mean."""
+    """Fitted Tcal vs frequency, with per-pol/antenna scatter + summary mean.
+
+    Carries the antenna legend selector and the "Mean" checkbox.
+    """
 
     def __init__(
         self,
@@ -510,6 +513,7 @@ class TcalVsFrequency(_QuantityVsFrequency):
         mean_df = _to_df(mean_da, name="mean_tcal", keep=mean_keep)
         _round(mean_df, frequency_GHz=3, mean_tcal=3)
 
+        selection, show_mean = self._controls()
         samples = (
             alt.Chart(df)
             .mark_point(filled=True, size=self.POINT_SIZE, color=self.COLOR_GOOD)
@@ -520,6 +524,7 @@ class TcalVsFrequency(_QuantityVsFrequency):
                     scale=alt.Scale(domain=self.freq_domain, nice=False),
                 ),
                 y=alt.Y(f"{col}:Q", title=y_title),
+                **self._antenna_encoding(selection),
                 tooltip=tooltip,
             )
         )
@@ -528,7 +533,7 @@ class TcalVsFrequency(_QuantityVsFrequency):
         )
 
         return self._finalize(
-            alt.layer(samples, mean),
+            alt.layer(samples, mean).add_params(selection, show_mean),
             title=_scan_title(self.scans),
             width=self.width,
         )
@@ -538,7 +543,8 @@ class CVsFrequency(_QuantityVsFrequency):
     """Tcal correction multiplier c = tcal_fit / tcal_ref vs frequency.
 
     Dashed reference line at c=1 + per-(antenna, spw, pol) gray scatter +
-    polarisation/antenna-averaged firebrick scatter.
+    polarisation/antenna-averaged firebrick scatter. Carries the antenna
+    legend selector and the "Mean" checkbox.
     """
 
     def build(self) -> alt.LayerChart | alt.FacetChart:
@@ -572,6 +578,7 @@ class CVsFrequency(_QuantityVsFrequency):
             .mark_rule(color=self.COLOR_REF, strokeDash=[4, 2], strokeWidth=0.8)
             .encode(y=alt.Y("c:Q", title=y_title))
         )
+        selection, show_mean = self._controls()
         samples = (
             alt.Chart(df)
             .mark_point(filled=True, size=self.POINT_SIZE, color=self.COLOR_GOOD)
@@ -582,6 +589,7 @@ class CVsFrequency(_QuantityVsFrequency):
                     scale=alt.Scale(domain=self.freq_domain, nice=False),
                 ),
                 y=alt.Y("c_ratio:Q", title=y_title),
+                **self._antenna_encoding(selection),
                 tooltip=[
                     "scan:N",
                     "antenna:N",
@@ -595,7 +603,7 @@ class CVsFrequency(_QuantityVsFrequency):
         mean = self._mean_layer(mean_df, value_col="mean_c", y_title=y_title)
 
         return self._finalize(
-            alt.layer(ref, samples, mean),
+            alt.layer(ref, samples, mean).add_params(selection, show_mean),
             title=_scan_title(self.scans),
             width=self.width,
         )

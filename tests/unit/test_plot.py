@@ -284,11 +284,42 @@ def test_tau_vs_frequency_mean_toggle_leaves_mean_unfiltered() -> None:
     assert len(mean_rows) == 3  # n_spw, not n_ant * n_spw
 
 
-def test_tau_vs_frequency_compiles_to_vega() -> None:
+def _frequency_charts(pd_obj: PlotData) -> dict[str, alt.LayerChart]:
+    """The four *-vs-frequency charts that carry the antenna selector."""
+    return {
+        "tau": pd_obj.tau_vs_frequency().build(),
+        "tcal_fit": pd_obj.tcal_vs_frequency(kind="fit").build(),
+        "tcal_ref": pd_obj.tcal_vs_frequency(kind="ref").build(),
+        "c": pd_obj.c_vs_frequency().build(),
+    }
+
+
+@pytest.mark.parametrize("kind", ["tau", "tcal_fit", "tcal_ref", "c"])
+def test_frequency_charts_carry_antenna_controls(kind: str) -> None:
+    """Every *-vs-frequency chart gets the legend selector and mean toggle."""
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True)
+    spec = _frequency_charts(PlotData(ds))[kind].to_dict()
+
+    legend_params = [p for p in spec["params"] if p.get("bind") == "legend"]
+    assert len(legend_params) == 1
+    assert legend_params[0]["select"]["fields"] == ["antenna"]
+    assert any(p["name"] == "show_mean" for p in spec["params"])
+
+    samples = next(
+        layer["encoding"]
+        for layer in spec["layer"]
+        if layer.get("encoding", {}).get("shape", {}).get("field") == "antenna"
+    )
+    assert samples["shape"]["scale"]["range"] == ["circle"] * 4
+    assert samples["opacity"]["value"] == 0.08
+
+
+@pytest.mark.parametrize("kind", ["tau", "tcal_fit", "tcal_ref", "c"])
+def test_frequency_charts_compile_to_vega(kind: str) -> None:
     """Full Vega-Lite → Vega compile: catches invalid params/transforms."""
     vl_convert = pytest.importorskip("vl_convert")
     ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True)
-    vl_convert.vegalite_to_vega(PlotData(ds).tau_vs_frequency().build().to_dict())
+    vl_convert.vegalite_to_vega(_frequency_charts(PlotData(ds))[kind].to_dict())
 
 
 def test_tcal_vs_frequency_returns_layerchart() -> None:
