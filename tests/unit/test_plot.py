@@ -818,3 +818,52 @@ def test_summary_row_labels_profile_pwv_on_afgl() -> None:
 def test_summary_pwv_row_missing() -> None:
     body = _summary_html()
     assert "<th>HRRR PWV [mm]</th><td>—</td><td>—</td>" in body
+
+
+# ---------------------------------------------------------------------------
+# Opacity table pages
+# ---------------------------------------------------------------------------
+
+
+def test_model_opacity_table_renders_every_grid_row() -> None:
+    ds = _make_plot_ds(with_am=True)
+    body = PlotData(ds).model_opacity_table()._render()
+
+    assert body.count("<tr>") == 1 + ds["am_freq_grid"].size  # header + rows
+    assert "<th>Frequency [GHz]</th>" in body
+    # Frequencies are shown in GHz, τ to five decimals.
+    assert f"<td>{ds['am_freq_grid'].values[0] / 1e9:.3f}</td>" in body
+    assert "<td>0.05000</td>" in body
+
+
+def test_model_opacity_table_without_am_curve() -> None:
+    body = PlotData(_make_plot_ds()).model_opacity_table()._render()
+    assert "No am model curve on this dataset." in body
+    assert "<table" not in body
+
+
+def test_measured_opacity_table_renders_one_row_per_scan_spw() -> None:
+    ds = _make_plot_ds(n_scan=2, n_spw=3, with_am=True)
+    body = PlotData(ds).measured_opacity_table()._render()
+
+    assert body.count("<tr>") == 1 + 2 * 3
+    assert "<th>τ measured [nepers]</th>" in body
+    assert "<td>0.0500</td>" in body
+
+
+def test_measured_opacity_table_without_fits() -> None:
+    ds = _make_plot_ds().drop_vars(["tau_zenith", "tau_err"])
+    body = PlotData(ds).measured_opacity_table()._render()
+    assert "No fitted opacities on this dataset." in body
+
+
+def test_save_all_writes_table_pages(tmp_path: Path) -> None:
+    PlotData(_make_plot_ds(with_am=True)).save_all(tmp_path)
+    assert (tmp_path / "model_opacity_table.html").exists()
+    assert (tmp_path / "measured_opacity_table.html").exists()
+
+
+def test_save_all_skips_model_table_without_am_curve(tmp_path: Path) -> None:
+    PlotData(_make_plot_ds()).save_all(tmp_path)
+    assert not (tmp_path / "model_opacity_table.html").exists()
+    assert (tmp_path / "measured_opacity_table.html").exists()

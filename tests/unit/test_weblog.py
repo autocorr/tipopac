@@ -128,6 +128,23 @@ def test_build_weblog_lists_residual_rms_heatmap_when_present(tmp_path: Path) ->
     assert "Residual RMS heatmap" in body
 
 
+def test_build_weblog_lists_opacity_tables_when_present(tmp_path: Path) -> None:
+    _touch(tmp_path / "model_opacity_table.html")
+    _touch(tmp_path / "measured_opacity_table.html")
+    body = build_weblog(tmp_path).read_text(encoding="utf-8")
+    assert 'data-file="model_opacity_table.html"' in body
+    assert "Model opacity table" in body
+    assert 'data-file="measured_opacity_table.html"' in body
+    assert "Measured opacity table" in body
+
+
+def test_build_weblog_omits_opacity_tables_when_absent(tmp_path: Path) -> None:
+    _touch(tmp_path / "tau_vs_frequency.html")
+    body = build_weblog(tmp_path).read_text(encoding="utf-8")
+    assert 'data-file="model_opacity_table.html"' not in body
+    assert 'data-file="measured_opacity_table.html"' not in body
+
+
 def test_build_weblog_ignores_existing_index_html(tmp_path: Path) -> None:
     _touch(tmp_path / "tau_vs_frequency.html")
     _touch(tmp_path / "index.html")  # stale index from a prior run

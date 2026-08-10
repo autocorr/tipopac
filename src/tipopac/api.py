@@ -118,7 +118,7 @@ def _write_dataset_netcdf(ds: xr.Dataset, path: Path) -> None:
 
 
 def _write_tsv(
-    path: Path, table: tuple[tuple[str, ...], list[tuple[object, ...]]]
+    path: Path, table: tuple[Sequence[str], Sequence[Sequence[Any]]]
 ) -> None:
     """Write a ``(columns, rows)`` table from :mod:`tipopac.tables` as a TSV."""
     columns, rows = table

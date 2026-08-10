@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
+from typing import Any
 
 import altair as alt
 import numpy as np
@@ -34,6 +35,8 @@ __all__ = [
     "CVsFrequency",
     "ElevationCurve",
     "FitQualityHeatmap",
+    "MeasuredOpacityTable",
+    "ModelOpacityTable",
     "Plot",
     "PlotData",
     "ResidualRmsHeatmap",
@@ -883,14 +886,60 @@ class ResidualRmsHeatmap(_Heatmap):
         return {"fit_reason": self.ds_sub["fit_reason"]}
 
 
-class Summary:
-    """Textual run summary: input + run metadata and a per-scan stats table.
+_PAGE_CSS = """\
+  body {
+    margin: 0; padding: 1.2em 1.6em;
+    font-family: -apple-system, system-ui, sans-serif;
+    color: #222;
+  }
+  h2 {
+    font-size: 1.1em; margin: 1.4em 0 0.5em;
+    border-bottom: 1px solid #ccc; padding-bottom: 0.2em;
+  }
+  h2:first-of-type { margin-top: 0; }
+  dl.meta {
+    display: grid; grid-template-columns: max-content 1fr;
+    column-gap: 1.2em; row-gap: 0.25em; margin: 0;
+  }
+  dl.meta dt { font-weight: 600; color: #555; }
+  dl.meta dd { margin: 0; word-break: break-all; }
+  table.stats { border-collapse: collapse; width: auto; }
+  table.stats th, table.stats td {
+    padding: 0.3em 0.8em; border-bottom: 1px solid #eee;
+    text-align: right; white-space: nowrap;
+  }
+  table.stats thead th {
+    border-bottom: 2px solid #999; text-align: center;
+  }
+  table.stats thead th:first-child { border-bottom: 2px solid #999; }
+  table.stats tbody th {
+    font-weight: 600; color: #555; text-align: left;
+  }
+  div.scroll { max-height: calc(100vh - 8em); overflow: auto; }
+  div.scroll thead th { position: sticky; top: 0; background: #fff; }
+  p.note { color: #666; font-size: 0.85em; max-width: 42em; }
+"""
 
-    Not an altair chart — writes a small self-contained ``.html`` page
-    with inline CSS that the weblog renders in its iframe as the
-    landing view. Robust to missing optional vars: any feeder that's
-    absent or all-NaN renders as ``—``.
-    """
+
+def _document(title: str, body: str) -> str:
+    """Wrap ``body`` in a self-contained HTML page with the shared inline CSS."""
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+{_PAGE_CSS}</style>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+
+
+class _HtmlPage:
+    """Static HTML page — written straight to disk, not an altair chart."""
 
     _MISSING = "—"
 
@@ -898,11 +947,27 @@ class Summary:
         self.ds = ds
 
     def save(self, path: Path) -> None:
-        """Write the summary HTML to ``path`` (``.html`` suffix forced)."""
+        """Write the page to ``path`` (``.html`` suffix forced)."""
         path = Path(path).with_suffix(".html")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self._render(), encoding="utf-8")
         _log.info("plot saved: %s", path)
+
+    def _render(self) -> str:
+        raise NotImplementedError
+
+    def _fmt(self, value: float, spec: str) -> str:
+        if not np.isfinite(value):
+            return self._MISSING
+        return format(float(value), spec)
+
+
+class Summary(_HtmlPage):
+    """Textual run summary: input + run metadata and a per-scan stats table.
+
+    Robust to missing optional vars: any feeder that's absent or all-NaN
+    renders as ``—``. Surfaced as the weblog's landing view.
+    """
 
     # ------------------------------------------------------------------
     def _attr(self, key: str) -> str:
@@ -918,11 +983,6 @@ class Summary:
             return self._MISSING
         dt = datetime.fromtimestamp(mjd_s_to_unix_s(float(mjd_s)), tz=timezone.utc)
         return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    def _fmt(self, value: float, spec: str) -> str:
-        if not np.isfinite(value):
-            return self._MISSING
-        return format(float(value), spec)
 
     def _fitted_pwv(self) -> str:
         """Fitted PWV ± error, ``—`` when the Stage-B anchor didn't run."""
@@ -965,45 +1025,9 @@ class Summary:
             for label, values in stat_rows
         )
 
-        return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>tipopac summary</title>
-<style>
-  body {{
-    margin: 0; padding: 1.2em 1.6em;
-    font-family: -apple-system, system-ui, sans-serif;
-    color: #222;
-  }}
-  h2 {{
-    font-size: 1.1em; margin: 1.4em 0 0.5em;
-    border-bottom: 1px solid #ccc; padding-bottom: 0.2em;
-  }}
-  h2:first-of-type {{ margin-top: 0; }}
-  dl.meta {{
-    display: grid; grid-template-columns: max-content 1fr;
-    column-gap: 1.2em; row-gap: 0.25em; margin: 0;
-  }}
-  dl.meta dt {{ font-weight: 600; color: #555; }}
-  dl.meta dd {{ margin: 0; word-break: break-all; }}
-  table.stats {{ border-collapse: collapse; width: auto; }}
-  table.stats th, table.stats td {{
-    padding: 0.3em 0.8em; border-bottom: 1px solid #eee;
-    text-align: right; white-space: nowrap;
-  }}
-  table.stats thead th {{
-    border-bottom: 2px solid #999; text-align: center;
-  }}
-  table.stats thead th:first-child {{ border-bottom: 2px solid #999; }}
-  table.stats tbody th {{
-    font-weight: 600; color: #555; text-align: left;
-  }}
-  p.note {{ color: #666; font-size: 0.85em; max-width: 42em; }}
-</style>
-</head>
-<body>
-<h2>Run</h2>
+        return _document(
+            "tipopac summary",
+            f"""<h2>Run</h2>
 <dl class="meta">
 {meta_html}
 </dl>
@@ -1020,10 +1044,8 @@ class Summary:
   The fitted PWV is the tropospheric column in scaled-total units; the
   profile PWV integrates the whole column, so sub-mm differences between
   them are expected.
-</p>
-</body>
-</html>
-"""
+</p>""",
+        )
 
     # ------------------------------------------------------------------
     def _scan_stats(self) -> tuple[list[str], list[tuple[str, list[str]]]]:
@@ -1096,6 +1118,93 @@ class Summary:
         return scans, rows
 
 
+class _OpacityTablePage(_HtmlPage):
+    """Frequency-major HTML rendering of a :mod:`tipopac.tables` table.
+
+    Every row of the matching TSV is rendered — the two must not diverge —
+    so the table scrolls inside the page with a sticky header.
+    """
+
+    _TITLE: str = ""
+    _HEADING: str = ""
+    _COLUMNS: tuple[tuple[str, str], ...] = ()  # (header, format spec)
+    _EMPTY: str = ""
+
+    def _rows(self) -> list[tuple[Any, ...]]:
+        raise NotImplementedError
+
+    def _cell(self, value: Any, spec: str) -> str:
+        return escape(self._fmt(value, spec) if spec else str(value))
+
+    def _render(self) -> str:
+        rows = self._rows()
+        if not rows:
+            return _document(self._TITLE, f'<p class="note">{self._EMPTY}</p>')
+
+        header = "".join(f"<th>{escape(h)}</th>" for h, _ in self._COLUMNS)
+        body = "\n".join(
+            "    <tr>{cells}</tr>".format(
+                cells="".join(
+                    f"<td>{self._cell(v, spec)}</td>"
+                    for v, (_, spec) in zip(row, self._COLUMNS, strict=True)
+                )
+            )
+            for row in rows
+        )
+        return _document(
+            self._TITLE,
+            f"""<h2>{self._HEADING}</h2>
+<div class="scroll">
+<table class="stats">
+  <thead>
+    <tr>{header}</tr>
+  </thead>
+  <tbody>
+{body}
+  </tbody>
+</table>
+</div>""",
+        )
+
+
+class ModelOpacityTable(_OpacityTablePage):
+    """Model τ(ν) on the uniform am grid — the ``model_opacity.tsv`` rows."""
+
+    _TITLE = "tipopac model opacity"
+    _HEADING = "Model opacity vs frequency"
+    _COLUMNS = (("Frequency [GHz]", ".3f"), ("τ model [nepers]", ".5f"))
+    _EMPTY = "No am model curve on this dataset."
+
+    def _rows(self) -> list[tuple[Any, ...]]:
+        from tipopac.tables import model_opacity_table
+
+        _, rows = model_opacity_table(self.ds)
+        return [(nu / 1e9, tau) for nu, tau in rows]
+
+
+class MeasuredOpacityTable(_OpacityTablePage):
+    """Fitted and model τ at the spw centres — the ``measured_opacity.tsv`` rows."""
+
+    _TITLE = "tipopac measured opacity"
+    _HEADING = "Measured and model opacity at the spw centre frequencies"
+    _COLUMNS = (
+        ("Scan", ""),
+        ("spw", ""),
+        ("Band", ""),
+        ("Frequency [GHz]", ".3f"),
+        ("τ measured [nepers]", ".4f"),
+        ("τ error [nepers]", ".4f"),
+        ("τ model [nepers]", ".4f"),
+    )
+    _EMPTY = "No fitted opacities on this dataset."
+
+    def _rows(self) -> list[tuple[Any, ...]]:
+        from tipopac.tables import measured_opacity_table
+
+        _, rows = measured_opacity_table(self.ds)
+        return [(*row[:3], row[3] / 1e9, *row[4:]) for row in rows]
+
+
 class PlotData:
     """Wrap the canonical tipopac dataset and dispatch the four plot types.
 
@@ -1139,6 +1248,12 @@ class PlotData:
     def summary(self) -> Summary:
         return Summary(self.ds)
 
+    def model_opacity_table(self) -> ModelOpacityTable:
+        return ModelOpacityTable(self.ds)
+
+    def measured_opacity_table(self) -> MeasuredOpacityTable:
+        return MeasuredOpacityTable(self.ds)
+
     def save_all(
         self, out_dir: str | Path = Path("."), plot_elev: bool = False
     ) -> None:
@@ -1154,6 +1269,12 @@ class PlotData:
         out.mkdir(parents=True, exist_ok=True)
 
         self.summary().save(out / "summary")
+
+        # Table pages — the HTML twins of model_opacity.tsv / measured_opacity.tsv.
+        if "am_freq_grid" in self.ds.data_vars:
+            self.model_opacity_table().save(out / "model_opacity_table")
+        if "tau_zenith" in self.ds.data_vars:
+            self.measured_opacity_table().save(out / "measured_opacity_table")
 
         success = self.ds["fit_success"]
         if not bool(success.any()):

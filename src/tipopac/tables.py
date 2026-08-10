@@ -13,8 +13,8 @@ from tipopac.atmgrid import GRID_FREQ_MAX_HZ, GRID_FREQ_MIN_HZ
 
 __all__ = ["measured_opacity_table", "model_opacity_table"]
 
-Row = tuple[object, ...]
-Table = tuple[tuple[str, ...], list[Row]]
+ModelRow = tuple[float, float]
+MeasuredRow = tuple[int, int, str, float, float, float, float]
 
 MODEL_COLUMNS: tuple[str, ...] = ("frequency_Hz", "tau_model")
 MEASURED_COLUMNS: tuple[str, ...] = (
@@ -28,7 +28,9 @@ MEASURED_COLUMNS: tuple[str, ...] = (
 )
 
 
-def model_opacity_table(ds: xr.Dataset) -> Table:
+def model_opacity_table(
+    ds: xr.Dataset,
+) -> tuple[tuple[str, ...], list[ModelRow]]:
     """Model τ(ν) on the uniform am grid, sliced to 1–51 GHz."""
     if "am_freq_grid" not in ds.data_vars or "am_tau" not in ds.data_vars:
         return MODEL_COLUMNS, []
@@ -41,7 +43,9 @@ def model_opacity_table(ds: xr.Dataset) -> Table:
     ]
 
 
-def measured_opacity_table(ds: xr.Dataset) -> Table:
+def measured_opacity_table(
+    ds: xr.Dataset,
+) -> tuple[tuple[str, ...], list[MeasuredRow]]:
     """Fitted and model τ at the spw centre frequencies, ascending in frequency.
 
     One row per ``(scan, spw)`` that has any successful fit. ``tau_measured``
@@ -68,7 +72,7 @@ def measured_opacity_table(ds: xr.Dataset) -> Table:
 
     model = _model_at(ds, freq_Hz)
 
-    rows: list[Row] = []
+    rows: list[MeasuredRow] = []
     for i_spw in np.argsort(freq_Hz, kind="stable"):
         for i_scan, scan in enumerate(ds["scan"].values):
             tau_val = float(tau_mean.values[i_scan, i_spw])

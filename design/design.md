@@ -657,7 +657,8 @@ Two τ tables, built by `tables.py` so the TSV and the weblog page
 always agree: `model_opacity.tsv` is the model curve on the uniform
 1–51 GHz am grid; `measured_opacity.tsv` is one row per fitted
 `(scan, spw)` — antenna-weighted τ, its error, and the model τ at that
-spw centre — ascending in frequency.
+spw centre — ascending in frequency. Each is mirrored as a static
+`*_table.html` page carrying every row of its TSV.
 
 `weblog.build_weblog(plot_dir)` is an independent pipeline step that
 scans `plot_dir` and emits a self-contained GUI `index.html` —
