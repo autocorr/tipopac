@@ -541,6 +541,11 @@ stores them on `TippingAnalysis._grids[scan_id]`. Auto-calls
 `fetch_atm_profile` if `atm_pressure` is not yet on the dataset.
 Writes the `pwv_profile_source(scan,)` data var for provenance.
 
+The frequency axis spans 1–51 GHz on exact `freq_step_Hz` nodes,
+extended outward in whole steps when the observed spws plus a ±5 %
+margin fall outside it. The span is wider than the tipping data so
+the exported model τ(ν) curve covers the full VLA tuning range.
+
 ### 7.3 `PwvGrid` contract
 
 A frozen dataclass — bilinear lookup table for

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from tipopac.api import TippingAnalysis
+from tipopac.api import TippingAnalysis, _grid_freq_span
 from tipopac.atmgrid import PwvGrid
 
 
@@ -158,3 +158,41 @@ def test_build_atm_grids_reuses_when_no_surface_pressure_data_var(
 
     TippingAnalysis(ds, Path("fake.ms")).build_atm_grids()
     assert call_count["n"] == 1
+
+
+@pytest.mark.parametrize(
+    ("obs_min_Hz", "obs_max_Hz", "expect"),
+    [
+        # K/Ka spws sit well inside 1–51 GHz — no extension either side.
+        (19.2e9, 43.9e9, (1e9, 51e9)),
+        # Q band: 50 GHz × 1.05 = 52.5 → 15 steps of 100 MHz above 51 GHz.
+        (40e9, 50e9, (1e9, 52.5e9)),
+        # L band: 1 GHz × 0.95 = 0.95 → one step below 1 GHz.
+        (1e9, 2e9, (0.9e9, 51e9)),
+    ],
+)
+def test_grid_freq_span(
+    obs_min_Hz: float, obs_max_Hz: float, expect: tuple[float, float]
+) -> None:
+    """1–51 GHz on exact nodes, extended outward to keep the ±5 % margin."""
+    got = _grid_freq_span(obs_min_Hz, obs_max_Hz, 100e6)
+    np.testing.assert_allclose(got, expect, rtol=0, atol=1e-3)
+
+
+def test_build_atm_grids_uses_full_band_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The grid spans 1–51 GHz, not the observed spw range."""
+    atm_p_Pa = np.array([[85000, 70000, 50000, 30000]], dtype=np.float64)
+    ds = _make_ds(1, atm_p_Pa=atm_p_Pa, surface_P_hPa=None)
+
+    seen: dict = {}
+
+    def _stub(*args: object, **kwargs: object) -> PwvGrid:
+        seen.update(kwargs)
+        return _toy_grid()
+
+    monkeypatch.setattr("tipopac.atmgrid.build_pwv_grid", _stub)
+
+    TippingAnalysis(ds, Path("fake.ms")).build_atm_grids()
+
+    assert seen["freq_min_Hz"] == pytest.approx(1e9)
+    assert seen["freq_max_Hz"] == pytest.approx(51e9)

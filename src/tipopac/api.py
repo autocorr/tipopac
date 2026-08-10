@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,19 @@ _INDEPENDENT_TO_BACKEND: dict[str, str] = {
     "independent_tau": "tau_per_antenna",
     "independent_tau_solve": "tcal_solve",
 }
+
+
+GRID_FREQ_MIN_HZ: float = 1e9
+GRID_FREQ_MAX_HZ: float = 51e9
+
+
+def _grid_freq_span(
+    obs_min_Hz: float, obs_max_Hz: float, step_Hz: float
+) -> tuple[float, float]:
+    """am grid span: 1–51 GHz on exact nodes, extended to keep the ±5 % margin."""
+    below = math.ceil(max(0.0, GRID_FREQ_MIN_HZ - obs_min_Hz * 0.95) / step_Hz)
+    above = math.ceil(max(0.0, obs_max_Hz * 1.05 - GRID_FREQ_MAX_HZ) / step_Hz)
+    return GRID_FREQ_MIN_HZ - below * step_Hz, GRID_FREQ_MAX_HZ + above * step_Hz
 
 
 def _module_version(name: str) -> str:
@@ -323,8 +337,9 @@ class TippingAnalysis:
             self.fetch_atm_profile()
 
         freqs = self._ds.coords["frequency"].values
-        freq_min_Hz = float(freqs.min()) * 0.95
-        freq_max_Hz = float(freqs.max()) * 1.05
+        freq_min_Hz, freq_max_Hz = _grid_freq_span(
+            float(freqs.min()), float(freqs.max()), freq_step_Hz
+        )
 
         scan_ids = self._ds.coords["scan"].values
         atm_source = str(self._ds.attrs.get("atm_profile_source", "unknown"))
