@@ -140,8 +140,9 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
   files via `weblog.build_weblog`.
 - `write_caltables(opacity, tcal)` — optional CASA-format outputs.
 - `write_outputs(output_dir, caltable_opacity, caltable_tcal)` —
-  bundle: NetCDF (`tipopac.nc`), Stage-B τ(ν) TSV (`model_opacity.tsv`),
-  plots, weblog, and opt-in caltables all into one directory.
+  bundle: NetCDF (`tipopac.nc`), the two τ(ν) TSVs
+  (`model_opacity.tsv`, `measured_opacity.tsv` — §9), plots, weblog,
+  and opt-in caltables all into one directory.
 
 ---
 
@@ -265,8 +266,8 @@ Data variables — atmospheric profile (filled by atmosphere.attach_profile)
 Data variables — atmospheric anchor (filled by anchor.anchor_pwv / write_am_curve)
   pwv              (antenna,)                              float32   mm   per-antenna fitted PWV
   pwv_err          (antenna,)                              float32   mm   1σ from Cramér–Rao
-  am_freq_grid     (frequency_dense,)                      float64   Hz   dense am output axis (TSV column 1)
-  am_tau           (frequency_dense,)                      float64   nepers, at representative PWV (TSV column 2)
+  am_freq_grid     (frequency_dense,)                      float64   Hz   dense am output axis (1–51 GHz)
+  am_tau           (frequency_dense,)                      float64   nepers, at representative PWV
 
 Attrs
   source_path         : str
@@ -650,6 +651,12 @@ mixing ratio (log) on independent x-axes.
 Per dataset: a textual `summary.html` (run metadata + per-scan stats
 table) — not a chart, just static HTML; surfaced as the weblog's
 landing view.
+
+Two τ tables, built by `tables.py` so the TSV and the weblog page
+always agree: `model_opacity.tsv` is the model curve on the uniform
+1–51 GHz am grid; `measured_opacity.tsv` is one row per fitted
+`(scan, spw)` — antenna-weighted τ, its error, and the model τ at that
+spw centre — ascending in frequency.
 
 `weblog.build_weblog(plot_dir)` is an independent pipeline step that
 scans `plot_dir` and emits a self-contained GUI `index.html` —

@@ -2,7 +2,7 @@
 
 Exercises ``_write_dataset_netcdf`` (with the gnarly attr coercion that
 matters in production — list/dict/Path/None attrs and the object-dtype
-``pwv_profile_source`` data var) and ``_write_model_opacity_tsv``.
+``pwv_profile_source`` data var) and ``_write_tsv``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,8 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from tipopac.api import _write_dataset_netcdf, _write_model_opacity_tsv
+from tipopac.api import _write_dataset_netcdf, _write_tsv
+from tipopac.tables import model_opacity_table
 
 
 def _messy_dataset() -> xr.Dataset:
@@ -114,18 +115,27 @@ def test_write_dataset_netcdf_handles_none_attr(tmp_path: Path) -> None:
         reopened.close()
 
 
-def test_write_model_opacity_tsv_roundtrip(tmp_path: Path) -> None:
-    """TSV is a header + N rows of ``frequency_Hz\\ttau_nepers``."""
+def test_write_tsv_model_opacity_roundtrip(tmp_path: Path) -> None:
+    """TSV is a header + N rows of ``frequency_Hz\\ttau_model``."""
     ds = _messy_dataset()
     path = tmp_path / "model_opacity.tsv"
 
-    _write_model_opacity_tsv(ds, path)
+    _write_tsv(path, model_opacity_table(ds))
 
     text = path.read_text()
     lines = text.strip().splitlines()
-    assert lines[0] == "frequency_Hz\ttau_nepers"
+    assert lines[0] == "frequency_Hz\ttau_model"
     assert len(lines) == 1 + ds["am_freq_grid"].size
 
     data = np.loadtxt(path, delimiter="\t", skiprows=1)
     np.testing.assert_allclose(data[:, 0], ds["am_freq_grid"].values, rtol=1e-6)
     np.testing.assert_allclose(data[:, 1], ds["am_tau"].values, rtol=1e-6)
+
+
+def test_write_tsv_mixed_column_types(tmp_path: Path) -> None:
+    """Ints and strings are written verbatim; floats in ``%.6e``."""
+    path = tmp_path / "measured_opacity.tsv"
+
+    _write_tsv(path, (("scan", "band", "tau"), [(7, "Ka", 0.0325)]))
+
+    assert path.read_text() == "scan\tband\ttau\n7\tKa\t3.250000e-02\n"

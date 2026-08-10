@@ -13,7 +13,7 @@ from typing import Any, Literal
 import numpy as np
 import xarray as xr
 
-from tipopac.atmgrid import PwvGrid
+from tipopac.atmgrid import GRID_FREQ_MAX_HZ, GRID_FREQ_MIN_HZ, PwvGrid
 from tipopac.readers import detect_reader as _detect_reader
 
 _log = logging.getLogger(__name__)
@@ -25,10 +25,6 @@ _INDEPENDENT_TO_BACKEND: dict[str, str] = {
     "independent_tau": "tau_per_antenna",
     "independent_tau_solve": "tcal_solve",
 }
-
-
-GRID_FREQ_MIN_HZ: float = 1e9
-GRID_FREQ_MAX_HZ: float = 51e9
 
 
 def _grid_freq_span(
@@ -121,19 +117,18 @@ def _write_dataset_netcdf(ds: xr.Dataset, path: Path) -> None:
     to_write.to_netcdf(path)
 
 
-def _write_model_opacity_tsv(ds: xr.Dataset, path: Path) -> None:
-    """Stage-B model atmospheric opacity τ(ν) as a two-column TSV.
-
-    Reads ``am_freq_grid`` (Hz) and ``am_tau`` (nepers) from ``ds`` —
-    both 1-D over ``frequency_dense`` — and writes
-    ``frequency_Hz\\ttau_nepers`` rows.
-    """
-    freq_Hz = np.asarray(ds["am_freq_grid"].values, dtype=np.float64)
-    tau = np.asarray(ds["am_tau"].values, dtype=np.float64)
+def _write_tsv(
+    path: Path, table: tuple[tuple[str, ...], list[tuple[object, ...]]]
+) -> None:
+    """Write a ``(columns, rows)`` table from :mod:`tipopac.tables` as a TSV."""
+    columns, rows = table
     with path.open("w") as f:
-        f.write("frequency_Hz\ttau_nepers\n")
-        for nu, t in zip(freq_Hz, tau, strict=True):
-            f.write(f"{nu:.6e}\t{t:.6e}\n")
+        f.write("\t".join(columns) + "\n")
+        for row in rows:
+            f.write(
+                "\t".join(f"{v:.6e}" if isinstance(v, float) else str(v) for v in row)
+                + "\n"
+            )
 
 
 @dataclass(frozen=True)
@@ -515,15 +510,19 @@ class TippingAnalysis:
         """Write every artifact for this analysis into ``output_dir``.
 
         Creates ``output_dir`` if missing, then writes the full Dataset
-        (``tipopac.nc``), the Stage-B τ(ν) table (``model_opacity.tsv``),
-        every diagnostic plot, and the weblog ``index.html``. Caltables
-        are opt-in via the boolean flags and land in the same directory
-        as ``tipopac.opacity`` / ``tipopac.tcal``.
+        (``tipopac.nc``), the Stage-B model τ(ν) curve
+        (``model_opacity.tsv``), the fitted and model τ at the spw centres
+        (``measured_opacity.tsv``), every diagnostic plot, and the weblog
+        ``index.html``. Caltables are opt-in via the boolean flags and land
+        in the same directory as ``tipopac.opacity`` / ``tipopac.tcal``.
         """
+        from tipopac.tables import measured_opacity_table, model_opacity_table
+
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         _write_dataset_netcdf(self._ds, out_dir / "tipopac.nc")
-        _write_model_opacity_tsv(self._ds, out_dir / "model_opacity.tsv")
+        _write_tsv(out_dir / "model_opacity.tsv", model_opacity_table(self._ds))
+        _write_tsv(out_dir / "measured_opacity.tsv", measured_opacity_table(self._ds))
         self.plot(out_dir=out_dir)
         self.weblog(plot_dir=out_dir)
         if caltable_opacity or caltable_tcal:

@@ -41,6 +41,8 @@ DEFAULT_PWV_MIN_MM: float = 1.0
 DEFAULT_PWV_MAX_MM: float = 50.0
 DEFAULT_PWV_STEP_MM: float = 0.5
 DEFAULT_FREQ_STEP_HZ: float = 100e6  # 100 MHz, matches warm-am ≈ 25 ms
+GRID_FREQ_MIN_HZ: float = 1e9
+GRID_FREQ_MAX_HZ: float = 51e9
 
 # Per-worker cache dir parent. tmpfs avoids HDD-backed /tmp on hosts where
 # TMPDIR isn't pointed at RAM; falls back to tempfile's default if /dev/shm
