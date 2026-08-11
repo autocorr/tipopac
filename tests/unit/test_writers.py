@@ -34,8 +34,8 @@ def _messy_dataset() -> xr.Dataset:
         data_vars={
             "am_freq_grid": (("frequency_dense",), freq.astype(np.float64)),
             "am_tau": (
-                ("frequency_dense",),
-                np.linspace(0.01, 0.05, 8).astype(np.float64),
+                ("group", "frequency_dense"),
+                np.linspace(0.01, 0.05, 8).astype(np.float64)[None, :],
             ),
             "pwv_profile_source": (
                 ("scan",),
@@ -43,6 +43,8 @@ def _messy_dataset() -> xr.Dataset:
             ),
         },
     )
+    ds.coords["group"] = np.array([0], dtype=np.int32)
+    ds.coords["scan_group"] = (("scan",), np.zeros(2, dtype=np.int32))
     ds.attrs["mode"] = "independent_tau_solve"
     ds.attrs["source_path"] = Path("/tmp/fake.ms")
     ds.attrs["source_format"] = "ms"
@@ -116,26 +118,49 @@ def test_write_dataset_netcdf_handles_none_attr(tmp_path: Path) -> None:
 
 
 def test_write_tsv_model_opacity_roundtrip(tmp_path: Path) -> None:
-    """TSV is a header + N rows of ``frequency_Hz\\ttau_model``."""
+    """TSV is a header + N rows of ``group\\tfrequency_Hz\\ttau_model``."""
     ds = _messy_dataset()
     path = tmp_path / "model_opacity.tsv"
 
-    _write_tsv(path, model_opacity_table(ds))
+    _write_tsv(path, ds, model_opacity_table)
 
     text = path.read_text()
     lines = text.strip().splitlines()
-    assert lines[0] == "frequency_Hz\ttau_model"
+    assert lines[0] == "group\tfrequency_Hz\ttau_model"
     assert len(lines) == 1 + ds["am_freq_grid"].size
 
     data = np.loadtxt(path, delimiter="\t", skiprows=1)
-    np.testing.assert_allclose(data[:, 0], ds["am_freq_grid"].values, rtol=1e-6)
-    np.testing.assert_allclose(data[:, 1], ds["am_tau"].values, rtol=1e-6)
+    np.testing.assert_array_equal(data[:, 0], 0)
+    np.testing.assert_allclose(data[:, 1], ds["am_freq_grid"].values, rtol=1e-6)
+    np.testing.assert_allclose(data[:, 2], ds["am_tau"].values[0], rtol=1e-6)
 
 
 def test_write_tsv_mixed_column_types(tmp_path: Path) -> None:
     """Ints and strings are written verbatim; floats in ``%.6e``."""
     path = tmp_path / "measured_opacity.tsv"
+    ds = _messy_dataset()
 
-    _write_tsv(path, (("scan", "band", "tau"), [(7, "Ka", 0.0325)]))
+    _write_tsv(path, ds, lambda _: (("scan", "band", "tau"), [(7, "Ka", 0.0325)]))
 
-    assert path.read_text() == "scan\tband\ttau\n7\tKa\t3.250000e-02\n"
+    assert path.read_text() == "group\tscan\tband\ttau\n0\t7\tKa\t3.250000e-02\n"
+
+
+def test_write_tsv_concatenates_groups(tmp_path: Path) -> None:
+    """Every group lands in one file behind a leading `group` column."""
+    ds = _messy_dataset().drop_vars(["group", "am_tau"])
+    ds["am_tau"] = (
+        ("group", "frequency_dense"),
+        np.stack([np.full(8, 0.02), np.full(8, 0.04)]),
+    )
+    ds.coords["group"] = np.array([0, 1], dtype=np.int32)
+    ds.coords["scan_group"] = (("scan",), np.array([0, 1], dtype=np.int32))
+    path = tmp_path / "model_opacity.tsv"
+
+    _write_tsv(path, ds, model_opacity_table)
+
+    data = np.loadtxt(path, delimiter="\t", skiprows=1)
+    assert data.shape == (16, 3)
+    np.testing.assert_array_equal(data[:8, 0], 0)
+    np.testing.assert_array_equal(data[8:, 0], 1)
+    np.testing.assert_allclose(data[:8, 2], 0.02)
+    np.testing.assert_allclose(data[8:, 2], 0.04)

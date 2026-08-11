@@ -131,6 +131,7 @@ def make_minimal_ds(
         # puts each in its own group.
         groups = assign_groups(ds.coords["scan_time_start"].values, 60.0)
         n_group = int(groups.max()) + 1
+        ds.coords["group"] = np.arange(n_group, dtype=np.int32)
         ds.coords["scan_group"] = (("scan",), groups)
         ds.coords["group_time_start"] = (
             ("group",),

@@ -235,7 +235,8 @@ Coords
   antenna_position(antenna, xyz)   m              ITRF X, Y, Z
   scan_time_start(scan)            s              UTC MJD-seconds
   scan_time_end(scan)              s              UTC MJD-seconds
-  scan_group(scan)                 int32          Stage-B time group index (post-fit)
+  group(group)                     int32          Stage-B time group index (post-fit)
+  scan_group(scan)                 int32          each scan's group (post-fit)
   group_time_start(group)          s              UTC MJD-seconds (post-fit)
   group_time_end(group)            s              UTC MJD-seconds (post-fit)
   time_utc(scan, time)             float64        non-dim 2D coord; per-sample
@@ -683,16 +684,21 @@ the optional
 chart with pressure on a log y-axis (850 → 10 hPa) and T (linear) /
 mixing ratio (log) on independent x-axes.
 
-Per dataset: a textual `summary.html` (run metadata + per-scan stats
-table) — not a chart, just static HTML; surfaced as the weblog's
-landing view.
+Everything above is written **per time group** into
+`out_dir/group_{k}/`, built from a `schema.select_group(ds, k)` slice so
+no chart class is group-aware. Per group: a textual `summary.html` (that
+group's metadata + per-scan stats table). Per run: `run_summary.html` at
+the top level — run-global metadata plus the group index (member scans,
+UTC span, fitted PWV) — surfaced as the weblog's landing view.
 
 Two τ tables, built by `tables.py` so the TSV and the weblog page
 always agree: `model_opacity.tsv` is the model curve on the uniform
 1–51 GHz am grid; `measured_opacity.tsv` is one row per fitted
 `(scan, spw)` — antenna-weighted τ, its error, and the model τ at that
-spw centre — ascending in frequency. Each is mirrored as a static
-`*_table.html` page carrying every row of its TSV.
+spw centre — ascending in frequency. Both stay single top-level files
+covering every group, behind a leading `group` column; the per-group
+`*_table.html` page renders that group's rows, so it is a filtered view
+of the TSV rather than a second rendering that could diverge.
 
 `weblog.build_weblog(plot_dir)` is an independent pipeline step that
 scans `plot_dir` and emits a self-contained GUI `index.html` —

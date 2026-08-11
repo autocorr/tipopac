@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -118,17 +118,28 @@ def _write_dataset_netcdf(ds: xr.Dataset, path: Path) -> None:
 
 
 def _write_tsv(
-    path: Path, table: tuple[Sequence[str], Sequence[Sequence[Any]]]
+    path: Path,
+    ds: xr.Dataset,
+    builder: Callable[[xr.Dataset], tuple[Sequence[str], Sequence[Sequence[Any]]]],
 ) -> None:
-    """Write a ``(columns, rows)`` table from :mod:`tipopac.tables` as a TSV."""
-    columns, rows = table
+    """Write one TSV over every time group, with a leading ``group`` column.
+
+    The per-group weblog page renders `builder`'s rows for its own group, so
+    the page stays a filtered view of this file rather than a second rendering
+    that could disagree with it (§9).
+    """
+    from tipopac.schema import select_group
+
+    header_written = False
     with path.open("w") as f:
-        f.write("\t".join(columns) + "\n")
-        for row in rows:
-            f.write(
-                "\t".join(f"{v:.6e}" if isinstance(v, float) else str(v) for v in row)
-                + "\n"
-            )
+        for k in range(int(ds.sizes["group"])):
+            columns, rows = builder(select_group(ds, k))
+            if not header_written:
+                f.write("\t".join(("group", *columns)) + "\n")
+                header_written = True
+            for row in rows:
+                cells = (f"{v:.6e}" if isinstance(v, float) else str(v) for v in row)
+                f.write("\t".join((str(k), *cells)) + "\n")
 
 
 @dataclass(frozen=True)
@@ -501,6 +512,8 @@ class TippingAnalysis:
             freqs_Hz,
             groups,
         )
+        # A real `group` index coord, so select_group's .sel is label-based.
+        self._ds.coords["group"] = np.arange(n_group, dtype=np.int32)
         self._ds.coords["scan_group"] = (("scan",), groups)
         self._ds.coords["group_time_start"] = (
             ("group",),
@@ -563,8 +576,8 @@ class TippingAnalysis:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         _write_dataset_netcdf(self._ds, out_dir / "tipopac.nc")
-        _write_tsv(out_dir / "model_opacity.tsv", model_opacity_table(self._ds))
-        _write_tsv(out_dir / "measured_opacity.tsv", measured_opacity_table(self._ds))
+        _write_tsv(out_dir / "model_opacity.tsv", self._ds, model_opacity_table)
+        _write_tsv(out_dir / "measured_opacity.tsv", self._ds, measured_opacity_table)
         self.plot(out_dir=out_dir)
         self.weblog(plot_dir=out_dir)
         if caltable_opacity or caltable_tcal:

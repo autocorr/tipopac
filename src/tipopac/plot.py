@@ -28,6 +28,7 @@ import pandas as pd
 import xarray as xr
 
 from tipopac.physics import predicted_tsys
+from tipopac.schema import SchemaError, select_group
 from tipopac.tables import am_tau_1d
 from tipopac.timeutils import mjd_s_to_unix_s
 
@@ -1097,6 +1098,7 @@ class Summary(_HtmlPage):
             ("Mode", self._attr("mode")),
             ("Atmospheric profile", self._attr("atm_profile_source")),
             ("Selected bands", self._attr("selected_bands")),
+            ("Time group", self._group_row_label()),
             ("Fitted PWV", self._fitted_pwv()),
         )
         meta_html = "\n".join(
@@ -1132,6 +1134,12 @@ class Summary(_HtmlPage):
         )
 
     # ------------------------------------------------------------------
+    def _group_row_label(self) -> str:
+        """``Group k`` when the slice carries one group, else ``—``."""
+        if "group" not in self.ds.dims or self.ds.sizes["group"] != 1:
+            return self._MISSING
+        return f"Group {int(self.ds.coords['group'].values[0])}"
+
     def _scan_stats(self) -> tuple[list[str], list[tuple[str, list[str]]]]:
         ds = self.ds
         scans = [str(int(s)) for s in ds["scan"].values]
@@ -1200,6 +1208,98 @@ class Summary(_HtmlPage):
             ("Fit success", succ_strs),
         ]
         return scans, rows
+
+
+class RunSummary(Summary):
+    """Run-global landing page: whole-run metadata plus the time-group index.
+
+    Everything else in the weblog is per group; this is the one page that
+    describes the run as a whole and says which scans landed where.
+    """
+
+    def _render(self) -> str:
+        meta_rows = (
+            ("Input", self._attr("source_path")),
+            ("Source format", self._attr("source_format")),
+            ("Observatory", self._attr("observatory")),
+            ("Mode", self._attr("mode")),
+            ("Atmospheric profile", self._attr("atm_profile_source")),
+            ("Selected bands", self._attr("selected_bands")),
+            ("Selected scans", self._attr("selected_scans")),
+            ("Group duration [s]", self._attr("group_duration_s")),
+        )
+        meta_html = "\n".join(
+            f"  <dt>{escape(label)}</dt><dd>{escape(value)}</dd>"
+            for label, value in meta_rows
+        )
+
+        headers, rows = self._group_table()
+        header_html = "".join(f"<th>{escape(h)}</th>" for h in headers)
+        body_rows = "\n".join(
+            "    <tr>{cells}</tr>".format(
+                cells="".join(f"<td>{escape(v)}</td>" for v in row)
+            )
+            for row in rows
+        )
+
+        return _document(
+            "tipopac run summary",
+            f"""<h2>Run</h2>
+<dl class="meta">
+{meta_html}
+</dl>
+<h2>Time groups</h2>
+<table class="stats">
+  <thead>
+    <tr>{header_html}</tr>
+  </thead>
+  <tbody>
+{body_rows}
+  </tbody>
+</table>""",
+        )
+
+    # ------------------------------------------------------------------
+    def _group_table(self) -> tuple[list[str], list[list[str]]]:
+        headers = ["Group", "Scans", "UTC start", "UTC end", "Fitted PWV [mm]"]
+        if "scan_group" not in self.ds.coords:
+            return headers, []
+
+        scan_group = self.ds.coords["scan_group"].values
+        scans = self.ds.coords["scan"].values
+        t_start = self.ds.coords.get("group_time_start")
+        t_end = self.ds.coords.get("group_time_end")
+
+        rows: list[list[str]] = []
+        for k in range(int(self.ds.sizes["group"])):
+            members = ", ".join(str(int(s)) for s in scans[scan_group == k])
+            rows.append(
+                [
+                    str(k),
+                    members or self._MISSING,
+                    self._format_mjd(float(t_start.values[k]))
+                    if t_start is not None
+                    else self._MISSING,
+                    self._format_mjd(float(t_end.values[k]))
+                    if t_end is not None
+                    else self._MISSING,
+                    self._group_pwv(k),
+                ]
+            )
+        return headers, rows
+
+    def _group_pwv(self, group: int) -> str:
+        if "pwv" not in self.ds.data_vars:
+            return self._MISSING
+        pwv = float(self.ds["pwv"].isel(group=group).median(skipna=True))
+        if not np.isfinite(pwv):
+            return self._MISSING
+        err = (
+            float(self.ds["pwv_err"].isel(group=group).median(skipna=True))
+            if "pwv_err" in self.ds.data_vars
+            else np.nan
+        )
+        return f"{pwv:.2f}" if not np.isfinite(err) else f"{pwv:.2f} ± {err:.2f}"
 
 
 class _OpacityTablePage(_HtmlPage):
@@ -1332,6 +1432,9 @@ class PlotData:
     def summary(self) -> Summary:
         return Summary(self.ds)
 
+    def run_summary(self) -> RunSummary:
+        return RunSummary(self.ds)
+
     def model_opacity_table(self) -> ModelOpacityTable:
         return ModelOpacityTable(self.ds)
 
@@ -1341,11 +1444,32 @@ class PlotData:
     def save_all(
         self, out_dir: str | Path = Path("."), plot_elev: bool = False
     ) -> None:
-        """Write every applicable plot to ``out_dir`` as stand-alone ``.html``.
+        """Write ``run_summary.html`` plus one full plot set per time group.
+
+        Group ``k``'s plots land in ``out_dir/group_{k}/``. Each set is built
+        from a :func:`tipopac.schema.select_group` slice, so every chart class
+        sees an ordinary single-group dataset and needs no group awareness.
+        """
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        self.run_summary().save(out / "run_summary")
+
+        if "scan_group" not in self.ds.coords:
+            raise SchemaError(
+                "save_all requires the 'scan_group' coord; run fit() first"
+            )
+        for k in range(int(self.ds.sizes["group"])):
+            PlotData(select_group(self.ds, k))._save_group(
+                out / f"group_{k}", plot_elev
+            )
+
+    def _save_group(self, out_dir: Path, plot_elev: bool) -> None:
+        """Write one group's plot set — the pre-grouping ``save_all`` body.
 
         - ``tippingcurve_spw_{spw}_{ant}_scan_{scan}`` per successful cell.
-        - ``tau_vs_frequency`` over every scan.
-        - ``tcal_ref_vs_frequency`` over every scan.
+        - ``tau_vs_frequency`` over the group's scans.
+        - ``tcal_ref_vs_frequency`` over the group's scans.
         - ``tcal_fit_vs_frequency`` and ``c_vs_frequency`` additionally when
           ``tcal_fit`` differs from ``tcal_ref`` (``independent_tau_solve`` mode).
         """
@@ -1362,7 +1486,7 @@ class PlotData:
 
         success = self.ds["fit_success"]
         if not bool(success.any()):
-            _log.warning("save_all: no successful fits; no plots will be written")
+            _log.warning("%s: no successful fits; no plots will be written", out.name)
 
         # Per-cell elevation curves.
         if plot_elev:

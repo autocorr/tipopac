@@ -11,6 +11,7 @@ import xarray as xr
 
 from tipopac import schema
 from tipopac.plot import PlotData
+from tipopac.timeutils import assign_groups
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +172,27 @@ def _make_plot_ds(
 
     ds = xr.Dataset(data_vars=data_vars, coords=coords)
     ds.attrs["mode"] = mode
+    # Stage-B group artifacts. Scans are 120 s apart, so the 1 h default
+    # window puts them all in group 0.
+    ds.coords["group"] = np.array([0], dtype=np.int32)
+    ds.coords["scan_group"] = (
+        ("scan",),
+        assign_groups(ds.coords["scan_time_start"].values, 3600.0),
+    )
+    ds.coords["group_time_start"] = (
+        ("group",),
+        np.array([ds.coords["scan_time_start"].values.min()]),
+    )
+    ds.coords["group_time_end"] = (
+        ("group",),
+        np.array([ds.coords["scan_time_end"].values.max()]),
+    )
     return ds
+
+
+def _g(root: Path, group: int = 0) -> Path:
+    """save_all writes each time group's plot set into ``group_{k}/``."""
+    return root / f"group_{group}"
 
 
 def _tooltip_fields(layer_spec: dict) -> list[str]:
@@ -802,7 +823,7 @@ def test_residual_rms_heatmap_multi_scan_facets_independent_x() -> None:
 def test_save_all_writes_residual_rms_heatmap(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_scan=2, n_ant=2, n_spw=2, success=True)
     PlotData(ds).save_all(tmp_path)
-    assert (tmp_path / "residual_rms_heatmap.html").exists()
+    assert (_g(tmp_path) / "residual_rms_heatmap.html").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -814,21 +835,21 @@ def test_save_all_writes_residual_rms_heatmap(tmp_path: Path) -> None:
 def test_save_all_writes_tipping_curves(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
     PlotData(ds).save_all(tmp_path, plot_elev=True)
-    htmls = list(tmp_path.glob("tippingcurve_*.html"))
+    htmls = list(_g(tmp_path).glob("tippingcurve_*.html"))
     assert len(htmls) == 1
 
 
 def test_save_all_filename_convention(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
     PlotData(ds).save_all(tmp_path, plot_elev=True)
-    [html] = list(tmp_path.glob("tippingcurve_*.html"))
+    [html] = list(_g(tmp_path).glob("tippingcurve_*.html"))
     assert html.name == "tippingcurve_spw_0_ea01_scan_1.html"
 
 
 def test_save_all_skips_failed_cells(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=False)
     PlotData(ds).save_all(tmp_path, plot_elev=True)
-    assert list(tmp_path.glob("tippingcurve_*.html")) == []
+    assert list(_g(tmp_path).glob("tippingcurve_*.html")) == []
     # No index.html is written by save_all — that's weblog.build_weblog's job.
     assert not (tmp_path / "index.html").exists()
 
@@ -838,29 +859,29 @@ def test_save_all_creates_output_dir(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
     PlotData(ds).save_all(out, plot_elev=True)
     assert out.is_dir()
-    assert len(list(out.glob("tippingcurve_*.html"))) == 1
+    assert len(list(_g(out).glob("tippingcurve_*.html"))) == 1
 
 
 def test_save_all_with_am_overlay(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True, with_am=True)
     PlotData(ds).save_all(tmp_path, plot_elev=True)
-    assert len(list(tmp_path.glob("tippingcurve_*.html"))) == 1
-    assert (tmp_path / "tau_vs_frequency.html").exists()
+    assert len(list(_g(tmp_path).glob("tippingcurve_*.html"))) == 1
+    assert (_g(tmp_path) / "tau_vs_frequency.html").exists()
 
 
 def test_save_all_multi_cell(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_scan=2, n_ant=3, n_spw=2, success=True)
     PlotData(ds).save_all(tmp_path, plot_elev=True)
-    assert len(list(tmp_path.glob("tippingcurve_*.html"))) == 2 * 3 * 2
+    assert len(list(_g(tmp_path).glob("tippingcurve_*.html"))) == 2 * 3 * 2
     # tau_vs_frequency is a single aggregate file across all scans.
-    assert (tmp_path / "tau_vs_frequency.html").exists()
+    assert (_g(tmp_path) / "tau_vs_frequency.html").exists()
 
 
 def test_save_all_partial_success(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_scan=1, n_ant=2, n_spw=1, success=True)
     ds["fit_success"].values[0, 1, 0] = False
     PlotData(ds).save_all(tmp_path, plot_elev=True)
-    htmls = list(tmp_path.glob("tippingcurve_*.html"))
+    htmls = list(_g(tmp_path).glob("tippingcurve_*.html"))
     assert len(htmls) == 1
 
 
@@ -869,13 +890,13 @@ def test_save_all_writes_only_html(tmp_path: Path) -> None:
     PlotData(ds).save_all(tmp_path)
     # No matplotlib-era extensions should leak through.
     for ext in ("pdf", "png", "svgz"):
-        assert list(tmp_path.glob(f"*.{ext}")) == []
+        assert list(_g(tmp_path).glob(f"*.{ext}")) == []
 
 
 def test_save_all_always_writes_tcal_ref(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
     PlotData(ds).save_all(tmp_path)
-    assert (tmp_path / "tcal_ref_vs_frequency.html").exists()
+    assert (_g(tmp_path) / "tcal_ref_vs_frequency.html").exists()
 
 
 def test_save_all_skips_tcal_fit_and_c_in_independent_tau_mode(
@@ -883,34 +904,34 @@ def test_save_all_skips_tcal_fit_and_c_in_independent_tau_mode(
 ) -> None:
     ds = _make_plot_ds(n_spw=2, success=True, mode="independent_tau")
     PlotData(ds).save_all(tmp_path)
-    assert not (tmp_path / "tcal_fit_vs_frequency.html").exists()
-    assert not (tmp_path / "c_vs_frequency.html").exists()
+    assert not (_g(tmp_path) / "tcal_fit_vs_frequency.html").exists()
+    assert not (_g(tmp_path) / "c_vs_frequency.html").exists()
 
 
 def test_save_all_emits_tcal_fit_and_c_in_solve_mode(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_spw=2, success=True, mode="independent_tau_solve")
     ds["tcal_fit"].values *= 1.05
     PlotData(ds).save_all(tmp_path)
-    assert (tmp_path / "tcal_fit_vs_frequency.html").exists()
-    assert (tmp_path / "c_vs_frequency.html").exists()
+    assert (_g(tmp_path) / "tcal_fit_vs_frequency.html").exists()
+    assert (_g(tmp_path) / "c_vs_frequency.html").exists()
 
 
 def test_save_all_writes_fit_quality_heatmap(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_scan=2, n_ant=2, n_spw=2, success=True)
     PlotData(ds).save_all(tmp_path)
-    assert (tmp_path / "fit_quality_heatmap.html").exists()
+    assert (_g(tmp_path) / "fit_quality_heatmap.html").exists()
 
 
 def test_save_all_writes_atmospheric_profile_when_present(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True, with_atm=True)
     PlotData(ds).save_all(tmp_path)
-    assert (tmp_path / "atmospheric_profile.html").exists()
+    assert (_g(tmp_path) / "atmospheric_profile.html").exists()
 
 
 def test_save_all_skips_atmospheric_profile_when_absent(tmp_path: Path) -> None:
     ds = _make_plot_ds(success=True)
     PlotData(ds).save_all(tmp_path)
-    assert not (tmp_path / "atmospheric_profile.html").exists()
+    assert not (_g(tmp_path) / "atmospheric_profile.html").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1002,11 +1023,99 @@ def test_measured_opacity_table_without_fits() -> None:
 
 def test_save_all_writes_table_pages(tmp_path: Path) -> None:
     PlotData(_make_plot_ds(with_am=True)).save_all(tmp_path)
-    assert (tmp_path / "model_opacity_table.html").exists()
-    assert (tmp_path / "measured_opacity_table.html").exists()
+    assert (_g(tmp_path) / "model_opacity_table.html").exists()
+    assert (_g(tmp_path) / "measured_opacity_table.html").exists()
 
 
 def test_save_all_skips_model_table_without_am_curve(tmp_path: Path) -> None:
     PlotData(_make_plot_ds()).save_all(tmp_path)
-    assert not (tmp_path / "model_opacity_table.html").exists()
-    assert (tmp_path / "measured_opacity_table.html").exists()
+    assert not (_g(tmp_path) / "model_opacity_table.html").exists()
+    assert (_g(tmp_path) / "measured_opacity_table.html").exists()
+
+
+# ---------------------------------------------------------------------------
+# Per-group save_all layout + RunSummary
+# ---------------------------------------------------------------------------
+
+
+def _regroup(ds: xr.Dataset, scan_group: list[int]) -> xr.Dataset:
+    """Re-label scans into groups and resize the group-dimensioned coords."""
+    groups = np.asarray(scan_group, dtype=np.int32)
+    n_group = int(groups.max()) + 1
+    ds = ds.drop_vars(["group", "group_time_start", "group_time_end"])
+    if "am_tau" in ds.data_vars:
+        ds["am_tau"] = (
+            ("group", "frequency_dense"),
+            np.repeat(ds["am_tau"].values[:1], n_group, axis=0),
+        )
+    ds.coords["group"] = np.arange(n_group, dtype=np.int32)
+    ds.coords["scan_group"] = (("scan",), groups)
+    t0 = ds.coords["scan_time_start"].values
+    t1 = ds.coords["scan_time_end"].values
+    ds.coords["group_time_start"] = (
+        ("group",),
+        np.array([t0[groups == k].min() for k in range(n_group)]),
+    )
+    ds.coords["group_time_end"] = (
+        ("group",),
+        np.array([t1[groups == k].max() for k in range(n_group)]),
+    )
+    return ds
+
+
+def test_save_all_writes_run_summary_at_top_level(tmp_path: Path) -> None:
+    PlotData(_make_plot_ds()).save_all(tmp_path)
+    assert (tmp_path / "run_summary.html").exists()
+    assert not (tmp_path / "summary.html").exists()
+    assert (_g(tmp_path) / "summary.html").exists()
+
+
+def test_save_all_writes_one_subdir_per_group(tmp_path: Path) -> None:
+    ds = _regroup(_make_plot_ds(n_scan=4, with_am=True), [0, 0, 1, 1])
+    PlotData(ds).save_all(tmp_path)
+
+    assert sorted(p.name for p in tmp_path.glob("group_*")) == ["group_0", "group_1"]
+    for k in (0, 1):
+        assert (_g(tmp_path, k) / "tau_vs_frequency.html").exists()
+        assert (_g(tmp_path, k) / "summary.html").exists()
+
+
+def test_save_all_group_dir_holds_only_that_groups_scans(tmp_path: Path) -> None:
+    ds = _regroup(_make_plot_ds(n_scan=4), [0, 0, 1, 1])
+    PlotData(ds).save_all(tmp_path, plot_elev=True)
+
+    names = {p.name for p in _g(tmp_path, 0).glob("tippingcurve_*.html")}
+    assert names == {
+        "tippingcurve_spw_0_ea01_scan_1.html",
+        "tippingcurve_spw_0_ea01_scan_2.html",
+    }
+
+
+def test_save_all_without_scan_group_raises(tmp_path: Path) -> None:
+    ds = _make_plot_ds().drop_vars("scan_group")
+    with pytest.raises(schema.SchemaError, match="scan_group"):
+        PlotData(ds).save_all(tmp_path)
+
+
+def test_run_summary_lists_each_group_and_its_scans() -> None:
+    ds = _regroup(_make_plot_ds(n_scan=4), [0, 0, 1, 1])
+    ds["pwv"] = (("group", "antenna"), np.array([[3.0], [7.0]], dtype=np.float32))
+    ds["pwv_err"] = (("group", "antenna"), np.array([[0.1], [0.2]], dtype=np.float32))
+
+    body = PlotData(ds).run_summary()._render()
+    assert "<td>1, 2</td>" in body
+    assert "<td>3, 4</td>" in body
+    assert "3.00 ± 0.10" in body
+    assert "7.00 ± 0.20" in body
+
+
+def test_run_summary_pwv_missing_renders_dash() -> None:
+    body = PlotData(_make_plot_ds()).run_summary()._render()
+    assert "Time groups" in body
+    assert "—" in body
+
+
+def test_summary_names_its_group() -> None:
+    ds = _regroup(_make_plot_ds(n_scan=4), [0, 0, 1, 1])
+    body = PlotData(schema.select_group(ds, 1)).summary()._render()
+    assert "<dd>Group 1</dd>" in body
