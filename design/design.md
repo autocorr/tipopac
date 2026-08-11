@@ -693,21 +693,22 @@ group's metadata + per-scan stats table). Per run: `run_summary.html` at
 the top level — run-global metadata plus the group index (member scans,
 UTC span, fitted PWV) — surfaced as the weblog's landing view.
 
-Two τ tables, built by `tables.py` so the TSV and the weblog page
-always agree: `model_opacity.tsv` is the model curve on the uniform
-1–51 GHz am grid; `measured_opacity.tsv` is one row per fitted
-`(scan, spw)` — antenna-weighted τ, its error, and the model τ at that
-spw centre — ascending in frequency. Both stay single top-level files
-covering every group, behind a leading `group` column; the per-group
-`*_table.html` page renders that group's rows, so it is a filtered view
-of the TSV rather than a second rendering that could diverge.
+Two τ tables, both built by `tables.py`: `model_opacity.tsv` is the
+model curve on the uniform 1–51 GHz am grid; `measured_opacity.tsv` is
+one row per fitted `(scan, spw)` — antenna-weighted τ, its error, and
+the model τ at that spw centre — ascending in frequency. Each is a
+single top-level file spanning every group, behind a leading `group`
+column. The `*_table.html` page in `group_{k}/` shows **only** group
+`k`'s rows and carries no `group` column; the TSV is the whole-run
+artifact and the page is the per-group view. Sharing the builder keeps
+the values identical, but the two are not row-for-row mirrors.
 
 `weblog.build_weblog(plot_dir)` is an independent pipeline step that
-scans `plot_dir` and emits a self-contained GUI `index.html` —
-dropdown for plot type (defaults to the summary when present) plus
-text boxes for `(scan, antenna, spw)` when picking an elevation
-curve. Missing files surface as "Plot not found: …" rather than
-broken iframes.
+scans `plot_dir`'s `group_{k}/` subdirectories and emits a
+self-contained GUI `index.html` — group dropdown, then a plot-type
+dropdown and `(scan, antenna, spw)` selectors, all scoped to the
+selected group. Missing files surface as "Plot not found: …" rather
+than broken iframes.
 
 `out_dir` is created with `Path.mkdir(parents=True, exist_ok=True)`.
 
