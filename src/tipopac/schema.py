@@ -13,11 +13,14 @@ import xarray as xr
 
 __all__ = [
     "INPUT_DATA_VARS",
+    "OPTIONAL_COORDS",
     "OPTIONAL_DATA_VARS",
     "POL_VALUES",
     "REQUIRED_COORDS",
     "SchemaError",
+    "antenna_weighted_tau",
     "apply_flags",
+    "select_group",
     "validate",
 ]
 
@@ -77,12 +80,12 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "fit_success": (("scan", "antenna", "spw"), np.dtype(np.bool_)),
     "fit_reason": (("scan", "antenna", "spw"), np.dtype("O")),
     "am_freq_grid": (("frequency_dense",), np.dtype(np.float64)),
-    "am_tau": (("frequency_dense",), np.dtype(np.float64)),
+    "am_tau": (("group", "frequency_dense"), np.dtype(np.float64)),
     # Post-fit atmospheric anchor (see design/independent_tau_fit.md):
-    # one PWV per antenna, fitted against τ_z(ν) from this antenna's
-    # per-spw fits across all scans. Not yet written by any code path.
-    "pwv": (("antenna",), np.dtype(np.float32)),
-    "pwv_err": (("antenna",), np.dtype(np.float32)),
+    # one PWV per antenna per time group, fitted against τ_z(ν) from this
+    # antenna's per-spw fits across that group's scans.
+    "pwv": (("group", "antenna"), np.dtype(np.float32)),
+    "pwv_err": (("group", "antenna"), np.dtype(np.float32)),
     # Atmospheric profile attached by fetch_atm_profile. Per-scan with index
     # 0 = each scan's own surface, NaN-padded at the trailing edge.
     "atm_pressure": (("scan", "atm_level"), np.dtype(np.float64)),
@@ -91,6 +94,13 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "surface_pressure_hPa": (("scan",), np.dtype(np.float64)),
     "pwv_profile_source": (("scan",), np.dtype("O")),
     "pwv_model": (("scan",), np.dtype(np.float32)),
+}
+
+# Written by fit() alongside the group-dimensioned vars above.
+OPTIONAL_COORDS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
+    "scan_group": (("scan",), np.dtype(np.int32)),
+    "group_time_start": (("group",), np.dtype(np.float64)),
+    "group_time_end": (("group",), np.dtype(np.float64)),
 }
 
 POL_VALUES: tuple[str, ...] = ("R", "L")
@@ -171,6 +181,10 @@ def validate(ds: xr.Dataset) -> None:
         if name in ds.data_vars:
             _check_var(ds, name, dims, dtype, kind="optional data var")
 
+    for name, (dims, dtype) in OPTIONAL_COORDS.items():
+        if name in ds.coords:
+            _check_var(ds, name, dims, dtype, kind="optional coord")
+
 
 def apply_flags(ds: xr.Dataset, var: str) -> xr.DataArray:
     """Return `ds[var]` with flagged (or NaN-pad-flagged) samples masked.
@@ -192,3 +206,44 @@ def apply_flags(ds: xr.Dataset, var: str) -> xr.DataArray:
     if extra_dims:
         flag = flag.any(dim=extra_dims)
     return da.where(~flag)
+
+
+def select_group(ds: xr.Dataset, group: int) -> xr.Dataset:
+    """Return the slice of `ds` belonging to time group `group`.
+
+    The `group` dim is kept at length 1 rather than dropped, so the result
+    still satisfies the §5 contract and `validate` applies to it unchanged.
+    Output writers (plots, tables, caltables) run against this slice instead
+    of threading a group argument through every builder.
+    """
+    if "scan_group" not in ds.coords:
+        raise SchemaError(
+            "select_group requires the 'scan_group' coord; run fit() first"
+        )
+    scans = np.flatnonzero(ds.coords["scan_group"].values == group)
+    if scans.size == 0:
+        raise SchemaError(f"no scans in group {group}")
+    return ds.isel(scan=scans).sel(group=[group])
+
+
+def antenna_weighted_tau(ds: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]:
+    """Return the 1/σ² antenna-weighted `(tau, err)`, both dims `(scan, spw)`.
+
+    The canonical reduction over the antenna axis — opacity is a property of
+    the sky, not of an antenna, so every consumer that collapses antennas
+    (the measured-τ table, the τ-vs-frequency overlay, the TOpac caltable)
+    must route through this rather than averaging by hand.
+
+    Cells with non-finite τ or non-positive σ carry zero weight; a
+    `(scan, spw)` with no contributing antenna yields NaN in both outputs.
+    """
+    tau = ds["tau_zenith"].astype(np.float64)
+    err = ds["tau_err"].astype(np.float64)
+
+    weight = (1.0 / err**2).where(np.isfinite(tau) & (err > 0.0), 0.0)
+    weight_sum = weight.sum(dim="antenna").where(lambda w: w > 0.0)
+    tau_mean = ((tau.fillna(0.0) * weight).sum(dim="antenna") / weight_sum).transpose(
+        "scan", "spw"
+    )
+    err_mean = ((1.0 / weight_sum) ** 0.5).transpose("scan", "spw")
+    return tau_mean, err_mean

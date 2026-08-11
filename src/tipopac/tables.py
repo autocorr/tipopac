@@ -10,8 +10,9 @@ import numpy as np
 import xarray as xr
 
 from tipopac.atmgrid import GRID_FREQ_MAX_HZ, GRID_FREQ_MIN_HZ
+from tipopac.schema import antenna_weighted_tau
 
-__all__ = ["measured_opacity_table", "model_opacity_table"]
+__all__ = ["am_tau_1d", "measured_opacity_table", "model_opacity_table"]
 
 ModelRow = tuple[float, float]
 MeasuredRow = tuple[int, int, str, float, float, float, float]
@@ -36,7 +37,7 @@ def model_opacity_table(
         return MODEL_COLUMNS, []
 
     freq_Hz = np.asarray(ds["am_freq_grid"].values, dtype=np.float64)
-    tau = np.asarray(ds["am_tau"].values, dtype=np.float64)
+    tau = am_tau_1d(ds)
     keep = (freq_Hz >= GRID_FREQ_MIN_HZ - 1.0) & (freq_Hz <= GRID_FREQ_MAX_HZ + 1.0)
     return MODEL_COLUMNS, [
         (float(nu), float(t)) for nu, t in zip(freq_Hz[keep], tau[keep], strict=True)
@@ -60,15 +61,7 @@ def measured_opacity_table(
 
     freq_Hz = np.asarray(ds["frequency"].values, dtype=np.float64)
     band = np.asarray(ds["band"].values, dtype=str)
-    tau = ds["tau_zenith"].astype(np.float64)
-    err = ds["tau_err"].astype(np.float64)
-
-    weight = (1.0 / err**2).where(np.isfinite(tau) & (err > 0.0), 0.0)
-    weight_sum = weight.sum(dim="antenna").where(lambda w: w > 0.0)
-    tau_mean = ((tau.fillna(0.0) * weight).sum(dim="antenna") / weight_sum).transpose(
-        "scan", "spw"
-    )
-    err_mean = ((1.0 / weight_sum) ** 0.5).transpose("scan", "spw")
+    tau_mean, err_mean = antenna_weighted_tau(ds)
 
     model = _model_at(ds, freq_Hz)
 
@@ -92,11 +85,26 @@ def measured_opacity_table(
     return MEASURED_COLUMNS, rows
 
 
+def am_tau_1d(ds: xr.Dataset) -> np.ndarray:
+    """The single group's am τ(ν) curve as a 1-D array.
+
+    ``am_tau`` carries a ``group`` axis; the table and plot consumers each
+    render one group at a time and must be handed a
+    :func:`tipopac.schema.select_group` slice.
+    """
+    da = ds["am_tau"]
+    if da.sizes.get("group", 1) != 1:
+        raise ValueError(
+            f"am_tau has {da.sizes['group']} groups; pass a select_group() slice"
+        )
+    return np.asarray(da.values, dtype=np.float64).reshape(-1)
+
+
 def _model_at(ds: xr.Dataset, freq_Hz: np.ndarray) -> np.ndarray:
     """Model τ interpolated onto ``freq_Hz``; NaN when no am curve is present."""
     if "am_freq_grid" not in ds.data_vars or "am_tau" not in ds.data_vars:
         return np.full(freq_Hz.size, np.nan)
     grid = np.asarray(ds["am_freq_grid"].values, dtype=np.float64)
-    tau = np.asarray(ds["am_tau"].values, dtype=np.float64)
+    tau = am_tau_1d(ds)
     model = np.interp(freq_Hz, grid, tau)
     return np.where((freq_Hz < grid[0]) | (freq_Hz > grid[-1]), np.nan, model)

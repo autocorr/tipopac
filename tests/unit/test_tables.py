@@ -27,7 +27,7 @@ def _dataset(*, with_am: bool = True) -> xr.Dataset:
     if with_am:
         grid = np.arange(1e9, 51e9 + 1.0, 100e6)
         data_vars["am_freq_grid"] = (("frequency_dense",), grid)
-        data_vars["am_tau"] = (("frequency_dense",), grid / 1e12)
+        data_vars["am_tau"] = (("group", "frequency_dense"), (grid / 1e12)[None, :])
     return xr.Dataset(
         data_vars=data_vars,
         coords={
@@ -48,7 +48,10 @@ def test_model_opacity_table_slices_to_band_range() -> None:
                 ("frequency_dense",),
                 np.array([0.9e9, 1.0e9, 25e9, 51.0e9, 52.5e9]),
             ),
-            "am_tau": (("frequency_dense",), np.array([0.1, 0.2, 0.3, 0.4, 0.5])),
+            "am_tau": (
+                ("group", "frequency_dense"),
+                np.array([[0.1, 0.2, 0.3, 0.4, 0.5]]),
+            ),
         }
     )
 

@@ -9,7 +9,12 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from tipopac.anchor import anchor_pwv, compute_t_mean_grid, write_am_curve
+from tipopac.anchor import (
+    anchor_pwv,
+    anchor_pwv_grouped,
+    compute_t_mean_grid,
+    write_am_curve,
+)
 from tipopac.atmgrid import PwvGrid
 from tipopac.physics import k2nt
 
@@ -36,6 +41,14 @@ def _toy_grid(pwv_unscaled_mm: float = 5.0) -> PwvGrid:
         tb_z=tb,
         pwv_unscaled_mm=pwv_unscaled_mm,
     )
+
+
+def _tau_stack(
+    grid: PwvGrid, freqs: np.ndarray, pwv_per_scan: list[float]
+) -> np.ndarray:
+    """``(n_scan, 1, n_spw)`` τ_z synthesised at one PWV per scan."""
+    rows = [grid.lookup(p, freqs)[0] for p in pwv_per_scan]
+    return np.stack(rows)[:, None, :].astype(np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -218,36 +231,51 @@ def test_write_am_curve_writes_expected_dims_and_values() -> None:
     """am_freq_grid/am_tau land on the dataset with the right dims, dtype, and values."""
     grid = _toy_grid()
     ds = xr.Dataset()
-    pwv = np.array([4.0, 6.0, np.nan, 8.0])  # median of finite = 6.0
-    write_am_curve(ds, {0: grid, 1: grid}, pwv)
+    pwv = np.array([[4.0, 6.0, np.nan, 8.0]])  # median of finite = 6.0
+    write_am_curve(ds, {0: grid, 1: grid}, pwv, np.zeros(2, dtype=np.int32))
 
     assert "am_freq_grid" in ds.data_vars
     assert "am_tau" in ds.data_vars
     assert ds["am_freq_grid"].dims == ("frequency_dense",)
-    assert ds["am_tau"].dims == ("frequency_dense",)
+    assert ds["am_tau"].dims == ("group", "frequency_dense")
     assert ds["am_freq_grid"].dtype == np.float64
     assert ds["am_tau"].dtype == np.float64
     assert ds["am_freq_grid"].size == grid.freq_Hz.size
 
     np.testing.assert_array_equal(ds["am_freq_grid"].values, grid.freq_Hz)
     expected_tau, _ = grid.lookup(6.0, grid.freq_Hz)
-    np.testing.assert_allclose(ds["am_tau"].values, expected_tau)
+    np.testing.assert_allclose(ds["am_tau"].values[0], expected_tau)
 
 
-def test_write_am_curve_falls_back_to_pwv_unscaled_when_all_nan() -> None:
-    """If every antenna PWV is NaN, sample at the reference grid's pwv_unscaled_mm."""
-    grid = _toy_grid(pwv_unscaled_mm=5.5)
+def test_write_am_curve_writes_one_curve_per_group() -> None:
+    """Two groups with different PWV get different τ(ν) curves."""
+    grid = _toy_grid()
     ds = xr.Dataset()
-    pwv = np.array([np.nan, np.nan])
-    write_am_curve(ds, {0: grid}, pwv)
+    pwv = np.array([[3.0, 3.0], [9.0, 9.0]])
+    write_am_curve(ds, {0: grid, 1: grid}, pwv, np.array([0, 1], dtype=np.int32))
 
-    expected_tau, _ = grid.lookup(5.5, grid.freq_Hz)
-    np.testing.assert_allclose(ds["am_tau"].values, expected_tau)
+    assert ds["am_tau"].shape == (2, grid.freq_Hz.size)
+    for k, expected_pwv in enumerate((3.0, 9.0)):
+        expected_tau, _ = grid.lookup(expected_pwv, grid.freq_Hz)
+        np.testing.assert_allclose(ds["am_tau"].values[k], expected_tau)
+
+
+def test_write_am_curve_falls_back_to_own_group_grid_when_all_nan() -> None:
+    """An all-NaN group samples at *its own* grid's pwv_unscaled_mm."""
+    g0 = _toy_grid(pwv_unscaled_mm=5.5)
+    g1 = _toy_grid(pwv_unscaled_mm=2.5)
+    ds = xr.Dataset()
+    pwv = np.array([[np.nan, np.nan], [np.nan, np.nan]])
+    write_am_curve(ds, {0: g0, 1: g1}, pwv, np.array([0, 1], dtype=np.int32))
+
+    for k, (grid, expected_pwv) in enumerate(((g0, 5.5), (g1, 2.5))):
+        expected_tau, _ = grid.lookup(expected_pwv, grid.freq_Hz)
+        np.testing.assert_allclose(ds["am_tau"].values[k], expected_tau)
 
 
 def test_write_am_curve_rejects_empty_grids() -> None:
     with pytest.raises(ValueError, match="at least one PwvGrid"):
-        write_am_curve(xr.Dataset(), {}, np.array([3.0]))
+        write_am_curve(xr.Dataset(), {}, np.array([[3.0]]), np.zeros(1, dtype=np.int32))
 
 
 def test_write_am_curve_rejects_mismatched_freq_axes() -> None:
@@ -263,4 +291,74 @@ def test_write_am_curve_rejects_mismatched_freq_axes() -> None:
         pwv_unscaled_mm=g1.pwv_unscaled_mm,
     )
     with pytest.raises(ValueError, match="freq_Hz axes disagree"):
-        write_am_curve(xr.Dataset(), {0: g1, 1: g2}, np.array([5.0]))
+        write_am_curve(
+            xr.Dataset(), {0: g1, 1: g2}, np.array([[5.0]]), np.zeros(2, dtype=np.int32)
+        )
+
+
+# ---------------------------------------------------------------------------
+# anchor_pwv_grouped
+# ---------------------------------------------------------------------------
+
+
+_GROUPED_FREQS = np.array([20e9, 25e9, 28e9])
+
+
+def test_grouped_single_group_matches_ungrouped() -> None:
+    """One group must reproduce the pre-grouping anchor bit-for-bit."""
+    grid = _toy_grid()
+    grids = {0: grid, 1: grid}
+    tau_z = _tau_stack(grid, _GROUPED_FREQS, [5.0, 5.0])
+    tau_err = np.full_like(tau_z, 1e-3)
+
+    exp_pwv, exp_err = anchor_pwv(tau_z, tau_err, grids, _GROUPED_FREQS)
+    pwv, err = anchor_pwv_grouped(
+        tau_z, tau_err, grids, _GROUPED_FREQS, np.zeros(2, dtype=np.int32)
+    )
+
+    assert pwv.shape == (1, 1)
+    np.testing.assert_array_equal(pwv[0], exp_pwv)
+    np.testing.assert_array_equal(err[0], exp_err)
+
+
+def test_grouped_recovers_distinct_pwv_per_group() -> None:
+    """Two scans at different PWV, split into two groups, recover both."""
+    grid = _toy_grid()
+    tau_z = _tau_stack(grid, _GROUPED_FREQS, [4.0, 8.0])
+    tau_err = np.full_like(tau_z, 1e-4)
+
+    pwv, _ = anchor_pwv_grouped(
+        tau_z,
+        tau_err,
+        {0: grid, 1: grid},
+        _GROUPED_FREQS,
+        np.array([0, 1], dtype=np.int32),
+    )
+    assert pwv.shape == (2, 1)
+    np.testing.assert_allclose(pwv[0, 0], 4.0, atol=0.05)
+    np.testing.assert_allclose(pwv[1, 0], 8.0, atol=0.05)
+
+
+def test_grouped_pooling_biases_toward_the_mean() -> None:
+    """The bug being fixed: one group over both scans lands between them."""
+    grid = _toy_grid()
+    tau_z = _tau_stack(grid, _GROUPED_FREQS, [4.0, 8.0])
+    tau_err = np.full_like(tau_z, 1e-4)
+
+    pooled, _ = anchor_pwv_grouped(
+        tau_z, tau_err, {0: grid, 1: grid}, _GROUPED_FREQS, np.zeros(2, dtype=np.int32)
+    )
+    assert 4.0 < pooled[0, 0] < 8.0
+
+
+def test_grouped_group_with_no_grid_is_nan() -> None:
+    grid = _toy_grid()
+    tau_z = _tau_stack(grid, _GROUPED_FREQS, [5.0, 5.0])
+    tau_err = np.full_like(tau_z, 1e-3)
+
+    pwv, pwv_err = anchor_pwv_grouped(
+        tau_z, tau_err, {0: grid}, _GROUPED_FREQS, np.array([0, 1], dtype=np.int32)
+    )
+    assert np.isfinite(pwv[0, 0])
+    assert np.isnan(pwv[1, 0])
+    assert np.isnan(pwv_err[1, 0])

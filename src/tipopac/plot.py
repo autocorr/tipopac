@@ -28,6 +28,7 @@ import pandas as pd
 import xarray as xr
 
 from tipopac.physics import predicted_tsys
+from tipopac.tables import am_tau_1d
 from tipopac.timeutils import mjd_s_to_unix_s
 
 __all__ = [
@@ -446,7 +447,7 @@ class TauVsFrequency(_QuantityVsFrequency):
             am_df = pd.DataFrame(
                 {
                     "frequency_GHz": ds_sub["am_freq_grid"].values / 1e9,
-                    "am_tau": ds_sub["am_tau"].values,
+                    "am_tau": am_tau_1d(ds_sub),
                 }
             )
             _round(am_df, frequency_GHz=3, am_tau=4)

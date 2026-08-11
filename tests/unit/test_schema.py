@@ -9,9 +9,12 @@ import xarray as xr
 from tipopac.schema import (
     POL_VALUES,
     SchemaError,
+    antenna_weighted_tau,
     apply_flags,
+    select_group,
     validate,
 )
+from tipopac.timeutils import assign_groups
 
 
 def make_minimal_ds(
@@ -123,6 +126,29 @@ def make_minimal_ds(
         ds["fit_reason"] = (
             ("scan", "antenna", "spw"),
             np.full((n_scans, n_ant, n_spw), "ok", dtype=object),
+        )
+        # Stage-B group artifacts. Scans are 1 h apart, so a 60 s window
+        # puts each in its own group.
+        groups = assign_groups(ds.coords["scan_time_start"].values, 60.0)
+        n_group = int(groups.max()) + 1
+        ds.coords["scan_group"] = (("scan",), groups)
+        ds.coords["group_time_start"] = (
+            ("group",),
+            np.arange(n_group, dtype=np.float64) * 3600.0,
+        )
+        ds.coords["group_time_end"] = (
+            ("group",),
+            np.arange(n_group, dtype=np.float64) * 3600.0 + 60.0,
+        )
+        ds["pwv"] = (("group", "antenna"), np.full((n_group, n_ant), 5.0, np.float32))
+        ds["pwv_err"] = (
+            ("group", "antenna"),
+            np.full((n_group, n_ant), 0.1, np.float32),
+        )
+        ds["am_freq_grid"] = (("frequency_dense",), freqs.copy())
+        ds["am_tau"] = (
+            ("group", "frequency_dense"),
+            np.full((n_group, n_spw), 0.05, dtype=np.float64),
         )
 
     return ds
@@ -265,3 +291,72 @@ def test_apply_flags_missing_var_raises() -> None:
     ds = make_minimal_ds()
     with pytest.raises(KeyError):
         apply_flags(ds, "no_such_var")
+
+
+# ---------------------------------------------------------------------------
+# select_group
+# ---------------------------------------------------------------------------
+
+
+def test_select_group_output_still_validates() -> None:
+    """The slice keeps `group` at length 1 so the §5 contract applies to it."""
+    ds = make_minimal_ds(n_scans=3, with_fit_results=True)
+    sub = select_group(ds, 1)
+    assert validate(sub) is None
+    assert sub.sizes["group"] == 1
+
+
+def test_select_group_keeps_only_that_groups_scans() -> None:
+    ds = make_minimal_ds(n_scans=3, with_fit_results=True)
+    sub = select_group(ds, 2)
+    assert sub.sizes["scan"] == 1
+    assert sub.coords["scan_group"].values.tolist() == [2]
+    np.testing.assert_array_equal(sub["pwv"].values[0], ds["pwv"].values[2])
+    np.testing.assert_array_equal(sub["am_tau"].values[0], ds["am_tau"].values[2])
+
+
+def test_select_group_without_scan_group_raises() -> None:
+    with pytest.raises(SchemaError, match="scan_group"):
+        select_group(make_minimal_ds(), 0)
+
+
+def test_select_group_empty_group_raises() -> None:
+    ds = make_minimal_ds(n_scans=2, with_fit_results=True)
+    with pytest.raises(SchemaError, match="no scans in group"):
+        select_group(ds, 7)
+
+
+# ---------------------------------------------------------------------------
+# antenna_weighted_tau
+# ---------------------------------------------------------------------------
+
+
+def test_antenna_weighted_tau_is_inverse_variance_weighted() -> None:
+    ds = make_minimal_ds(n_scans=1, n_ant=2, n_spw=1, with_fit_results=True)
+    ds["tau_zenith"].values[0, :, 0] = [0.10, 0.20]
+    ds["tau_err"].values[0, :, 0] = [0.01, 0.02]
+
+    tau, err = antenna_weighted_tau(ds)
+    # w = [1e4, 2.5e3]; mean = (1e3 + 5e2) / 1.25e4
+    assert tau.dims == ("scan", "spw")
+    np.testing.assert_allclose(tau.values[0, 0], 0.12, rtol=1e-6)
+    np.testing.assert_allclose(err.values[0, 0], (1.0 / 1.25e4) ** 0.5, rtol=1e-6)
+
+
+def test_antenna_weighted_tau_skips_nan_and_nonpositive_err() -> None:
+    ds = make_minimal_ds(n_scans=1, n_ant=3, n_spw=1, with_fit_results=True)
+    ds["tau_zenith"].values[0, :, 0] = [0.10, np.nan, 0.99]
+    ds["tau_err"].values[0, :, 0] = [0.01, 0.01, 0.0]
+
+    tau, err = antenna_weighted_tau(ds)
+    np.testing.assert_allclose(tau.values[0, 0], 0.10, rtol=1e-6)
+    np.testing.assert_allclose(err.values[0, 0], 0.01, rtol=1e-6)
+
+
+def test_antenna_weighted_tau_all_invalid_is_nan() -> None:
+    ds = make_minimal_ds(n_scans=1, n_ant=2, n_spw=1, with_fit_results=True)
+    ds["tau_zenith"].values[0, :, 0] = np.nan
+
+    tau, err = antenna_weighted_tau(ds)
+    assert np.isnan(tau.values[0, 0])
+    assert np.isnan(err.values[0, 0])

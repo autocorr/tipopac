@@ -113,8 +113,8 @@ def _make_plot_ds(
         )
         data_vars["am_freq_grid"] = (("frequency_dense",), am_freq_grid)
         data_vars["am_tau"] = (
-            ("frequency_dense",),
-            np.full(am_freq_grid.size, tau0, dtype=np.float64),
+            ("group", "frequency_dense"),
+            np.full((1, am_freq_grid.size), tau0, dtype=np.float64),
         )
 
     if with_atm:
@@ -923,8 +923,11 @@ def _summary_html(**pwv: object) -> str:
     ds = _make_plot_ds(n_scan=2, n_ant=2, n_spw=2)
     ds.attrs["atm_profile_source"] = "open_meteo"
     for name, values in pwv.items():
-        dim = "antenna" if name.startswith("pwv_e") or name == "pwv" else "scan"
-        ds[name] = ((dim,), np.asarray(values, dtype=np.float32))
+        arr = np.asarray(values, dtype=np.float32)
+        if name.startswith("pwv_e") or name == "pwv":
+            ds[name] = (("group", "antenna"), arr[None, :])
+        else:
+            ds[name] = (("scan",), arr)
     return PlotData(ds).summary()._render()
 
 

@@ -75,11 +75,16 @@ def test_independent_tau_solve_outputs_populated(ds_independent_tau_solve):
     assert bool(ds["fit_success"].values.any()), "no Stage-A fits succeeded"
     assert np.isfinite(ds["tau_zenith"].values).any(), "all tau_zenith are NaN"
 
-    # Stage B wrote pwv + pwv_err per antenna.
+    # Stage B wrote pwv + pwv_err per (time group, antenna). This MS spans
+    # ~25 min, so the 1 h default groups every scan together — which is what
+    # keeps the v2.6 reference numerics in tests/integration/reference/ valid.
     assert "pwv" in ds.data_vars
     assert "pwv_err" in ds.data_vars
-    assert ds["pwv"].dims == ("antenna",)
-    assert ds["pwv_err"].dims == ("antenna",)
+    assert ds["pwv"].dims == ("group", "antenna")
+    assert ds["pwv_err"].dims == ("group", "antenna")
+    assert ds.sizes["group"] == 1
+    assert (ds.coords["scan_group"].values == 0).all()
+    assert ds["am_tau"].dims == ("group", "frequency_dense")
 
     # In tcal_solve backend, τ_z is broadcast equal across antennas, so
     # the per-antenna PWV anchor returns identical values per antenna

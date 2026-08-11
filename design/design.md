@@ -63,6 +63,7 @@ result: Result = tipopac(
     flags_file=None,
     atm_profile_source="open-meteo",                 # | "afgl"
     afgl_climatology="auto",                         # | "midlatitude_summer" | ...
+    group_duration_s=3600.0,                         # Stage-B time grouping; None = one group
     n_workers=None,                                  # int → multiprocessing.Pool
     output_dir=Path("."),                            # dir for all outputs; None = compute-only
     caltable_opacity=False,                          # opt-in CASA TOpac table → output_dir/tipopac.opacity
@@ -132,8 +133,9 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
 - `build_atm_grids(pwv_step_mm, freq_step_Hz, n_workers)` — precompute
   per-scan `PwvGrid` and stash on `self._grids` (§7.2). Auto-calls
   `fetch_atm_profile` if needed.
-- `fit(mode, n_workers)` — Stage A + Stage B. Auto-calls
-  `build_atm_grids` if needed. After this `result` is available.
+- `fit(mode, n_workers, group_duration_s)` — Stage A + Stage B.
+  Auto-calls `build_atm_grids` if needed. After this `result` is
+  available.
 - `plot(out_dir)` — interactive plot `.html` files via
   `plot.PlotData(ds).save_all`.
 - `weblog(plot_dir)` — self-contained GUI `index.html` over the plot
@@ -224,6 +226,7 @@ Dimensions
   xyz            (3,)               -          ITRF axis label for antenna_position
   atm_level      (n_levels,)        -          pressure-level axis from §7.1
   frequency_dense (n_freq,)         -          dense am output grid axis
+  group          (n_groups,)        int        Stage-B time group (§6); post-fit only
 
 Coords
   frequency(spw)                   Hz             spw reference frequency
@@ -232,6 +235,9 @@ Coords
   antenna_position(antenna, xyz)   m              ITRF X, Y, Z
   scan_time_start(scan)            s              UTC MJD-seconds
   scan_time_end(scan)              s              UTC MJD-seconds
+  scan_group(scan)                 int32          Stage-B time group index (post-fit)
+  group_time_start(group)          s              UTC MJD-seconds (post-fit)
+  group_time_end(group)            s              UTC MJD-seconds (post-fit)
   time_utc(scan, time)             float64        non-dim 2D coord; per-sample
                                                   UTC MJD-seconds, NaN at the pad
 
@@ -264,17 +270,18 @@ Data variables — atmospheric profile (filled by atmosphere.attach_profile)
   pwv_profile_source   (scan,)                             str       per-scan grid provenance (set by build_atm_grids)
   pwv_model            (scan,)                             float32   mm   PWV of the un-scaled profile (set by build_atm_grids)
 
-Data variables — atmospheric anchor (filled by anchor.anchor_pwv / write_am_curve)
-  pwv              (antenna,)                              float32   mm   per-antenna fitted PWV
-  pwv_err          (antenna,)                              float32   mm   1σ from Cramér–Rao
-  am_freq_grid     (frequency_dense,)                      float64   Hz   dense am output axis (1–51 GHz)
-  am_tau           (frequency_dense,)                      float64   nepers, at representative PWV
+Data variables — atmospheric anchor (filled by anchor.anchor_pwv_grouped / write_am_curve)
+  pwv              (group, antenna)                        float32   mm   per-antenna fitted PWV, per time group
+  pwv_err          (group, antenna)                        float32   mm   1σ from Cramér–Rao
+  am_freq_grid     (frequency_dense,)                      float64   Hz   dense am output axis (1–51 GHz), shared by all groups
+  am_tau           (group, frequency_dense)                float64   nepers, at each group's representative PWV
 
 Attrs
   source_path         : str
   source_format       : "ms" | "sdm"
   observatory         : "VLA"
   mode                : str  (the public mode used)
+  group_duration_s    : float | "none"  (Stage-B grouping window)
   software_versions   : dict[str, str]
   scans_requested     : "all" | list[int]   (user-supplied scans argument, or "all")
   bands_requested     : "default_high_freq" | list[str]  (user-supplied bands argument)
@@ -426,18 +433,28 @@ scale).
 
 ## 6. Stage B atmospheric anchor
 
-A 1-D bounded scalar fit per antenna against the precomputed
-`PwvGrid`. The grid is built once per scan during `build_atm_grids`
-and is never recomputed inside Stage B.
+A 1-D bounded scalar fit per (time group, antenna) against the
+precomputed `PwvGrid`. The grid is built once per scan during
+`build_atm_grids` and is never recomputed inside Stage B.
 
 **Inputs.** `tau_zenith(scan, ant, spw)`, `tau_err(scan, ant, spw)`,
-the per-scan `PwvGrid` dict, and the spectral-window centre
-frequencies.
+the per-scan `PwvGrid` dict, the spectral-window centre frequencies,
+and the group assignment.
 
-**Cost** for antenna `a`:
+**Time grouping.** `timeutils.assign_groups` partitions scans into
+greedy sequential windows: open a group at the earliest ungrouped scan
+and admit scans while `t_start − group_start ≤ group_duration_s`. A
+group therefore never spans more than the window, and a tight
+same-set K/Ka pair is never split. `group_duration_s=None` puts every
+scan in group 0 — the same shapes as any other single-group run, not a
+separate code path. The atmosphere varies over a day-long execution
+block; pooling every scan into one PWV would average that away and
+report a σ_PWV shrunk by the whole block's cell count.
+
+**Cost** for antenna `a` in group `g`:
 
 ```
-χ²(PWV; a) = Σ_{scan,spw}  [(τ_z(scan, a, spw) − τ_grid(PWV, ν_spw)) / σ_τ(scan, a, spw)]²
+χ²(PWV; a, g) = Σ_{scan ∈ g, spw}  [(τ_z(scan, a, spw) − τ_grid(PWV, ν_spw)) / σ_τ(scan, a, spw)]²
 ```
 
 Cells with non-finite `τ_z`, non-finite `σ_τ`, or `σ_τ ≤ 0` are
@@ -448,18 +465,22 @@ range and each contributing grid's `pwv_mm` axis.
 **σ_PWV.** Cramér–Rao at the fitted PWV:
 
 ```
-σ_PWV² = 1 / Σ_{scan,spw}  (∂τ_grid/∂PWV)² / σ_τ²
+σ_PWV² = 1 / Σ_{scan ∈ g, spw}  (∂τ_grid/∂PWV)² / σ_τ²
 ```
 
 `∂τ_grid/∂PWV` is the analytical slope of the bilinear interpolant
 (`PwvGrid.lookup_with_grad`). No Hessian inversion, no SVD.
 
+**am curve.** One dense τ(ν) per group, sampled at that group's median
+fitted PWV; a group whose antennas are all NaN falls back to its own
+grid's `pwv_unscaled_mm`. `am_freq_grid` is shared by every group.
+
 **Per-mode semantics.** Under `independent_tau` the per-antenna
-τ_z varies, so `pwv[ant]` differs across antennas — a true
+τ_z varies, so `pwv[group, ant]` differs across antennas — a true
 per-antenna PWV. Under `independent_tau_solve` the Stage-A τ_z is
 broadcast equal across antennas, so the per-antenna anchor returns
-identical `pwv[ant]` (shared-PWV semantics fall out of the per-antenna
-fit).
+identical `pwv[group, ant]` (shared-PWV semantics fall out of the
+per-antenna fit).
 
 **Spillover (Tsys forward model).** Instrumental ground pickup enters the
 antenna sidelobes unattenuated by the sky, adding a Tsys term

@@ -153,6 +153,7 @@ def tipopac(
     atm_profile_source: str = "open-meteo",
     afgl_climatology: str = "auto",
     spillover_model: bool = True,
+    group_duration_s: float | None = 3600.0,
     n_workers: int | None = None,
     output_dir: str | Path | None = Path("."),
     caltable_opacity: bool = False,
@@ -199,6 +200,13 @@ def tipopac(
         reproduces the pre-spillover fit for parity/repro. This replaces the
         retired flat post-hoc δτ de-bias; the old ``0.0036`` behaviour is
         intentionally not preserved.
+    group_duration_s:
+        Stage-B time grouping. Scans are partitioned into greedy sequential
+        windows of at most this many seconds and one PWV per antenna is fit
+        within each; default 3600 s. ``None`` puts every scan in one group,
+        reproducing the pre-grouping pooled anchor. A group can never span
+        more than the duration, so a whole-day execution block no longer
+        collapses to a single PWV.
     n_workers:
         Stage-A fit parallelism. ``None`` runs serially. Higher values
         dispatch via a process pool with single-threaded BLAS per worker.
@@ -231,7 +239,12 @@ def tipopac(
         afgl_climatology=afgl_climatology,
     )
     ta.build_atm_grids()
-    ta.fit(mode=mode, n_workers=n_workers, spillover_model=spillover_model)
+    ta.fit(
+        mode=mode,
+        n_workers=n_workers,
+        spillover_model=spillover_model,
+        group_duration_s=group_duration_s,
+    )
 
     if output_dir is not None:
         ta.write_outputs(
@@ -431,6 +444,7 @@ class TippingAnalysis:
         *,
         n_workers: int | None = None,
         spillover_model: bool = True,
+        group_duration_s: float | None = 3600.0,
     ) -> None:
         if mode not in _INDEPENDENT_TO_BACKEND:
             raise ValueError(
@@ -438,7 +452,12 @@ class TippingAnalysis:
             )
 
         from tipopac import fit
-        from tipopac.anchor import anchor_pwv, compute_t_mean_grid, write_am_curve
+        from tipopac.anchor import (
+            anchor_pwv_grouped,
+            compute_t_mean_grid,
+            write_am_curve,
+        )
+        from tipopac.timeutils import assign_groups
 
         # Stage A + Stage B. Build grids if not done already; the grid
         # drives both the Stage A T_mean input and the Stage B PWV anchor
@@ -466,18 +485,38 @@ class TippingAnalysis:
             spillover_model=spillover_model,
         )
 
+        # Stage B is fit per time group: pooling a whole execution block into
+        # one PWV ignores the atmosphere's real time variation.
+        t_start = self._ds.coords["scan_time_start"].values
+        t_end = self._ds.coords["scan_time_end"].values
+        groups = assign_groups(t_start, group_duration_s)
+        n_group = int(groups.max()) + 1
+
         # tau_zenith is fit spillover-free (the η·Bg·airmass term lives inside
         # the Stage-A model), so PWV anchors on it directly — no de-bias step.
-        pwv, pwv_err = anchor_pwv(
+        pwv, pwv_err = anchor_pwv_grouped(
             self._ds["tau_zenith"].values,
             self._ds["tau_err"].values,
             grids_by_pos,
             freqs_Hz,
+            groups,
         )
-        self._ds["pwv"] = (("antenna",), pwv.astype(np.float32))
-        self._ds["pwv_err"] = (("antenna",), pwv_err.astype(np.float32))
-        write_am_curve(self._ds, grids_by_pos, pwv)
+        self._ds.coords["scan_group"] = (("scan",), groups)
+        self._ds.coords["group_time_start"] = (
+            ("group",),
+            np.array([t_start[groups == k].min() for k in range(n_group)]),
+        )
+        self._ds.coords["group_time_end"] = (
+            ("group",),
+            np.array([t_end[groups == k].max() for k in range(n_group)]),
+        )
+        self._ds["pwv"] = (("group", "antenna"), pwv.astype(np.float32))
+        self._ds["pwv_err"] = (("group", "antenna"), pwv_err.astype(np.float32))
+        write_am_curve(self._ds, grids_by_pos, pwv, groups)
         self._ds.attrs["mode"] = mode  # public mode label, not backend
+        self._ds.attrs["group_duration_s"] = (
+            "none" if group_duration_s is None else float(group_duration_s)
+        )
         self._mode = mode
 
     def plot(self, out_dir: str | Path) -> None:

@@ -22,7 +22,12 @@ from scipy.optimize import minimize_scalar
 
 from tipopac.atmgrid import PwvGrid
 
-__all__ = ["anchor_pwv", "compute_t_mean_grid", "write_am_curve"]
+__all__ = [
+    "anchor_pwv",
+    "anchor_pwv_grouped",
+    "compute_t_mean_grid",
+    "write_am_curve",
+]
 
 
 # Default PWV search range. The grid axis caps the actual search; these
@@ -133,26 +138,67 @@ def anchor_pwv(
     return pwv_ant, pwv_err_ant
 
 
+def anchor_pwv_grouped(
+    tau_z: np.ndarray,
+    tau_err: np.ndarray,
+    grids: dict[int, PwvGrid],
+    freqs_Hz: np.ndarray,
+    groups: np.ndarray,
+    *,
+    pwv_min_mm: float = _PWV_MIN_MM,
+    pwv_max_mm: float = _PWV_MAX_MM,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run :func:`anchor_pwv` once per time group.
+
+    Pooling every scan in an execution block into one PWV ignores the real
+    time variation of the atmosphere (a TCAL block spans a day). *groups*
+    assigns each positional scan index to a group — see
+    :func:`tipopac.timeutils.assign_groups`.
+
+    Restricting the cost to a group needs no change to :func:`anchor_pwv`:
+    it already drops scans absent from *grids*, so each group is fit by
+    passing a filtered grid dict.
+
+    Returns ``(pwv, pwv_err)``, both shape ``(n_group, n_ant)``.
+    """
+    n_ant = tau_z.shape[1]
+    n_group = int(groups.max()) + 1 if groups.size else 0
+    pwv = np.full((n_group, n_ant), np.nan, dtype=np.float64)
+    pwv_err = np.full((n_group, n_ant), np.nan, dtype=np.float64)
+
+    for k in range(n_group):
+        members = {i: g for i, g in grids.items() if groups[i] == k}
+        if not members:
+            continue
+        pwv[k], pwv_err[k] = anchor_pwv(
+            tau_z,
+            tau_err,
+            members,
+            freqs_Hz,
+            pwv_min_mm=pwv_min_mm,
+            pwv_max_mm=pwv_max_mm,
+        )
+    return pwv, pwv_err
+
+
 def write_am_curve(
     ds: xr.Dataset,
     grids: dict[int, PwvGrid],
     pwv: np.ndarray,
+    groups: np.ndarray,
 ) -> None:
     """Populate ``ds['am_freq_grid']`` and ``ds['am_tau']`` from Stage-B artifacts.
 
     Stage A+B reuses the per-scan :class:`PwvGrid` and the fitted per-antenna
-    PWV — no second am run, no second open-meteo fetch. The dense curve is
-    sampled at the median fitted PWV (falling back to a reference grid's
-    ``pwv_unscaled_mm`` if every antenna is NaN), on the shared grid frequency
-    axis. The result is a single 1-D ``frequency_dense`` slice suitable for the
-    plotting overlay at ``plot.py:286–293``.
+    PWV — no second am run, no second open-meteo fetch. One dense curve per
+    time group, sampled at that group's median fitted PWV, on the frequency
+    axis shared by every grid.
 
     Parameters
     ----------
     ds:
-        Mutated in place. ``am_freq_grid`` / ``am_tau`` are added or
-        overwritten with shape ``(n_freq,)`` and dtype ``float64`` matching
-        the schema.
+        Mutated in place. ``am_freq_grid`` is written with shape ``(n_freq,)``
+        and ``am_tau`` with shape ``(n_group, n_freq)``, both float64.
     grids:
         Per-scan :class:`PwvGrid` — same dict passed to :func:`anchor_pwv`.
         Must contain at least one grid, and all grids must share an identical
@@ -160,8 +206,13 @@ def write_am_curve(
         :meth:`tipopac.api.TippingAnalysis.build_atm_grids`, which uses the
         same ``freq_min_Hz``/``freq_max_Hz``/``freq_step_Hz`` for every scan).
     pwv:
-        Per-antenna PWV (mm) from :func:`anchor_pwv`. NaN values are ignored
-        when picking the representative PWV.
+        Per-(group, antenna) PWV (mm) from :func:`anchor_pwv_grouped`. NaN
+        values are ignored when picking each group's representative PWV; a
+        group whose antennas are all NaN falls back to its *own* grid's
+        ``pwv_unscaled_mm``.
+    groups:
+        Group index per positional scan index, as returned by
+        :func:`tipopac.timeutils.assign_groups`.
     """
     if not grids:
         raise ValueError("write_am_curve requires at least one PwvGrid")
@@ -175,15 +226,20 @@ def write_am_curve(
                 "write_am_curve assumes a single shared frequency grid"
             )
 
-    pwv_repr = (
-        float(np.nanmedian(pwv))
-        if np.any(np.isfinite(pwv))
-        else float(ref_grid.pwv_unscaled_mm)
-    )
-    tau, _ = ref_grid.lookup(pwv_repr, ref_grid.freq_Hz)
+    n_group = pwv.shape[0]
+    tau = np.full((n_group, ref_grid.freq_Hz.size), np.nan, dtype=np.float64)
+    for k in range(n_group):
+        members = [g for i, g in grids.items() if groups[i] == k]
+        group_grid = members[0] if members else ref_grid
+        pwv_repr = (
+            float(np.nanmedian(pwv[k]))
+            if np.any(np.isfinite(pwv[k]))
+            else float(group_grid.pwv_unscaled_mm)
+        )
+        tau[k], _ = group_grid.lookup(pwv_repr, group_grid.freq_Hz)
 
     ds["am_freq_grid"] = (("frequency_dense",), ref_grid.freq_Hz.astype(np.float64))
-    ds["am_tau"] = (("frequency_dense",), tau.astype(np.float64))
+    ds["am_tau"] = (("group", "frequency_dense"), tau)
 
 
 def compute_t_mean_grid(
