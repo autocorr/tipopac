@@ -138,8 +138,10 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
   available.
 - `plot(out_dir)` — interactive plot `.html` files via
   `plot.PlotData(ds).save_all`.
-- `weblog(plot_dir)` — self-contained GUI `index.html` over the plot
-  files via `weblog.build_weblog`.
+- `weblog(plot_dir)` — self-contained GUI `index.html` over the
+  `group_{k}/` plot directories via `weblog.build_weblog`. Group is the
+  outermost selector; the plot-type, scan, antenna, and spw menus are
+  all scoped to it.
 - `write_caltables(opacity, tcal)` — optional CASA-format outputs.
 - `write_outputs(output_dir, caltable_opacity, caltable_tcal)` —
   bundle: NetCDF (`tipopac.nc`), the two τ(ν) TSVs

@@ -1,12 +1,13 @@
 """Self-contained GUI weblog for the tipopac plot directory.
 
-``build_weblog(plot_dir)`` scans ``plot_dir`` for files matching the
-hard-coded plot-naming patterns produced by
-:meth:`tipopac.plot.PlotData.save_all` and emits an ``index.html`` with
-inline CSS + JS that lets the reader pick a plot type from a dropdown
-(and, for elevation curves, type ``scan`` / ``antenna`` / ``spw`` into
-text boxes). If the user requests a plot whose file isn't present, the
-GUI says so instead of loading a broken iframe.
+``build_weblog(plot_dir)`` scans ``plot_dir`` for the ``group_{k}/``
+subdirectories :meth:`tipopac.plot.PlotData.save_all` writes, matches the
+hard-coded plot-naming patterns inside each, and emits an ``index.html``
+with inline CSS + JS that lets the reader pick a time group, then a plot
+type (and, for elevation curves, a scan / antenna / spw). The scan,
+antenna, and spw menus are scoped to the selected group. If the user
+requests a plot whose file isn't present, the GUI says so instead of
+loading a broken iframe.
 
 The page is independent of the xarray dataset — only filenames drive
 the available options. Run as a pipeline step *after* the plots have
@@ -26,7 +27,9 @@ _log = logging.getLogger(__name__)
 
 # Hard-coded naming patterns (mirror plot.PlotData.save_all).
 _ELEVATION_RE = re.compile(r"^tippingcurve_spw_(\d+)_(\w+)_scan_(\d+)\.html$")
-# Surfaced first in the dropdown when present — the weblog's landing view.
+_GROUP_RE = re.compile(r"^group_(\d+)$")
+# Run-global page, outside the group dirs — the weblog's landing view.
+_RUN_SUMMARY: tuple[str, str] = ("run_summary.html", "Run summary")
 _SUMMARY_PLOT: tuple[str, str] = ("summary.html", "Summary")
 _AGGREGATE_PLOTS: tuple[tuple[str, str], ...] = (
     ("tau_vs_frequency.html", "Opacity vs frequency"),
@@ -45,78 +48,100 @@ _ELEVATION_LABEL = "Elevation curve"
 def build_weblog(plot_dir: str | Path) -> Path:
     """Write a self-contained ``index.html`` GUI into ``plot_dir``."""
     plot_dir = Path(plot_dir)
-    files = sorted(p.name for p in plot_dir.glob("*.html") if p.name != "index.html")
-    files_set = set(files)
+    groups = sorted(
+        int(m.group(1))
+        for p in plot_dir.iterdir()
+        if p.is_dir() and (m := _GROUP_RE.match(p.name))
+    )
 
-    has_summary = _SUMMARY_PLOT[0] in files_set
-    aggregates = [(fn, label) for fn, label in _AGGREGATE_PLOTS if fn in files_set]
-    triples = [
-        (int(m.group(1)), m.group(2), int(m.group(3)))
-        for name in files
-        if (m := _ELEVATION_RE.match(name))
-    ]
-    antennas = sorted({t[1] for t in triples})
-    scans = sorted({t[2] for t in triples})
-    # Per-scan spws — spws observed vary by scan (one band per scan).
-    scan_to_spws: dict[int, list[int]] = {s: [] for s in scans}
-    for spw, _ant, scan in triples:
-        if spw not in scan_to_spws[scan]:
-            scan_to_spws[scan].append(spw)
-    for s in scan_to_spws:
-        scan_to_spws[s].sort()
+    available: list[str] = []
+    if (plot_dir / _RUN_SUMMARY[0]).is_file():
+        available.append(_RUN_SUMMARY[0])
+
+    # Per-group option and selector data, keyed by group index as a string
+    # so it survives the JSON round-trip into the page.
+    kinds: dict[str, list[list[str]]] = {}
+    scans_by_group: dict[str, list[int]] = {}
+    antennas_by_group: dict[str, list[str]] = {}
+    spws_by_group: dict[str, dict[str, list[int]]] = {}
+
+    for k in groups:
+        gdir = plot_dir / f"group_{k}"
+        names = sorted(p.name for p in gdir.glob("*.html"))
+        available.extend(f"group_{k}/{name}" for name in names)
+        present = set(names)
+
+        options: list[list[str]] = []
+        if _SUMMARY_PLOT[0] in present:
+            options.append([_SUMMARY_PLOT[0], _SUMMARY_PLOT[1]])
+        triples = [
+            (int(m.group(1)), m.group(2), int(m.group(3)))
+            for name in names
+            if (m := _ELEVATION_RE.match(name))
+        ]
+        if triples:
+            options.append(["elevation", _ELEVATION_LABEL])
+        options.extend([fn, label] for fn, label in _AGGREGATE_PLOTS if fn in present)
+        kinds[str(k)] = options
+
+        scan_to_spws: dict[str, list[int]] = {}
+        for spw, _ant, scan in triples:
+            spws = scan_to_spws.setdefault(str(scan), [])
+            if spw not in spws:
+                spws.append(spw)
+        for spws in scan_to_spws.values():
+            spws.sort()
+
+        scans_by_group[str(k)] = sorted({t[2] for t in triples})
+        antennas_by_group[str(k)] = sorted({t[1] for t in triples})
+        spws_by_group[str(k)] = scan_to_spws
 
     index_path = plot_dir / "index.html"
     index_path.write_text(
         _render_html(
-            aggregates=aggregates,
-            has_summary=has_summary,
-            has_elevation=bool(triples),
-            scans=scans,
-            antennas=antennas,
-            scan_to_spws=scan_to_spws,
-            available=files,
+            groups=groups,
+            has_run_summary=_RUN_SUMMARY[0] in available,
+            kinds=kinds,
+            scans_by_group=scans_by_group,
+            antennas_by_group=antennas_by_group,
+            spws_by_group=spws_by_group,
+            available=available,
         ),
         encoding="utf-8",
     )
-    _log.info("weblog written: %s", index_path)
+    _log.info("weblog written: %s (%d group(s))", index_path, len(groups))
     return index_path
 
 
 def _render_html(
     *,
-    aggregates: list[tuple[str, str]],
-    has_summary: bool,
-    has_elevation: bool,
-    scans: list[int],
-    antennas: list[str],
-    scan_to_spws: dict[int, list[int]],
+    groups: list[int],
+    has_run_summary: bool,
+    kinds: dict[str, list[list[str]]],
+    scans_by_group: dict[str, list[int]],
+    antennas_by_group: dict[str, list[str]],
+    spws_by_group: dict[str, dict[str, list[int]]],
     available: list[str],
 ) -> str:
-    options: list[str] = []
-    if has_summary:
-        fn, label = _SUMMARY_PLOT
-        options.append(f'<option value="{fn}" data-file="{fn}">{label}</option>')
-    if has_elevation:
-        options.append(f'<option value="elevation">{_ELEVATION_LABEL}</option>')
-    for fn, label in aggregates:
-        options.append(f'<option value="{fn}" data-file="{fn}">{label}</option>')
-    if not options:
-        options.append('<option value="">(no plots found in this directory)</option>')
+    group_options = "".join(f'<option value="{k}">Group {k}</option>' for k in groups)
+    if not group_options:
+        group_options = '<option value="">(no group_* directories found)</option>'
 
-    def _select(select_id: str, values: list[str]) -> str:
-        opts = '<option value="">—</option>' + "".join(
-            f'<option value="{v}">{v}</option>' for v in values
-        )
-        return f'<select id="{select_id}">{opts}</select>'
+    run_summary_option = (
+        f'<option value="{_RUN_SUMMARY[0]}">{_RUN_SUMMARY[1]}</option>'
+        if has_run_summary
+        else ""
+    )
 
-    scan_select = _select("scan", [str(s) for s in scans])
-    antenna_select = _select("antenna", antennas)
-    # spw select starts empty; JS rebuilds it from SCAN_TO_SPWS when scan changes.
-    spw_select = '<select id="spw"><option value="">—</option></select>'
+    def _select(select_id: str) -> str:
+        return f'<select id="{select_id}"><option value="">—</option></select>'
 
     available_json = json.dumps(available)
-    scan_to_spws_json = json.dumps({str(k): v for k, v in scan_to_spws.items()})
-    elev_hidden = "" if has_elevation else " hidden"
+    kinds_json = json.dumps(kinds)
+    scans_json = json.dumps(scans_by_group)
+    antennas_json = json.dumps(antennas_by_group)
+    spws_json = json.dumps(spws_by_group)
+    run_summary_json = json.dumps(_RUN_SUMMARY[0] if has_run_summary else None)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -148,20 +173,28 @@ def _render_html(
 </head>
 <body>
 <div class="controls">
-  <label>Plot type:
-    <select id="kind">{"".join(options)}</select>
+  <label>Group:
+    <select id="group">{group_options}</select>
   </label>
-  <div id="elev"{elev_hidden}>
-    <label>Scan: {scan_select}</label>
-    <label>Antenna: {antenna_select}</label>
-    <label>spw: {spw_select}</label>
+  <label>Plot type:
+    <select id="kind">{run_summary_option}</select>
+  </label>
+  <div id="elev" hidden>
+    <label>Scan: {_select("scan")}</label>
+    <label>Antenna: {_select("antenna")}</label>
+    <label>spw: {_select("spw")}</label>
   </div>
 </div>
 <div id="status"></div>
 <iframe id="frame" src="about:blank"></iframe>
 <script>
   const AVAILABLE = new Set({available_json});
-  const SCAN_TO_SPWS = {scan_to_spws_json};
+  const KINDS = {kinds_json};
+  const SCANS = {scans_json};
+  const ANTENNAS = {antennas_json};
+  const SPWS = {spws_json};
+  const RUN_SUMMARY = {run_summary_json};
+  const group = document.getElementById("group");
   const kind = document.getElementById("kind");
   const elev = document.getElementById("elev");
   const scan = document.getElementById("scan");
@@ -170,23 +203,46 @@ def _render_html(
   const status = document.getElementById("status");
   const frame = document.getElementById("frame");
 
-  function refreshSpws() {{
-    const valid = SCAN_TO_SPWS[scan.value] || [];
-    const previous = spw.value;
+  function fill(select, values, labeller) {{
+    const previous = select.value;
     const opts = ['<option value="">—</option>'];
-    for (const s of valid) opts.push(`<option value="${{s}}">${{s}}</option>`);
-    spw.innerHTML = opts.join("");
-    spw.value = valid.includes(Number(previous)) ? previous : "";
+    for (const v of values) opts.push(`<option value="${{v}}">${{labeller(v)}}</option>`);
+    select.innerHTML = opts.join("");
+    select.value = values.map(String).includes(previous) ? previous : "";
+  }}
+
+  // The plot set, and the scan/antenna/spw menus, belong to one group.
+  function refreshGroup() {{
+    const entries = KINDS[group.value] || [];
+    const previous = kind.value;
+    const opts = [];
+    if (RUN_SUMMARY) opts.push(`<option value="${{RUN_SUMMARY}}">Run summary</option>`);
+    for (const [value, label] of entries) {{
+      opts.push(`<option value="${{value}}">${{label}}</option>`);
+    }}
+    if (!opts.length) opts.push('<option value="">(no plots for this group)</option>');
+    kind.innerHTML = opts.join("");
+    if ([...kind.options].some((o) => o.value === previous)) kind.value = previous;
+    fill(scan, SCANS[group.value] || [], (v) => v);
+    fill(antenna, ANTENNAS[group.value] || [], (v) => v);
+    refreshSpws();
+  }}
+
+  function refreshSpws() {{
+    const perScan = SPWS[group.value] || {{}};
+    fill(spw, perScan[scan.value] || [], (v) => v);
   }}
 
   function pathFor() {{
-    const opt = kind.selectedOptions[0];
-    if (!opt || !opt.value) return null;
-    if (opt.value === "elevation") {{
+    if (!kind.value) return null;
+    // Run-global pages sit outside the group directories.
+    if (RUN_SUMMARY && kind.value === RUN_SUMMARY) return RUN_SUMMARY;
+    if (!group.value) return null;
+    if (kind.value === "elevation") {{
       if (!scan.value || !antenna.value || !spw.value) return null;
-      return `tippingcurve_spw_${{spw.value}}_${{antenna.value}}_scan_${{scan.value}}.html`;
+      return `group_${{group.value}}/tippingcurve_spw_${{spw.value}}_${{antenna.value}}_scan_${{scan.value}}.html`;
     }}
-    return opt.dataset.file;
+    return `group_${{group.value}}/${{kind.value}}`;
   }}
 
   function update() {{
@@ -195,9 +251,7 @@ def _render_html(
     const path = pathFor();
     if (path === null) {{
       frame.src = "about:blank";
-      status.textContent = isElev
-        ? "Pick scan, antenna, and spw above."
-        : "";
+      status.textContent = isElev ? "Pick scan, antenna, and spw above." : "";
       return;
     }}
     if (AVAILABLE.has(path)) {{
@@ -209,8 +263,10 @@ def _render_html(
     }}
   }}
 
+  group.addEventListener("change", refreshGroup);
   scan.addEventListener("change", refreshSpws);
   document.addEventListener("change", update);
+  refreshGroup();
   update();
 </script>
 </body>
