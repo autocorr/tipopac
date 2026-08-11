@@ -160,13 +160,14 @@ def test_build_opacity_rows_count() -> None:
 
 
 def test_build_opacity_rows_ordering() -> None:
+    """scan slow, then spw, then antenna fastest — the gencal 'opac' order."""
     n_scan, n_ant, n_spw = 2, 3, 2
     ds = _make_fitted_ds(n_scan=n_scan, n_ant=n_ant, n_spw=n_spw)
     rows = _build_opacity_rows(ds)
     k = 0
     for i in range(n_scan):
-        for a in range(n_ant):
-            for s in range(n_spw):
+        for s in range(n_spw):
+            for a in range(n_ant):
                 row = rows[k]
                 assert row["SCAN_NUMBER"] == int(ds.coords["scan"].values[i])
                 assert row["ANTENNA1"] == a
@@ -207,6 +208,42 @@ def test_build_opacity_rows_failed_scan() -> None:
     assert row["FPARAM"][0, 0] == 0.0
     assert row["PARAMERR"][0, 0] == 0.0
     assert row["SNR"][0, 0] == 1.0
+
+
+def test_build_opacity_rows_tau_is_antenna_weighted_mean() -> None:
+    """Every antenna in a (scan, spw) carries the same 1/σ²-weighted τ."""
+    ds = _make_fitted_ds(n_scan=1, n_ant=2, n_spw=1)
+    ds["tau_zenith"].values[0, :, 0] = [0.10, 0.20]
+    ds["tau_err"].values[0, :, 0] = [0.01, 0.02]
+
+    rows = _build_opacity_rows(ds)
+    assert len(rows) == 2
+    # w = [1e4, 2.5e3] → mean 0.12, σ = (1/1.25e4)**0.5
+    for row in rows:
+        assert math.isclose(row["FPARAM"][0, 0], 0.12, rel_tol=1e-6)
+        assert math.isclose(row["PARAMERR"][0, 0], (1.0 / 1.25e4) ** 0.5, rel_tol=1e-6)
+        assert not row["FLAG"][0, 0]
+
+
+def test_build_opacity_rows_one_bad_antenna_does_not_flag_the_block() -> None:
+    """A screened-out antenna still gets the block's τ — opacity is a sky property."""
+    ds = _make_fitted_ds(n_scan=1, n_ant=2, n_spw=1)
+    ds["fit_success"].values[0, 1, 0] = False
+
+    rows = _build_opacity_rows(ds)
+    assert [bool(r["FLAG"][0, 0]) for r in rows] == [False, False]
+    assert rows[0]["FPARAM"][0, 0] == rows[1]["FPARAM"][0, 0]
+
+
+def test_build_opacity_rows_excludes_unsuccessful_fits_from_the_mean() -> None:
+    """Unlike measured_opacity_table, only fit_success cells reach the caltable."""
+    ds = _make_fitted_ds(n_scan=1, n_ant=2, n_spw=1)
+    ds["tau_zenith"].values[0, :, 0] = [0.10, 0.99]
+    ds["tau_err"].values[0, :, 0] = [0.01, 0.01]
+    ds["fit_success"].values[0, 1, 0] = False
+
+    row = _build_opacity_rows(ds)[0]
+    assert math.isclose(row["FPARAM"][0, 0], 0.10, rel_tol=1e-6)
 
 
 def test_build_opacity_rows_array_shapes() -> None:

@@ -18,6 +18,8 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from tipopac.schema import antenna_weighted_tau
+
 __all__ = ["write_opacity", "write_tcal"]
 
 _log = logging.getLogger(__name__)
@@ -101,7 +103,10 @@ def write_tcal(ds: xr.Dataset, path: str | Path) -> None:
 
 
 def _iter_cells(ds: xr.Dataset) -> Iterator[tuple[int, int, int, int, int, float]]:
-    """Yield ``(i, scan_num, a, s, spw_id, midtime)`` over (scan, antenna, spw)."""
+    """Yield ``(i, scan_num, a, s, spw_id, midtime)`` over (scan, antenna, spw).
+
+    CALDEVICE order — kept for v2.6 output-format parity (design.md §9.2).
+    """
     scan_vals = ds.coords["scan"].values
     spw_vals = ds.coords["spw"].values
     t_start = ds.coords["scan_time_start"].values
@@ -115,17 +120,56 @@ def _iter_cells(ds: xr.Dataset) -> Iterator[tuple[int, int, int, int, int, float
                 yield i, int(scan_num), a, s, int(spw_id), midtime
 
 
+def _iter_opacity_cells(
+    ds: xr.Dataset,
+) -> Iterator[tuple[int, int, int, int, int, float]]:
+    """Yield ``(i, scan_num, a, s, spw_id, midtime)`` over (scan, spw, antenna).
+
+    spw slow, antenna fast within a scan — the ordering `gencal` produces for
+    ``caltype='opac'``, where spw is the enumerated selection axis.
+    """
+    scan_vals = ds.coords["scan"].values
+    spw_vals = ds.coords["spw"].values
+    t_start = ds.coords["scan_time_start"].values
+    t_end = ds.coords["scan_time_end"].values
+    n_ant = ds.sizes["antenna"]
+
+    for i, (scan_num, t0, t1) in enumerate(zip(scan_vals, t_start, t_end)):
+        midtime = float((t0 + t1) / 2.0)
+        for s, spw_id in enumerate(spw_vals):
+            for a in range(n_ant):
+                yield i, int(scan_num), a, s, int(spw_id), midtime
+
+
 def _build_opacity_rows(ds: xr.Dataset) -> list[dict[str, Any]]:
-    """Return one TOpac row dict per (scan, antenna, spw) in that order."""
-    tau = ds["tau_zenith"].values  # (scan, antenna, spw)
-    tau_err = ds["tau_err"].values  # (scan, antenna, spw)
-    success = ds["fit_success"].values  # (scan, antenna, spw)
+    """Return one TOpac row dict per (scan, spw, antenna) in that order.
+
+    ``FPARAM`` is the antenna-weighted mean τ, so every antenna in a
+    ``(scan, spw)`` carries the same value. Opacity is a property of the sky,
+    not of an antenna, and per-antenna tipping τ is noisy; the per-antenna
+    values stay on the dataset and in the plots. `FLAG` is therefore set per
+    ``(scan, spw)`` — flagging one antenna's row would make `applycal` drop
+    that antenna's data outright.
+
+    Only ``fit_success`` cells contribute. `measured_opacity_table` reduces the
+    same way but over every cell carrying a value, so its τ also reflects
+    ``poorly_identified`` fits; what gets applied to data stays stricter.
+    """
+    ok = ds["fit_success"]
+    tau_mean, err_mean = antenna_weighted_tau(
+        ds.assign(
+            tau_zenith=ds["tau_zenith"].where(ok),
+            tau_err=ds["tau_err"].where(ok),
+        )
+    )
+    tau = tau_mean.values  # (scan, spw)
+    err = err_mean.values  # (scan, spw)
 
     rows: list[dict[str, Any]] = []
-    for i, scan_num, a, s, spw_id, midtime in _iter_cells(ds):
-        ok = bool(success[i, a, s])
-        tau_val = float(tau[i, a, s]) if ok else 0.0
-        err_val = float(tau_err[i, a, s]) if ok else 0.0
+    for i, scan_num, a, s, spw_id, midtime in _iter_opacity_cells(ds):
+        ok = bool(np.isfinite(tau[i, s]) and np.isfinite(err[i, s]))
+        tau_val = float(tau[i, s]) if ok else 0.0
+        err_val = float(err[i, s]) if ok else 0.0
         snr_val = float(abs(tau_val) / err_val) if (ok and err_val > 0.0) else 1.0
         rows.append(
             {

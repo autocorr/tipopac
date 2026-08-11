@@ -648,11 +648,20 @@ on `buildmytasks` or a `casa` process; it does not mean zero
   SPECTRAL_WINDOW_ID, ANTENNA1, ANTENNA2=−1, SCAN_NUMBER, FPARAM=τ₀,
   PARAMERR, FLAG, SNR. Schema matches v2.6 so downstream `applycal`
   works unchanged. Requires `tau_zenith`, `tau_err`, `fit_success`.
+  Rows are enumerated `(scan, spw, antenna)` — spw slow, antenna fast
+  within a scan, matching `gencal`'s `caltype='opac'` order.
+  `FPARAM`/`PARAMERR` are `schema.antenna_weighted_tau` over the
+  `fit_success` cells, so all antennas in a `(scan, spw)` share one
+  value; opacity is a sky property and per-antenna tipping τ is noisy.
+  `FLAG` is therefore set per `(scan, spw)`, never per antenna — a
+  flagged antenna row would make `applycal` drop that antenna's data.
 - **Tcal caltable (CALDEVICE clone).** Copy the source CALDEVICE
   subtable and write `[[tcal_fit_R, tcal_fit_L], [0., 0.]]` per
   `(antenna, spw)` cell — row 0 is the fitted noise-tube values, row
   1 (solar-filter slot) is zeroed for v2.6 output-format parity.
-  Requires `tcal_fit` (i.e. `mode="independent_tau_solve"`).
+  Row order stays `(scan, antenna, spw)`, unaffected by the opacity
+  table's ordering. Requires `tcal_fit` (i.e.
+  `mode="independent_tau_solve"`).
 
 ### 9.3 Plots
 
