@@ -151,6 +151,15 @@ def _to_df(
     return df
 
 
+def _antenna_degenerate(da: xr.DataArray, rtol: float = 1e-3) -> bool:
+    """True when ``da`` carries no antenna-to-antenna variation."""
+    spread = da.max(dim="antenna") - da.min(dim="antenna")
+    comparable = da.count(dim="antenna") >= 2
+    ratio = (spread / abs(da.mean(dim="antenna"))).where(comparable).values
+    finite = np.isfinite(ratio)
+    return bool(finite.any() and (ratio[finite] < rtol).all())
+
+
 def _round(df: pd.DataFrame, **digits: int) -> pd.DataFrame:
     """Round selected float columns to trim JSON precision.
 
@@ -210,6 +219,15 @@ class _QuantityVsFrequency(Plot):
             ),
         }
 
+    def _selectable(self, chart: alt.Chart, selection: alt.Parameter) -> alt.Chart:
+        """Bind the antenna selection and the scale zoom to the scatter unit.
+
+        Both carry a ``views`` pointer, and adding them to the enclosing
+        layer aims it at whichever unit comes first — on the ``c`` chart the
+        reference rule, which has neither the legend nor an x encoding.
+        """
+        return chart.add_params(selection).interactive()
+
     def _mean_layer(
         self,
         df: pd.DataFrame,
@@ -217,14 +235,18 @@ class _QuantityVsFrequency(Plot):
         value_col: str,
         y_title: str,
         value_fmt: str = ".4f",
+        x: alt.X | None = None,
+        y: alt.Y | None = None,
     ) -> alt.Chart:
         return (
             alt.Chart(df)
             .mark_point(filled=True, size=self.MEAN_POINT_SIZE, color=self.COLOR_MEAN)
             .transform_filter(_SHOW_MEAN_PARAM)
             .encode(
-                x=alt.X("frequency_GHz:Q", title="Frequency [GHz]"),
-                y=alt.Y(f"{value_col}:Q", title=y_title),
+                x=x
+                if x is not None
+                else alt.X("frequency_GHz:Q", title="Frequency [GHz]"),
+                y=y if y is not None else alt.Y(f"{value_col}:Q", title=y_title),
                 tooltip=[
                     "scan:N",
                     "spw:N",
@@ -333,26 +355,15 @@ class TauVsFrequency(_QuantityVsFrequency):
     Hover discloses (scan, antenna, spw, frequency, τ, σ, fit_success).
     Click the antenna legend to isolate antennas; the mean stays over all of
     them and hides with the "Mean" checkbox.
+
+    Modes that solve one τ per (scan, spw) leave every antenna coincident,
+    so there the scatter and its legend are dropped and the mean stands alone.
     """
 
     def build(self) -> alt.LayerChart | alt.FacetChart:
         ds_sub = self.ds_sub
         y_title = "Zenith optical depth [nepers]"
-
-        df = _to_df(
-            ds_sub[["tau_zenith", "tau_err", "fit_success"]],
-            dropna="tau_zenith",
-            keep=[
-                "scan",
-                "antenna",
-                "spw",
-                "frequency_GHz",
-                "tau_zenith",
-                "tau_err",
-                "fit_success",
-            ],
-        )
-        _round(df, frequency_GHz=3, tau_zenith=4, tau_err=4)
+        per_antenna = not _antenna_degenerate(ds_sub["tau_zenith"])
 
         # Weighted mean per spw across antennas. Keep scan in the dims so each
         # scan*spw combination shows as one mean point.
@@ -377,39 +388,60 @@ class TauVsFrequency(_QuantityVsFrequency):
             title="Frequency [GHz]",
             scale=alt.Scale(domain=self.freq_domain, nice=False),
         )
-        y_enc = alt.Y(
-            "tau_zenith:Q",
-            title=y_title,
-            scale=alt.Scale(type="log", domain=y_domain, nice=False),
-        )
+        y_scale = alt.Scale(type="log", domain=y_domain, nice=False)
 
-        status_scale = alt.Scale(
-            domain=[True, False], range=[self.COLOR_GOOD, self.COLOR_FLAGGED]
-        )
         selection, show_mean = self._controls()
-        samples = (
-            alt.Chart(df)
-            .mark_point(filled=True, size=self.POINT_SIZE)
-            .encode(
-                x=x_enc,
-                y=y_enc,
-                color=alt.Color("fit_success:N", scale=status_scale, legend=None),
-                **self._antenna_encoding(selection),
-                tooltip=[
-                    "scan:N",
-                    "antenna:N",
-                    "spw:N",
-                    alt.Tooltip("frequency_GHz:Q", format=".3f"),
-                    alt.Tooltip("tau_zenith:Q", format=".4f"),
-                    alt.Tooltip("tau_err:Q", format=".4f"),
-                    "fit_success:N",
+        layers: list[alt.Chart] = []
+        if per_antenna:
+            df = _to_df(
+                ds_sub[["tau_zenith", "tau_err", "fit_success"]],
+                dropna="tau_zenith",
+                keep=[
+                    "scan",
+                    "antenna",
+                    "spw",
+                    "frequency_GHz",
+                    "tau_zenith",
+                    "tau_err",
+                    "fit_success",
                 ],
             )
+            _round(df, frequency_GHz=3, tau_zenith=4, tau_err=4)
+            status_scale = alt.Scale(
+                domain=[True, False], range=[self.COLOR_GOOD, self.COLOR_FLAGGED]
+            )
+            samples = (
+                alt.Chart(df)
+                .mark_point(filled=True, size=self.POINT_SIZE)
+                .encode(
+                    x=x_enc,
+                    y=alt.Y("tau_zenith:Q", title=y_title, scale=y_scale),
+                    color=alt.Color("fit_success:N", scale=status_scale, legend=None),
+                    **self._antenna_encoding(selection),
+                    tooltip=[
+                        "scan:N",
+                        "antenna:N",
+                        "spw:N",
+                        alt.Tooltip("frequency_GHz:Q", format=".3f"),
+                        alt.Tooltip("tau_zenith:Q", format=".4f"),
+                        alt.Tooltip("tau_err:Q", format=".4f"),
+                        "fit_success:N",
+                    ],
+                )
+            )
+            layers.append(self._selectable(samples, selection))
+
+        # Axis scales ride on the mean: it is the first layer, and so the one
+        # Altair binds the zoom to, whenever the scatter above is dropped.
+        layers.append(
+            self._mean_layer(
+                mean_df,
+                value_col="mean_tau",
+                y_title=y_title,
+                x=x_enc,
+                y=alt.Y("mean_tau:Q", title=y_title, scale=y_scale),
+            )
         )
-
-        mean = self._mean_layer(mean_df, value_col="mean_tau", y_title=y_title)
-
-        layers: list[alt.Chart] = [samples, mean]
         if "am_freq_grid" in ds_sub.data_vars and "am_tau" in ds_sub.data_vars:
             am_df = pd.DataFrame(
                 {
@@ -433,9 +465,10 @@ class TauVsFrequency(_QuantityVsFrequency):
             layers.append(am_line)
 
         return self._finalize(
-            alt.layer(*layers).add_params(selection, show_mean),
+            alt.layer(*layers).add_params(show_mean),
             title=_scan_title(self.scans),
             width=self.width,
+            interactive=not per_antenna,
         )
 
 
@@ -533,9 +566,10 @@ class TcalVsFrequency(_QuantityVsFrequency):
         )
 
         return self._finalize(
-            alt.layer(samples, mean).add_params(selection, show_mean),
+            alt.layer(self._selectable(samples, selection), mean).add_params(show_mean),
             title=_scan_title(self.scans),
             width=self.width,
+            interactive=False,
         )
 
 
@@ -603,9 +637,12 @@ class CVsFrequency(_QuantityVsFrequency):
         mean = self._mean_layer(mean_df, value_col="mean_c", y_title=y_title)
 
         return self._finalize(
-            alt.layer(ref, samples, mean).add_params(selection, show_mean),
+            alt.layer(ref, self._selectable(samples, selection), mean).add_params(
+                show_mean
+            ),
             title=_scan_title(self.scans),
             width=self.width,
+            interactive=False,
         )
 
 

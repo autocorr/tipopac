@@ -644,7 +644,11 @@ both pols, fitted curve overlaid). Per scan with any successful fit:
 a τ vs frequency log-scatter with optional am τ(ν) overlay from
 `am_freq_grid` / `am_tau`, and — when `tcal_fit` actually differs
 from `tcal_ref` — a `T_cal` vs frequency and a
-`c = T_cal,fit / T_cal,ref` plot. Per dataset (when the optional
+`c = T_cal,fit / T_cal,ref` plot. Each frequency scatter carries a
+legend-bound antenna selector and a checkbox over the mean overlay; the
+τ plot drops the per-antenna layer and that legend when τ carries no
+antenna variation, as under `independent_tau_solve`. Per dataset (when
+the optional
 `atm_*` vars are present): a vertical T / H₂O mixing-ratio profile
 chart with pressure on a log y-axis (850 → 10 hPa) and T (linear) /
 mixing ratio (log) on independent x-axes.

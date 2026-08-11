@@ -28,6 +28,7 @@ def _make_plot_ds(
     with_atm: bool = False,
     freq_Hz: float = 22.2e9,
     mode: str = "independent_tau_solve",
+    tau_shared: bool = False,
 ) -> xr.Dataset:
     """Minimal dataset ready for PlotData.
 
@@ -46,6 +47,10 @@ def _make_plot_ds(
 
     tau0 = 0.05
     tau_zenith = np.full((n_scan, n_ant, n_spw), tau0, dtype=np.float32)
+    if not tau_shared:
+        # Antenna offsets summing to zero, so the weighted mean stays tau0.
+        offset = 1e-3 * (np.arange(n_ant, dtype=np.float32) - (n_ant - 1) / 2)
+        tau_zenith += offset[None, :, None]
     tau_err = np.full((n_scan, n_ant, n_spw), 0.002, dtype=np.float32)
     T0 = np.full((n_scan, n_ant, n_spw, 2), 50.0, dtype=np.float32)
     tcal_ref_val = 5.0
@@ -202,7 +207,7 @@ def test_elevation_curve_tooltip_has_polarization_and_tsys() -> None:
 
 
 def test_tau_vs_frequency_with_am_overlay() -> None:
-    ds = _make_plot_ds(n_spw=4, success=True, with_am=True)
+    ds = _make_plot_ds(n_ant=2, n_spw=4, success=True, with_am=True)
     chart = PlotData(ds).tau_vs_frequency(scans=1).build()
     assert isinstance(chart, alt.LayerChart)
     spec = chart.to_dict()
@@ -213,7 +218,7 @@ def test_tau_vs_frequency_with_am_overlay() -> None:
 
 
 def test_tau_vs_frequency_without_am() -> None:
-    ds = _make_plot_ds(n_spw=4, success=True, with_am=False)
+    ds = _make_plot_ds(n_ant=2, n_spw=4, success=True, with_am=False)
     spec = PlotData(ds).tau_vs_frequency(scans=1).build().to_dict()
     assert len(spec["layer"]) == 2  # samples + weighted mean only
     marks = [layer["mark"]["type"] for layer in spec["layer"]]
@@ -221,7 +226,7 @@ def test_tau_vs_frequency_without_am() -> None:
 
 
 def test_tau_vs_frequency_uses_log_scale() -> None:
-    ds = _make_plot_ds(n_spw=3, success=True)
+    ds = _make_plot_ds(n_ant=2, n_spw=3, success=True)
     spec = PlotData(ds).tau_vs_frequency(scans=1).build().to_dict()
     samples = spec["layer"][0]
     y_enc = samples["encoding"]["y"]
@@ -316,10 +321,59 @@ def test_frequency_charts_carry_antenna_controls(kind: str) -> None:
 
 @pytest.mark.parametrize("kind", ["tau", "tcal_fit", "tcal_ref", "c"])
 def test_frequency_charts_compile_to_vega(kind: str) -> None:
-    """Full Vega-Lite → Vega compile: catches invalid params/transforms."""
+    """Full Vega-Lite → Vega compile: catches invalid params/transforms.
+
+    Both controls carry a ``views`` pointer into one unit of the layer, and
+    a pointer at the wrong unit compiles cleanly while producing a legend
+    with no click handler and a zoom bound to the wrong fields.
+    """
     vl_convert = pytest.importorskip("vl_convert")
-    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True)
-    vl_convert.vegalite_to_vega(_frequency_charts(PlotData(ds))[kind].to_dict())
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True, tau_shared=False)
+    vega = vl_convert.vegalite_to_vega(_frequency_charts(PlotData(ds))[kind].to_dict())
+
+    signals = [s["name"] for s in vega["signals"]]
+    assert any(name.endswith("_antenna_legend") for name in signals)
+    zoomed = {
+        s["name"]: s.get("domainRaw") for s in vega["scales"] if s["name"] in ("x", "y")
+    }
+    assert set(zoomed) == {"x", "y"}
+    assert all(raw is not None for raw in zoomed.values())
+
+
+def test_tau_vs_frequency_drops_scatter_when_tau_is_antenna_degenerate() -> None:
+    """Shared-τ modes broadcast one τ per (scan, spw): mean layer only."""
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True, tau_shared=True)
+    spec = PlotData(ds).tau_vs_frequency().build().to_dict()
+
+    assert [layer["mark"]["type"] for layer in spec["layer"]] == ["point", "line"]
+    assert not any(p.get("bind") == "legend" for p in spec["params"])
+    assert "shape" not in spec["layer"][0]["encoding"]
+
+    mean = spec["layer"][0]
+    assert mean["transform"] == [{"filter": "show_mean"}]
+    assert mean["encoding"]["y"]["scale"]["type"] == "log"
+
+
+def test_tau_vs_frequency_keeps_scatter_when_one_antenna_survives() -> None:
+    """A cell with a single non-NaN antenna is no evidence of a shared τ."""
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True)
+    ds["tau_zenith"].values[:, 1:, :] = np.nan
+    spec = PlotData(ds).tau_vs_frequency().build().to_dict()
+
+    assert any(p.get("bind") == "legend" for p in spec["params"])
+    assert spec["layer"][0]["encoding"]["shape"]["field"] == "antenna"
+
+
+def test_tau_vs_frequency_degenerate_chart_renders() -> None:
+    """The mean survives without the scatter: no dangling show_mean signal."""
+    vl_convert = pytest.importorskip("vl_convert")
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True, tau_shared=True)
+    spec = PlotData(ds).tau_vs_frequency().build().to_dict()
+
+    vl_convert.vegalite_to_png(spec)
+    vega = vl_convert.vegalite_to_vega(spec)
+    zoomed = {s["name"]: s.get("domainRaw") for s in vega["scales"]}
+    assert zoomed["x"] is not None and zoomed["y"] is not None
 
 
 def test_tcal_vs_frequency_returns_layerchart() -> None:
@@ -385,7 +439,7 @@ def test_c_vs_frequency_tooltip_carries_c_ratio() -> None:
 
 
 def test_tau_vs_frequency_accepts_scan_list() -> None:
-    ds = _make_plot_ds(n_scan=3, n_spw=2, success=True, with_am=True)
+    ds = _make_plot_ds(n_scan=3, n_ant=2, n_spw=2, success=True, with_am=True)
     chart = PlotData(ds).tau_vs_frequency(scans=[1, 2, 3]).build()
     assert isinstance(chart, alt.LayerChart)
     spec = chart.to_dict()
