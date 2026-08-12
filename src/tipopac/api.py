@@ -164,7 +164,7 @@ def tipopac(
     atm_profile_source: str = "open-meteo",
     afgl_climatology: str = "auto",
     spillover_model: bool = True,
-    group_duration_s: float | None = 3600.0,
+    group_duration_s: float | None = 7200.0,
     n_workers: int | None = None,
     output_dir: str | Path | None = Path("."),
     caltable_opacity: bool = False,
@@ -214,7 +214,7 @@ def tipopac(
     group_duration_s:
         Stage-B time grouping. Scans are partitioned into greedy sequential
         windows of at most this many seconds and one PWV per antenna is fit
-        within each; default 3600 s. ``None`` puts every scan in one group,
+        within each; default 7200 s. ``None`` puts every scan in one group,
         reproducing the pre-grouping pooled anchor. A group can never span
         more than the duration, so a whole-day execution block no longer
         collapses to a single PWV.
@@ -455,7 +455,7 @@ class TippingAnalysis:
         *,
         n_workers: int | None = None,
         spillover_model: bool = True,
-        group_duration_s: float | None = 3600.0,
+        group_duration_s: float | None = 7200.0,
     ) -> None:
         if mode not in _INDEPENDENT_TO_BACKEND:
             raise ValueError(

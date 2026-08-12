@@ -63,7 +63,7 @@ result: Result = tipopac(
     flags_file=None,
     atm_profile_source="open-meteo",                 # | "afgl"
     afgl_climatology="auto",                         # | "midlatitude_summer" | ...
-    group_duration_s=3600.0,                         # Stage-B time grouping; None = one group
+    group_duration_s=7200.0,                         # Stage-B time grouping; None = one group
     n_workers=None,                                  # int → multiprocessing.Pool
     output_dir=Path("."),                            # dir for all outputs; None = compute-only
     caltable_opacity=False,                          # opt-in CASA TOpac table → output_dir/tipopac.opacity
