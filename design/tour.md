@@ -132,7 +132,7 @@ Returns a schema-valid `xr.Dataset` with `source_format="ms"`; online flag appli
 
 ### `readers/sdm.py` — SDM reader
 
-Mirror of `MSReader`. The canonical dataset is identical apart from `source_format="sdm"` and an all-false `flag` (the SDM has no FLAG_CMD equivalent, so online flags are skipped — see `flags._apply_online_flags`). The SDM-specific complications (joining `Antenna` × `Station` for ITRF positions, locating `Station_0` for the WX monitor, runtime field-name detection on SysPower) are all hidden inside `_read_*`.
+Mirror of `MSReader`. The canonical dataset is identical apart from `source_format="sdm"`; online flags come from `Flag.xml` — see `flags._apply_online_flags_sdm`. The SDM-specific complications (joining `Antenna` × `Station` for ITRF positions, locating `Station_0` for the WX monitor, runtime field-name detection on SysPower) are all hidden inside `_read_*`.
 
 - `SDMReader` — `src/tipopac/readers/sdm.py:37` — public reader class.
 - `SDMReader.supports` — `src/tipopac/readers/sdm.py:56` — look for `ASDM.xml`.
@@ -155,7 +155,7 @@ Mirror of `MSReader`. The canonical dataset is identical apart from `source_form
 
 Replaces the v2.6 four-case interval expansion (lines ~1117–1199) with one broadcast `(time_utc >= t_start) & (time_utc <= t_end)` over `(scan, antenna, spw, polarization, time)`. The trick: because `time_utc` lives on `(scan, time)` and the interval bounds are scalar MJD-seconds, the comparison broadcasts to `(scan, time)` and then OR-reduces into the full-rank `flag` array along the antenna/spw/pol slice the command targets. No case splitting, no per-interval loop allocations.
 
-Online flags come from `FLAG_CMD` (MS only — SDM has no equivalent, so `_apply_online_flags` silently no-ops when `source_format != "ms"`); user flags come from a CASA-flagcmd-like text file with `antenna=`, `spw=`, `timerange=` clauses.
+Online flags come from `FLAG_CMD` on an MS and `Flag.xml` on an SDM (`apply` dispatches on `source_format`); user flags come from a CASA-flagcmd-like text file with `antenna=`, `spw=`, `timerange=` clauses.
 
 - `_ymd_to_mjd_sec` — `src/tipopac/flags.py:41` — parse `'YYYY/MM/DD/HH:MM:SS[.fff]'` → MJD-seconds (float64).
 - `_parse_command` — `src/tipopac/flags.py:51` — regex-extract `(antenna, t_start, t_end)` from a `FLAG_CMD.COMMAND` string; returns `None` on mismatch (warned and skipped).

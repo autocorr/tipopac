@@ -207,7 +207,7 @@ def _apply_online_flags_sdm(ds: xr.Dataset, source_path: str) -> None:
         _log.warning("Flag.xml not found at %s — skipping online flags", flag_path)
         return
 
-    sdm = sdmpy.SDM(str(source_path), use_xsd=False)
+    sdm = sdmpy.SDM(str(source_path), use_xsd=False, lazy=True)
     rows = list(sdm["Flag"])
     if not rows:
         _log.warning("Flag.xml is empty — no online flags applied")

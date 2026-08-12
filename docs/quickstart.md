@@ -63,7 +63,7 @@ print(ds["tau_zenith"], ds["pwv"], ds["tcal_fit"])
 | `scans` | `DO_SKYDIP` scan numbers to keep. `None` keeps all skydip scans. |
 | `bands` | VLA receiver bands (case-insensitive, e.g. `["Ku", "K"]`). `None` keeps the well-conditioned high bands `Ku, K, Ka, Q`. |
 | `mode` | `"independent_tau_solve"` (default) or `"independent_tau"`. See [Theory](theory.md). |
-| `flags_online` | Apply `FLAG_CMD` online flags (MS only). Default `True`. |
+| `flags_online` | Apply online flags (MS `FLAG_CMD` / SDM `Flag.xml`). Default `True`. |
 | `flags_file` | Path to a user flag file (`antenna/spw/timerange` per line). |
 | `atm_profile_source` | `"open-meteo"` (default, one HTTP call) or `"afgl"` (offline). |
 | `n_workers` | Stage-A fit parallelism. `None` runs serially. |
