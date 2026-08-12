@@ -15,6 +15,7 @@ import xarray as xr
 
 from tipopac.flags import (
     _apply_interval,
+    _parse_antenna_ids,
     _parse_command,
     _parse_user_line,
     _ymd_to_mjd_sec,
@@ -366,11 +367,164 @@ def test_apply_user_file_comment_and_blank_lines(tmp_path: Path) -> None:
     assert not ds["flag"].values.any()
 
 
-def test_apply_online_skipped_for_sdm(tmp_path: Path) -> None:
-    """online=True is silently ignored for SDM-format datasets."""
+def test_apply_online_skipped_when_flag_xml_missing(tmp_path: Path) -> None:
+    """An SDM without Flag.xml skips online flags instead of raising."""
     ds = _make_flag_ds()
     ds.attrs["source_format"] = "sdm"
+    ds.attrs["source_path"] = str(tmp_path)
     apply(ds, online=True, file=None)
+    assert not ds["flag"].values.any()
+
+
+def test_apply_online_skipped_for_unknown_format() -> None:
+    """online=True is ignored for a dataset with no recognised source_format."""
+    ds = _make_flag_ds()
+    ds.attrs["source_format"] = "other"
+    apply(ds, online=True, file=None)
+    assert not ds["flag"].values.any()
+
+
+# ---------------------------------------------------------------------------
+# _parse_antenna_ids: ASDM antenna-id arrays
+# ---------------------------------------------------------------------------
+
+
+def test_parse_antenna_ids_single() -> None:
+    """The common one-antenna form yields a single id."""
+    assert _parse_antenna_ids("1 1 Antenna_26") == ["Antenna_26"]
+
+
+def test_parse_antenna_ids_multiple() -> None:
+    """numAntenna > 1 expands to one id per antenna."""
+    assert _parse_antenna_ids("1 3 Antenna_0 Antenna_5 Antenna_9") == [
+        "Antenna_0",
+        "Antenna_5",
+        "Antenna_9",
+    ]
+
+
+def test_parse_antenna_ids_malformed_returns_empty() -> None:
+    """Fields too short or with a non-integer count yield no ids."""
+    assert _parse_antenna_ids("1") == []
+    assert _parse_antenna_ids("1 x Antenna_0") == []
+
+
+# ---------------------------------------------------------------------------
+# _apply_online_flags_sdm: Flag.xml end-to-end on a synthetic SDM
+# ---------------------------------------------------------------------------
+
+
+def _write_sdm(tmp_path: Path, flag_rows: str) -> Path:
+    """Build a minimal SDM containing only Antenna and Flag tables."""
+    sdm = tmp_path / "synth.sdm"
+    sdm.mkdir()
+
+    def table(name: str, n_rows: int) -> str:
+        return (
+            f"<Table><Name>{name}</Name><NumberRows>{n_rows}</NumberRows>"
+            f'<Entity entityId="uid://x/{name}" entityIdEncrypted="na" '
+            f'entityTypeName="{name}Table" schemaVersion="4" documentVersion="1"/>'
+            "</Table>"
+        )
+
+    (sdm / "ASDM.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<ASDM>'
+        '<Entity entityId="uid://x/asdm" entityIdEncrypted="na" '
+        'entityTypeName="ASDM" schemaVersion="4" documentVersion="1"/>'
+        "<TimeOfCreation>2021-02-01T01:00:56.000089</TimeOfCreation>"
+        f"{table('Antenna', 2)}{table('Flag', 1)}</ASDM>"
+    )
+    (sdm / "Antenna.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<AntennaTable>'
+        "<row><antennaId>Antenna_0</antennaId><name>ea01</name></row>"
+        "<row><antennaId>Antenna_1</antennaId><name>ea05</name></row>"
+        "</AntennaTable>"
+    )
+    (sdm / "Flag.xml").write_text(
+        f'<?xml version="1.0" encoding="UTF-8"?>\n<FlagTable>{flag_rows}</FlagTable>'
+    )
+    return sdm
+
+
+def _flag_row(ant: str, t0: float, t1: float, reason: str) -> str:
+    """One Flag.xml row; t0/t1 are MJD-seconds, written out as ASDM nanoseconds."""
+    return (
+        f"<row><flagId>Flag_0</flagId>"
+        f"<startTime>{int(t0 * 1e9)}</startTime>"
+        f"<endTime>{int(t1 * 1e9)}</endTime>"
+        f"<reason>{reason}</reason>"
+        f"<numAntenna>1</numAntenna>"
+        f"<antennaId>1 1 {ant}</antennaId></row>"
+    )
+
+
+def _sdm_flag_ds(tmp_path: Path, sdm: Path) -> xr.Dataset:
+    ds = _make_flag_ds(n_time=11)
+    ds.attrs["source_format"] = "sdm"
+    ds.attrs["source_path"] = str(sdm)
+    return ds
+
+
+def test_sdm_flag_xml_applies_interval(tmp_path: Path) -> None:
+    """A Flag.xml row flags the matching antenna over its ns-precision interval."""
+    pytest.importorskip("sdmpy")
+    sdm = _write_sdm(tmp_path, _flag_row("Antenna_0", 3.0, 6.0, "FOCUS_ERROR"))
+    ds = _sdm_flag_ds(tmp_path, sdm)
+
+    apply(ds, online=True, file=None)
+
+    flag = ds["flag"].values
+    expected = np.array(
+        [False, False, False, True, True, True, True, False, False, False, False]
+    )
+    np.testing.assert_array_equal(flag[0, 0, 0, 0, :], expected)
+    assert not flag[:, 1, :, :, :].any(), "ea05 must not be flagged"
+
+
+def test_sdm_flag_xml_excludes_reasons(tmp_path: Path) -> None:
+    """Rows whose reason is in the v2.6 exclusion set are not applied."""
+    pytest.importorskip("sdmpy")
+    rows = "".join(
+        _flag_row("Antenna_0", 0.0, 10.0, r)
+        for r in ("ANTENNA_NOT_ON_SOURCE", "SHADOW", "CLIP_ZERO_ALL")
+    )
+    ds = _sdm_flag_ds(tmp_path, _write_sdm(tmp_path, rows))
+
+    apply(ds, online=True, file=None)
+
+    assert not ds["flag"].values.any()
+
+
+def test_sdm_flag_xml_multi_antenna_row(tmp_path: Path) -> None:
+    """A single row naming several antennas flags each of them."""
+    pytest.importorskip("sdmpy")
+    row = (
+        "<row><flagId>Flag_0</flagId>"
+        f"<startTime>{int(3.0 * 1e9)}</startTime>"
+        f"<endTime>{int(6.0 * 1e9)}</endTime>"
+        "<reason>SUBREFLECTOR_ERROR</reason>"
+        "<numAntenna>2</numAntenna>"
+        "<antennaId>1 2 Antenna_0 Antenna_1</antennaId></row>"
+    )
+    ds = _sdm_flag_ds(tmp_path, _write_sdm(tmp_path, row))
+
+    apply(ds, online=True, file=None)
+
+    flag = ds["flag"].values
+    for ant_idx in (0, 1):
+        np.testing.assert_array_equal(
+            flag[0, ant_idx, 0, 0, 3:7], np.array([True, True, True, True])
+        )
+
+
+def test_sdm_flag_xml_unknown_antenna_skipped(tmp_path: Path) -> None:
+    """A row naming an antenna absent from the dataset is silently skipped."""
+    pytest.importorskip("sdmpy")
+    sdm = _write_sdm(tmp_path, _flag_row("Antenna_99", 0.0, 10.0, "FOCUS_ERROR"))
+    ds = _sdm_flag_ds(tmp_path, sdm)
+
+    apply(ds, online=True, file=None)
+
     assert not ds["flag"].values.any()
 
 

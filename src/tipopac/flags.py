@@ -21,7 +21,7 @@ __all__ = ["apply"]
 
 _log = logging.getLogger(__name__)
 
-# Excluded REASON values from online FLAG_CMD (task_tipopac.py:886)
+# Excluded REASON values from online FLAG_CMD / SDM Flag.xml (task_tipopac.py:886)
 _REASON_EXCLUDE = frozenset({"ANTENNA_NOT_ON_SOURCE", "SHADOW", "CLIP_ZERO_ALL"})
 
 # MJD epoch: 1858-11-17 00:00:00 UTC
@@ -131,16 +131,19 @@ def _apply_interval(
 def apply(ds: xr.Dataset, online: bool, file: Path | None) -> xr.Dataset:
     """Apply online and user-file flags into ds['flag'] in-place.
 
-    online=True reads FLAG_CMD from the MS at ds.attrs['source_path'].
-    Silently skipped for SDM-format datasets (no FLAG_CMD subtable).
+    online=True reads FLAG_CMD from an MS, or Flag.xml from an SDM, at
+    ds.attrs['source_path'].
     file, if given, is a path to a text file with one flag command per line.
     Returns ds (same object, flag variable updated).
     """
     if online:
-        if ds.attrs.get("source_format") == "ms":
-            _apply_online_flags(ds, ds.attrs["source_path"])
+        fmt = ds.attrs.get("source_format")
+        if fmt == "ms":
+            _apply_online_flags_ms(ds, ds.attrs["source_path"])
+        elif fmt == "sdm":
+            _apply_online_flags_sdm(ds, ds.attrs["source_path"])
         else:
-            _log.debug("online=True ignored: source_format is not 'ms'")
+            _log.debug("online=True ignored: unknown source_format %r", fmt)
 
     if file is not None:
         _apply_user_flags(ds, Path(file))
@@ -148,7 +151,7 @@ def apply(ds: xr.Dataset, online: bool, file: Path | None) -> xr.Dataset:
     return ds
 
 
-def _apply_online_flags(ds: xr.Dataset, source_path: str) -> None:
+def _apply_online_flags_ms(ds: xr.Dataset, source_path: str) -> None:
     from casatools import table as _table
 
     flag_cmd_path = Path(source_path) / "FLAG_CMD"
@@ -180,6 +183,52 @@ def _apply_online_flags(ds: xr.Dataset, source_path: str) -> None:
         antenna, t_start, t_end = parsed
         # Online flags apply to all spws (v2.6 does not filter by spw)
         _apply_interval(ds, antenna, "*", t_start, t_end)
+        n_applied += 1
+    _log.debug("Applied %d online flag commands", n_applied)
+
+
+def _parse_antenna_ids(field: str) -> list[str]:
+    """Parse an ASDM antenna-id array '1 N Antenna_a Antenna_b ...' → id list."""
+    parts = field.split()
+    if len(parts) < 2:
+        return []
+    try:
+        n = int(parts[1])
+    except ValueError:
+        return []
+    return parts[2 : 2 + n]
+
+
+def _apply_online_flags_sdm(ds: xr.Dataset, source_path: str) -> None:
+    import sdmpy
+
+    flag_path = Path(source_path) / "Flag.xml"
+    if not flag_path.exists():
+        _log.warning("Flag.xml not found at %s — skipping online flags", flag_path)
+        return
+
+    sdm = sdmpy.SDM(str(source_path), use_xsd=False)
+    rows = list(sdm["Flag"])
+    if not rows:
+        _log.warning("Flag.xml is empty — no online flags applied")
+        return
+
+    ant_names = {str(a.antennaId): str(a.name) for a in sdm["Antenna"]}
+
+    n_applied = 0
+    for row in rows:
+        if str(row.reason) in _REASON_EXCLUDE:
+            continue
+        try:
+            t_start = int(str(row.startTime)) / 1e9
+            t_end = int(str(row.endTime)) / 1e9
+        except ValueError:
+            continue
+        for ant_id in _parse_antenna_ids(str(row.antennaId)):
+            name = ant_names.get(ant_id)
+            if name is None:
+                continue
+            _apply_interval(ds, name, "*", t_start, t_end)
         n_applied += 1
     _log.debug("Applied %d online flag commands", n_applied)
 

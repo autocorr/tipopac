@@ -341,3 +341,76 @@ def test_sdm_ms_parity_weather(ds_ms, ds_sdm) -> None:
                 atol=atol,
                 err_msg=f"{var} diverges at scan index {i}",
             )
+
+
+@pytest.mark.slow
+def test_sdm_ms_parity_online_flag_commands() -> None:
+    """Flag.xml and FLAG_CMD must yield the same (antenna, t_start, t_end) set.
+
+    MS COMMAND strings are formatted to milliseconds while the SDM stores
+    nanoseconds, so times are matched to 1 ms — far below the ~1 s sample
+    cadence.
+    """
+    from casatools import table as _table
+
+    import sdmpy
+
+    from tipopac.flags import _REASON_EXCLUDE, _parse_antenna_ids, _parse_command
+
+    if not (MS_PATH / "FLAG_CMD").exists():
+        pytest.skip(f"tip_test.ms not found at {MS_PATH}")
+    if not (SDM_PATH / "Flag.xml").exists():
+        pytest.skip(f"tip_test.sdm not found at {SDM_PATH}")
+
+    tb = _table()
+    try:
+        tb.open(str(MS_PATH / "FLAG_CMD"))
+        exclude = " and ".join(f"REASON!='{r}'" for r in sorted(_REASON_EXCLUDE))
+        sub = tb.query(exclude)
+        commands = list(sub.getcol("COMMAND")) if sub.nrows() > 0 else []
+        sub.close()
+    finally:
+        tb.close()
+    ms_cmds = [c for c in (_parse_command(str(x)) for x in commands) if c is not None]
+
+    sdm = sdmpy.SDM(str(SDM_PATH), use_xsd=False)
+    ant_names = {str(a.antennaId): str(a.name) for a in sdm["Antenna"]}
+    sdm_cmds = [
+        (ant_names[aid], int(str(r.startTime)) / 1e9, int(str(r.endTime)) / 1e9)
+        for r in sdm["Flag"]
+        if str(r.reason) not in _REASON_EXCLUDE
+        for aid in _parse_antenna_ids(str(r.antennaId))
+    ]
+
+    assert len(ms_cmds) == len(sdm_cmds), (
+        f"command count differs: MS {len(ms_cmds)} vs SDM {len(sdm_cmds)}"
+    )
+
+    def key(c):
+        return (c[0], round(c[1], 3), round(c[2], 3))
+
+    ms_keys = sorted(map(key, ms_cmds))
+    sdm_keys = sorted(map(key, sdm_cmds))
+    for m, s in zip(ms_keys, sdm_keys):
+        assert m[0] == s[0], f"antenna differs: {m[0]} vs {s[0]}"
+        assert abs(m[1] - s[1]) <= 1e-3, f"t_start differs for {m[0]}"
+        assert abs(m[2] - s[2]) <= 1e-3, f"t_end differs for {m[0]}"
+
+
+@pytest.mark.slow
+def test_sdm_online_flags_change_flag_array(ds_sdm) -> None:
+    """Applying online flags to the SDM dataset flags a plausible cell count.
+
+    The two readers retain different sample counts (a separate, pre-existing
+    divergence), so the delta is checked for order of magnitude against the
+    MS's measured 17856 rather than pinned exactly.
+    """
+    from tipopac import flags
+
+    ds = ds_sdm.copy(deep=True)
+    before = int(ds["flag"].values.sum())
+    flags.apply(ds, online=True, file=None)
+    delta = int(ds["flag"].values.sum()) - before
+
+    assert delta > 0, "online flags set no cells"
+    assert 0.5 < delta / 17856 < 2.0, f"delta {delta} far from the MS's 17856"

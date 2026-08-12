@@ -206,7 +206,7 @@ contract.
 | `CALDEVICE.NOISE_CAL`                                     | `CalDevice.xml`            | iterate rows; row key `(antennaId, feedId, spectralWindowId)`; load 0 = noise tube; R = col 3, L = col 3+ncols |
 | `WEATHER.TIME/TEMPERATURE/REL_HUMIDITY/PRESSURE`          | `Weather.xml`              | `sdm['Weather'][station, time]`                                     |
 | scan intent `*DO_SKYDIP*`                                 | `Scan.xml` + `Subscan.xml` | `sdm['Scan'][i].scanIntent` / `sdm['Subscan'][i,j].subscanIntent`   |
-| `FLAG_CMD` (online flags)                                 | — (no SDM equivalent)      | `SDMReader` returns an empty flag command set                       |
+| `FLAG_CMD` (online flags)                                 | `Flag.xml`                 | iterate rows; `reason`, `startTime`/`endTime` ns, `antennaId` array  |
 
 ---
 
@@ -613,11 +613,20 @@ Stage B's PWV fit — there is no second am run downstream.
 A single entry point: `flags.apply(ds, online: bool, file: Path |
 None) -> None` updates `ds["flag"]` in place.
 
-- **Online flags (MS only).** Read `FLAG_CMD` rows whose `REASON`
-  is **not** in `{ANTENNA_NOT_ON_SOURCE, SHADOW, CLIP_ZERO_ALL}` —
-  the v2.6 inclusion contract. Each `COMMAND` field is parsed by a
-  single regex into `(antenna_name, t_start, t_end)`. SDM has no
-  `FLAG_CMD`; the online path is a no-op there.
+- **Online flags.** Rows whose `REASON` is **not** in
+  `{ANTENNA_NOT_ON_SOURCE, SHADOW, CLIP_ZERO_ALL}` — the v2.6
+  inclusion contract. MS: `FLAG_CMD`, each `COMMAND` parsed by a
+  single regex into `(antenna_name, t_start, t_end)`. SDM: `Flag.xml`,
+  the table `importasdm` writes `FLAG_CMD` from — same rows, so both
+  readers apply the same commands. `spectralWindowId` /
+  `polarizationType` are ignored even when present, because
+  `importasdm` drops them and honouring them would make the SDM path
+  non-equivalent.
+- **Shadowing is not flagged**, from either reader. `flagdata`
+  `mode='shadow'` / `mode='clip'` write MAIN`.FLAG`; switched power
+  lives in `SYSPOWER`, which has no flag column. The `SHADOW` and
+  `CLIP_ZERO_ALL` `FLAG_CMD` rows are mode directives with no
+  timerange, not per-integration flags.
 - **User file.** Lines of the form
   `antenna='ea05' spw='7' timerange='YYYY/MM/DD/HH:MM:SS~YYYY/MM/DD/HH:MM:SS'`.
   Single regex. `*`, empty, or missing means "all" for the

@@ -191,7 +191,7 @@ def tipopac(
         B). The other accepted value is ``"independent_tau"`` — per-(scan,
         ant, spw) opacity Stage-A fit with the same Stage-B anchor.
     flags_online:
-        Apply FLAG_CMD online flags (MS only; SDM has no equivalent).
+        Apply online flags (MS ``FLAG_CMD`` / SDM ``Flag.xml``).
     flags_file:
         Path to a user flag file (one ``antenna/spw/timerange`` line per row).
     atm_profile_source:
