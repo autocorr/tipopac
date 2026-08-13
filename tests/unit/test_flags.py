@@ -15,6 +15,7 @@ import xarray as xr
 
 from tipopac.flags import (
     _apply_interval,
+    _apply_intervals,
     _parse_antenna_ids,
     _parse_command,
     _parse_user_line,
@@ -560,3 +561,59 @@ def test_apply_preserves_existing_flags() -> None:
     assert ds["flag"].values[0, 0, 0, 0, 5]
     # Time 3 (not in either range) is not flagged
     assert not ds["flag"].values[0, 0, 0, 0, 3]
+
+
+# ---------------------------------------------------------------------------
+# _apply_intervals: batch path must match the per-command path
+# ---------------------------------------------------------------------------
+
+
+def test_apply_intervals_matches_per_command() -> None:
+    """The batched online path is equivalent to repeated _apply_interval."""
+    commands = [
+        ("ea01", 3.0, 6.0),
+        ("ea05", 0.0, 2.0),
+        ("ea01", 7.0, 20.0),
+        ("ea99", 0.0, 10.0),
+        ("ea05", -5.0, 1.0),
+    ]
+
+    ds_batch = _make_flag_ds()
+    _apply_intervals(ds_batch, commands)
+
+    ds_loop = _make_flag_ds()
+    for antenna, t_start, t_end in commands:
+        _apply_interval(ds_loop, antenna, "*", t_start, t_end)
+
+    np.testing.assert_array_equal(ds_batch["flag"].values, ds_loop["flag"].values)
+
+
+def test_apply_intervals_wildcard_antenna() -> None:
+    """antenna='*' in a batch flags every antenna."""
+    ds = _make_flag_ds()
+    _apply_intervals(ds, [("*", 3.0, 6.0)])
+    flag = ds["flag"].values
+    for ant_idx in (0, 1):
+        np.testing.assert_array_equal(
+            flag[0, ant_idx, 0, 0, :],
+            np.array(
+                [False, False, False, True, True, True, True]
+                + [False, False, False, False]
+            ),
+        )
+
+
+def test_apply_intervals_preserves_existing_flags() -> None:
+    """The batch OR does not clear flags already set."""
+    ds = _make_flag_ds()
+    ds["flag"].values[0, 0, 0, 0, 0] = True
+    _apply_intervals(ds, [("ea01", 5.0, 6.0)])
+    assert ds["flag"].values[0, 0, 0, 0, 0]
+    assert ds["flag"].values[0, 0, 0, 0, 5]
+
+
+def test_apply_intervals_empty_is_noop() -> None:
+    """An empty command batch leaves the flag array untouched."""
+    ds = _make_flag_ds()
+    _apply_intervals(ds, [])
+    assert not ds["flag"].values.any()

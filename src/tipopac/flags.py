@@ -6,15 +6,22 @@ Application uses a single interval-overlap expression per flag command:
     (time_utc >= t_start) & (time_utc <= t_end)
 broadcast over (scan, antenna, spw, polarization, time).  This replaces
 v2.6's four-case interval expansion (task_tipopac.py:1116–1199).
+
+Online flags go through `_apply_intervals`, which accumulates that same
+expression at (scan, antenna, time) and broadcasts once for the whole
+batch; user-file flags keep the per-command `_apply_interval` because
+they may select an spw.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import xarray as xr
 
 __all__ = ["apply"]
@@ -128,6 +135,33 @@ def _apply_interval(
     ds["flag"] = ds["flag"] | mask
 
 
+def _apply_intervals(
+    ds: xr.Dataset, commands: Sequence[tuple[str, float, float]]
+) -> None:
+    """OR a batch of (antenna, t_start, t_end) intervals into ``ds['flag']``.
+
+    Same interval-overlap expression as ``_apply_interval``, accumulated at
+    (scan, antenna, time) and broadcast over spw/polarization once rather
+    than once per command. Unknown antenna names are silently skipped.
+    """
+    utc = ds["time_utc"].values
+    ant_names = np.asarray(ds["antenna"].values, dtype=str)
+    ant_idx = {name: i for i, name in enumerate(ant_names)}
+
+    acc = np.zeros((utc.shape[0], len(ant_names), utc.shape[1]), dtype=bool)
+    for antenna, t_start, t_end in commands:
+        hit = (utc >= t_start) & (utc <= t_end)
+        if antenna == "*":
+            acc |= hit[:, None, :]
+            continue
+        a = ant_idx.get(antenna)
+        if a is None:
+            continue
+        acc[:, a, :] |= hit
+
+    ds["flag"] = ds["flag"] | xr.DataArray(acc, dims=("scan", "antenna", "time"))
+
+
 def apply(ds: xr.Dataset, online: bool, file: Path | None) -> xr.Dataset:
     """Apply online and user-file flags into ds['flag'] in-place.
 
@@ -175,16 +209,10 @@ def _apply_online_flags_ms(ds: xr.Dataset, source_path: str) -> None:
     finally:
         tb.close()
 
-    n_applied = 0
-    for cmd in commands:
-        parsed = _parse_command(str(cmd))
-        if parsed is None:
-            continue
-        antenna, t_start, t_end = parsed
-        # Online flags apply to all spws (v2.6 does not filter by spw)
-        _apply_interval(ds, antenna, "*", t_start, t_end)
-        n_applied += 1
-    _log.debug("Applied %d online flag commands", n_applied)
+    # Online flags apply to all spws (v2.6 does not filter by spw)
+    parsed = [p for p in (_parse_command(str(c)) for c in commands) if p is not None]
+    _apply_intervals(ds, parsed)
+    _log.debug("Applied %d online flag commands", len(parsed))
 
 
 def _parse_antenna_ids(field: str) -> list[str]:
@@ -215,7 +243,7 @@ def _apply_online_flags_sdm(ds: xr.Dataset, source_path: str) -> None:
 
     ant_names = {str(a.antennaId): str(a.name) for a in sdm["Antenna"]}
 
-    n_applied = 0
+    commands: list[tuple[str, float, float]] = []
     for row in rows:
         if str(row.reason) in _REASON_EXCLUDE:
             continue
@@ -226,11 +254,11 @@ def _apply_online_flags_sdm(ds: xr.Dataset, source_path: str) -> None:
             continue
         for ant_id in _parse_antenna_ids(str(row.antennaId)):
             name = ant_names.get(ant_id)
-            if name is None:
-                continue
-            _apply_interval(ds, name, "*", t_start, t_end)
-        n_applied += 1
-    _log.debug("Applied %d online flag commands", n_applied)
+            if name is not None:
+                commands.append((name, t_start, t_end))
+
+    _apply_intervals(ds, commands)
+    _log.debug("Applied %d online flag commands", len(commands))
 
 
 def _apply_user_flags(ds: xr.Dataset, file: Path) -> None:

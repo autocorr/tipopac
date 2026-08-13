@@ -634,7 +634,10 @@ None) -> None` updates `ds["flag"]` in place.
   coord:
   `(ds.time_utc >= t_start) & (ds.time_utc <= t_end)`. The v2.6
   four-case interval expansion (start-inside, end-inside,
-  spanning, etc.) collapses to this single expression.
+  spanning, etc.) collapses to this single expression. Online flags
+  accumulate it at `(scan, antenna, time)` and broadcast once per
+  batch rather than once per command; user-file flags broadcast per
+  command, since they may select an spw.
 
 ---
 
