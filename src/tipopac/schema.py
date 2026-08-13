@@ -76,6 +76,10 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
         ("scan", "antenna", "spw", "polarization"),
         np.dtype(np.float32),
     ),
+    "sigma_tcal": (
+        ("scan", "antenna", "spw", "polarization"),
+        np.dtype(np.float32),
+    ),
     "Twmt": (("scan", "spw"), np.dtype(np.float32)),
     "fit_success": (("scan", "antenna", "spw"), np.dtype(np.bool_)),
     "fit_reason": (("scan", "antenna", "spw"), np.dtype("O")),

@@ -35,11 +35,13 @@ tipping-scan data, without requiring a CASA runtime.
 - Vertical profiles come from open-meteo's `historical-forecast-api`
   pressure-level grid (gfs_hrrr model); offline fallback is amwrap's
   AFGL climatologies.
-- Fit architecture is **Stage A + Stage B**: per-spw zenith-opacity
-  fit from the observed data, then a post-hoc per-antenna PWV anchor
-  against the resulting `τ_z(ν)` samples via a precomputed
-  `PwvGrid`. am is run **once per analysis** (during grid build),
-  never inside the per-sample fit loop.
+- Fit architecture is **Stage A + Stage B (+ Stage C)**: per-spw
+  zenith-opacity fit from the observed data, then a post-hoc
+  per-antenna PWV anchor against the resulting `τ_z(ν)` samples via a
+  precomputed `PwvGrid`, then — under `independent_tau` — a
+  closed-form Tcal scale pinned to that anchor (§6.1). am is run
+  **once per analysis** (during grid build), never inside the
+  per-sample fit loop.
 - Modern Python: `pyproject.toml` with `uv`, type hints, `ty` for
   type-checking, `ruff` for lint/format, `pytest` for tests.
 
@@ -64,6 +66,7 @@ result: Result = tipopac(
     atm_profile_source="open-meteo",                 # | "afgl"
     afgl_climatology="auto",                         # | "midlatitude_summer" | ...
     group_duration_s=7200.0,                         # Stage-B time grouping; None = one group
+    min_airmass_span=0.3,                            # Stage-C leverage floor; below it c is NaN
     n_workers=None,                                  # int → multiprocessing.Pool
     output_dir=Path("."),                            # dir for all outputs; None = compute-only
     caltable_opacity=False,                          # opt-in CASA TOpac table → output_dir/tipopac.opacity
@@ -108,16 +111,20 @@ The freeze applies to the dataclass field bindings, not the underlying
 
 ### 2.1 Modes
 
-Two public modes; both run **Stage A → Stage B**. They differ only in
-the Stage-A fit routing.
+Two public modes; both run **Stage A → Stage B**. They differ in the
+Stage-A fit routing and in whether Stage C runs.
 
-| Mode                      | Stage-A unit           | Stage-A free parameters                                 |
-| ------------------------- | ---------------------- | ------------------------------------------------------- |
-| `independent_tau`         | `(scan, antenna, spw)` | `T0_R, T0_L, τ_z`                                       |
-| `independent_tau_solve`   | `(scan, spw)`          | per-antenna `(T0_R, c_R, T0_L, c_L)` + one shared `τ_z` |
+| Mode                      | Stage-A unit           | Stage-A free parameters                                 | Stage C |
+| ------------------------- | ---------------------- | ------------------------------------------------------- | ------- |
+| `independent_tau`         | `(scan, antenna, spw)` | `T0_R, T0_L, τ_z`                                       | yes     |
+| `independent_tau_solve`   | `(scan, spw)`          | per-antenna `(T0_R, c_R, T0_L, c_L)` + one shared `τ_z` | no      |
 
-`independent_tau_solve` is the default. `independent_tau` is the
-no-Tcal-correction variant for callers that trust the laboratory Tcal.
+`independent_tau_solve` is the default, and is **legacy**: its free
+per-curve gain buys no fit quality (the tipping curve cannot separate a
+change in τ from a gain over the sampled airmass) while biasing
+`tau_zenith` high against an independent atmospheric prediction. Prefer
+`independent_tau`, which fits τ with `c ≡ 1` and then estimates the Tcal
+scale against the Stage-B anchor in Stage C.
 
 ### 2.2 Staging contract
 
@@ -133,9 +140,9 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
 - `build_atm_grids(pwv_step_mm, freq_step_Hz, n_workers)` — precompute
   per-scan `PwvGrid` and stash on `self._grids` (§7.2). Auto-calls
   `fetch_atm_profile` if needed.
-- `fit(mode, n_workers, group_duration_s)` — Stage A + Stage B.
-  Auto-calls `build_atm_grids` if needed. After this `result` is
-  available.
+- `fit(mode, n_workers, group_duration_s, min_airmass_span)` — Stage A
+  + Stage B, plus Stage C under `independent_tau`. Auto-calls
+  `build_atm_grids` if needed. After this `result` is available.
 - `plot(out_dir)` — interactive plot `.html` files via
   `plot.PlotData(ds).save_all`.
 - `weblog(plot_dir)` — self-contained GUI `index.html` over the
@@ -261,7 +268,8 @@ Data variables — fit results (filled by fit.py)
   tau_zenith    (scan, antenna, spw)                       float32   nepers
   tau_err       (scan, antenna, spw)                       float32
   T0            (scan, antenna, spw, polarization)         float32   K
-  tcal_fit      (scan, antenna, spw, polarization)         float32   K
+  tcal_fit      (scan, antenna, spw, polarization)         float32   K   Stage C (or the legacy joint fit); NaN where not measured
+  sigma_tcal    (scan, antenna, spw, polarization)         float32   K   Stage C only; finite ⇔ tcal_fit was measured
   fit_success   (scan, antenna, spw)                       bool
   fit_reason    (scan, antenna, spw)                       str
 
@@ -516,6 +524,46 @@ from the `THIG0007_wide_CXUKAQ` campaign — a single config, so a config-depend
 
 ---
 
+## 6.1 Stage C — anchor-pinned Tcal scale (`tcal.py`)
+
+Runs after Stage B under `independent_tau` only. With τ pinned to the
+group's `am_tau` at the spw centre, the Stage-A model is linear in
+`(T0/c, 1/c)`:
+
+    Tsys(z) = (T0 + Tcmb·e^{−τ_am·a} + Twmt·(1−e^{−τ_am·a}) + spill(z)) / c
+            = A + B·pred(z),   A = T0/c,  B = 1/c
+
+so `c = 1/B` is a σ-weighted regression slope from the 2×2 normal
+equations — exact in τ, no optimizer, no second am run — with
+`σ_c = σ_B/B²`. `spill` stays inside the numerator, matching §5.3.
+Screening and the joint-R/L 4σ rejection ladder are Stage A's
+(`fit.valid_samples`, `_RES_REJECT_*`); the unit is `(scan, antenna,
+spw, polarization)`.
+
+**Gauge.** The anchor is am at the group's fitted PWV, itself derived
+from these opacities, so one scalar per group is absorbed by
+construction. The array-common level of `c` is not a measurement; only
+the per-antenna contrast and the per-spw shape are.
+
+**Leverage gate.** Cells whose kept-sample airmass span is below
+`min_airmass_span` (default 0.3) get NaN — `c` is a level measurement
+and a short tip does not constrain it.
+
+**Not calibration-grade per scan.** A single tip's `c` carries a
+~12–15 % rms term an order of magnitude above σ_c, and the reproducible
+per-antenna contrast itself drifts a few percent per year. Callers must
+average over a window before treating `c` as a Tcal correction.
+
+**Outputs.** `tcal_fit = c·tcal_ref` and `sigma_tcal = σ_c·tcal_ref`,
+both NaN where no estimate was made. `sigma_tcal` finite is the
+measured-ness flag; `physics.predicted_tsys` does not consult it and
+reconstructs unmeasured cells at `c = 1`.
+
+Skipped under `independent_tau_solve`: the anchor is fit to that mode's
+`tau_zenith`, so `c` would absorb its opacity bias.
+
+---
+
 ## 7. Atmospheric profile pipeline (contract)
 
 Two stages, both attached to `TippingAnalysis`. Neither is invoked
@@ -673,8 +721,9 @@ on `buildmytasks` or a `casa` process; it does not mean zero
   `(antenna, spw)` cell — row 0 is the fitted noise-tube values, row
   1 (solar-filter slot) is zeroed for v2.6 output-format parity.
   Row order stays `(scan, antenna, spw)`, unaffected by the opacity
-  table's ordering. Requires `tcal_fit` (i.e.
-  `mode="independent_tau_solve"`).
+  table's ordering. Requires `tcal_fit` and `tcal_ref`; cells with no
+  fitted value fall back to `tcal_ref`, since CALDEVICE carries no FLAG
+  column to mark them.
 
 ### 9.3 Plots
 
@@ -685,8 +734,8 @@ vega-altair `.html` per plot. Hover tooltips carry
 `(scan, antenna, spw)`: an elevation curve (Tsys vs. zenith angle,
 both pols, fitted curve overlaid). Per scan with any successful fit:
 a τ vs frequency log-scatter with optional am τ(ν) overlay from
-`am_freq_grid` / `am_tau`, and — when `tcal_fit` actually differs
-from `tcal_ref` — a `T_cal` vs frequency and a
+`am_freq_grid` / `am_tau`, and — when a Tcal scale was fitted
+(`sigma_tcal` present, or the legacy joint fit) — a `T_cal` vs frequency and a
 `c = T_cal,fit / T_cal,ref` plot. Each frequency scatter carries a
 legend-bound antenna selector and a checkbox over the mean overlay; the
 τ plot drops the per-antenna layer and that legend when τ carries no

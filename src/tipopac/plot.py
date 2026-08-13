@@ -1470,8 +1470,9 @@ class PlotData:
         - ``tippingcurve_spw_{spw}_{ant}_scan_{scan}`` per successful cell.
         - ``tau_vs_frequency`` over the group's scans.
         - ``tcal_ref_vs_frequency`` over the group's scans.
-        - ``tcal_fit_vs_frequency`` and ``c_vs_frequency`` additionally when
-          ``tcal_fit`` differs from ``tcal_ref`` (``independent_tau_solve`` mode).
+        - ``tcal_fit_vs_frequency`` and ``c_vs_frequency`` additionally when a
+          Tcal scale was fitted — Stage C (``sigma_tcal`` present) or the
+          legacy ``independent_tau_solve`` joint fit.
         """
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -1516,7 +1517,10 @@ class PlotData:
             self.atmospheric_profile().save(out / "atmospheric_profile")
 
         # Fitted Tcal and "c" plots are only meaningful when a per-cell tcal
-        # was solved; independent_tau leaves tcal_fit == tcal_ref.
-        if self.ds.attrs["mode"] != "independent_tau":
+        # was solved — Stage C, or the legacy joint fit.
+        if (
+            "sigma_tcal" in self.ds.data_vars
+            or self.ds.attrs["mode"] != "independent_tau"
+        ):
             self.tcal_vs_frequency(kind="fit").save(out / "tcal_fit_vs_frequency")
             self.c_vs_frequency().save(out / "c_vs_frequency")

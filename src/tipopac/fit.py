@@ -28,7 +28,7 @@ from scipy.optimize import least_squares
 from tipopac.physics import T_CMB, k2nt, mean_radiating_T
 from tipopac.spillover import ETA_MODEL_NAME, ETA_POLY_COEF, spillover_tsys
 
-__all__ = ["fit_dataset"]
+__all__ = ["fit_dataset", "valid_samples"]
 
 # Per-sample validity / physical bounds. The legacy 6-gate QA cascade
 # (`_STD_RESI`, freq-dep `stdTsys` bins, `_DZ_MIN`, `_MZ_MIN`, mean-Tsys)
@@ -466,6 +466,31 @@ _REDUCED_CHI2_MAX: float = 5.0
 _TAU_REL_ERR_MAX: float = 0.5  # σ_τ/τ above this → poorly_identified
 
 
+def valid_samples(
+    tsys_R: np.ndarray,
+    tsys_L: np.ndarray,
+    sigma_R: np.ndarray,
+    sigma_L: np.ndarray,
+    flag_R: np.ndarray,
+    flag_L: np.ndarray,
+) -> np.ndarray:
+    """Per-sample validity mask, joint over R/L (shared by Stage A and Stage C)."""
+    return (
+        ~flag_R
+        & ~flag_L
+        & (tsys_R > 0)
+        & (tsys_R < _TR_UPPER)
+        & np.isfinite(tsys_R)
+        & (tsys_L > 0)
+        & (tsys_L < _TR_UPPER)
+        & np.isfinite(tsys_L)
+        & np.isfinite(sigma_R)
+        & np.isfinite(sigma_L)
+        & (sigma_R > 0)
+        & (sigma_L > 0)
+    )
+
+
 def _screen_antenna(
     z_all: np.ndarray,
     tsys_R_all: np.ndarray,
@@ -494,18 +519,8 @@ def _screen_antenna(
              "T0_L", "tau0", "tau_err", "jac", "fun", "reduced_chi2"} on
     numerical success. Returns {"reason": <code>} on early failure.
     """
-    valid = (
-        ~flag_R
-        & ~flag_L
-        & (tsys_R_all > 0)
-        & (tsys_R_all < _TR_UPPER)
-        & np.isfinite(tsys_R_all)
-        & (tsys_L_all > 0)
-        & np.isfinite(tsys_L_all)
-        & np.isfinite(sigma_R_all)
-        & np.isfinite(sigma_L_all)
-        & (sigma_R_all > 0)
-        & (sigma_L_all > 0)
+    valid = valid_samples(
+        tsys_R_all, tsys_L_all, sigma_R_all, sigma_L_all, flag_R, flag_L
     )
 
     if int(valid.sum()) < _MIN_SAMPLES:

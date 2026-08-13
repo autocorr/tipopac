@@ -5,7 +5,8 @@ Public entry points:
   `write_tcal(ds, path)`    — write a CALDEVICE-clone Tcal table.
 
 Both require fit results to be present in `ds` (call `fit_dataset` first).
-`write_tcal` additionally requires `tcal_fit` (mode='tcal_solve').
+`write_tcal` additionally requires `tcal_fit`; cells with no fitted value fall
+back to `tcal_ref`, since CALDEVICE has no FLAG column to mark them.
 """
 
 from __future__ import annotations
@@ -65,12 +66,13 @@ def write_opacity(ds: xr.Dataset, path: str | Path) -> None:
 def write_tcal(ds: xr.Dataset, path: str | Path) -> None:
     """Write a CALDEVICE-clone Tcal calibration table from *ds*.
 
-    Requires: tcal_fit in ds.data_vars (only populated by mode='tcal_solve').
+    Requires: tcal_fit and tcal_ref in ds.data_vars.
     Uses ds.attrs["source_path"] to copy the CALDEVICE schema.
     """
-    if ds.attrs.get("mode") != "tcal_solve":
+    missing = [v for v in ("tcal_fit", "tcal_ref") if v not in ds.data_vars]
+    if missing:
         raise ValueError(
-            f"write_tcal requires mode='tcal_solve'; dataset has mode={ds.attrs.get('mode')!r}"
+            f"write_tcal requires {missing!r} on the dataset; run fit first"
         )
 
     import casatools
@@ -192,6 +194,8 @@ def _build_tcal_rows(ds: xr.Dataset) -> list[dict[str, Any]]:
     """Return one CALDEVICE row dict per (scan, antenna, spw) in that order."""
     # tcal_fit: (scan, antenna, spw, polarization) with polarization = [R, L]
     tcal = ds["tcal_fit"].values
+    ref = ds["tcal_ref"].values  # (antenna, spw, polarization)
+    tcal = np.where(np.isfinite(tcal), tcal, ref[None, ...])
 
     rows: list[dict[str, Any]] = []
     for i, _scan_num, a, s, spw_id, midtime in _iter_cells(ds):

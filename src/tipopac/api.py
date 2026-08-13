@@ -165,6 +165,7 @@ def tipopac(
     afgl_climatology: str = "auto",
     spillover_model: bool = True,
     group_duration_s: float | None = 7200.0,
+    min_airmass_span: float = 0.3,
     n_workers: int | None = None,
     output_dir: str | Path | None = Path("."),
     caltable_opacity: bool = False,
@@ -188,8 +189,10 @@ def tipopac(
     mode:
         Fit mode. Defaults to ``"independent_tau_solve"`` — per-(scan, spw)
         Stage-A Tcal-solve fit followed by a per-antenna PWV anchor (Stage
-        B). The other accepted value is ``"independent_tau"`` — per-(scan,
-        ant, spw) opacity Stage-A fit with the same Stage-B anchor.
+        B); legacy, and its free per-curve gain biases ``tau_zenith`` high.
+        The other accepted value is ``"independent_tau"`` — per-(scan, ant,
+        spw) opacity Stage-A fit with the same Stage-B anchor, plus Stage C,
+        which estimates the Tcal scale against that anchor in closed form.
     flags_online:
         Apply online flags (MS ``FLAG_CMD`` / SDM ``Flag.xml``).
     flags_file:
@@ -218,6 +221,9 @@ def tipopac(
         reproducing the pre-grouping pooled anchor. A group can never span
         more than the duration, so a whole-day execution block no longer
         collapses to a single PWV.
+    min_airmass_span:
+        Stage-C leverage floor on ``max(airmass) − min(airmass)``; default 0.3.
+        Cells below it get NaN ``tcal_fit``/``sigma_tcal``.
     n_workers:
         Stage-A fit parallelism. ``None`` runs serially. Higher values
         dispatch via a process pool with single-threaded BLAS per worker.
@@ -255,6 +261,7 @@ def tipopac(
         n_workers=n_workers,
         spillover_model=spillover_model,
         group_duration_s=group_duration_s,
+        min_airmass_span=min_airmass_span,
     )
 
     if output_dir is not None:
@@ -456,6 +463,7 @@ class TippingAnalysis:
         n_workers: int | None = None,
         spillover_model: bool = True,
         group_duration_s: float | None = 7200.0,
+        min_airmass_span: float = 0.3,
     ) -> None:
         if mode not in _INDEPENDENT_TO_BACKEND:
             raise ValueError(
@@ -526,6 +534,15 @@ class TippingAnalysis:
         self._ds["pwv"] = (("group", "antenna"), pwv.astype(np.float32))
         self._ds["pwv_err"] = (("group", "antenna"), pwv_err.astype(np.float32))
         write_am_curve(self._ds, grids_by_pos, pwv, groups)
+
+        # Stage C. Skipped under independent_tau_solve, whose tau_zenith the
+        # anchor is fit to — pinning c to it would fold that mode's own
+        # opacity inflation into c.
+        if mode == "independent_tau":
+            from tipopac.tcal import solve_tcal
+
+            solve_tcal(self._ds, min_airmass_span=min_airmass_span)
+
         self._ds.attrs["mode"] = mode  # public mode label, not backend
         self._ds.attrs["group_duration_s"] = (
             "none" if group_duration_s is None else float(group_duration_s)

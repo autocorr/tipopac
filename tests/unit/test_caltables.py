@@ -308,13 +308,31 @@ def test_build_tcal_rows_cal_load_names() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_write_tcal_requires_tcalsolve_mode(tmp_path: object) -> None:
-    # tau_per_antenna also populates tcal_fit (with reference values), but the
-    # guard must reject it — only tcal_solve fits are meaningful for a Tcal table.
-    ds = _make_fitted_ds(n_scan=1, n_ant=1, n_spw=1)
-    assert ds.attrs.get("mode") == "tau_per_antenna"
-    with pytest.raises(ValueError, match="tcal_solve"):
+def test_write_tcal_requires_tcal_vars(tmp_path: object) -> None:
+    ds = _make_fitted_ds(n_scan=1, n_ant=1, n_spw=1).drop_vars("tcal_fit")
+    with pytest.raises(ValueError, match="tcal_fit"):
         write_tcal(ds, tmp_path / "t.cal")  # type: ignore[arg-type]
+
+
+def test_write_tcal_guard_ignores_the_mode_attr(tmp_path: object) -> None:
+    # The old guard tested attrs["mode"] == "tcal_solve", but api.fit overwrites
+    # that with the public label, so no API-produced dataset could ever pass.
+    # Missing vars must now be the only path that raises.
+    ds = _make_fitted_ds(n_scan=1, n_ant=1, n_spw=1)
+    ds.attrs["mode"] = "independent_tau"
+    with pytest.raises(ValueError, match="tcal_fit"):
+        write_tcal(ds.drop_vars("tcal_fit"), tmp_path / "t.cal")  # type: ignore[arg-type]
+    # With both vars present the guard passes and the row builder runs.
+    assert len(_build_tcal_rows(ds)) == 1
+
+
+def test_build_tcal_rows_falls_back_to_tcal_ref() -> None:
+    ds = _make_tcalsolve_ds(n_scan=1, n_ant=1, n_spw=1)
+    ds["tcal_fit"].values[0, 0, 0, :] = np.nan
+    row = _build_tcal_rows(ds)[0]
+    np.testing.assert_allclose(
+        row["NOISE_CAL"][0], ds["tcal_ref"].values[0, 0, :], rtol=1e-6
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -349,5 +367,30 @@ def test_write_opacity_roundtrip(tmp_path: Path, ds_ms, n_workers) -> None:
     # At least one row should be unflagged (good data)
     flags = tb.getcol("FLAG")  # shape (1, 1, nrows) for TOpac
     assert not flags.all(), "Expected at least one unflagged row in a good MS"
+
+    tb.close()
+
+
+@pytest.mark.slow
+def test_write_tcal_roundtrip(tmp_path: Path, ds_ms, n_workers) -> None:
+    """Write a real CALDEVICE Tcal table and read it back via casatools.table."""
+    import casatools
+
+    ds = ds_ms
+    fit_dataset(ds, "tau_per_antenna", n_workers=n_workers)
+    out = tmp_path / "test_tcal.cal"
+    write_tcal(ds, out)
+
+    tb = casatools.table()
+    tb.open(str(out))
+    assert tb.nrows() == ds.sizes["scan"] * ds.sizes["antenna"] * ds.sizes["spw"]
+    for col in ("ANTENNA_ID", "SPECTRAL_WINDOW_ID", "TIME", "NOISE_CAL"):
+        assert col in tb.colnames()
+
+    noise_cal = tb.getcell("NOISE_CAL", 0)
+    assert noise_cal.shape == (2, 2)
+    # The tcal_ref fallback keeps every row finite and positive.
+    assert np.all(np.isfinite(noise_cal))
+    assert np.all(noise_cal[0] > 0.0)
 
     tb.close()

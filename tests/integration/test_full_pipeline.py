@@ -98,3 +98,71 @@ def test_independent_tau_solve_band_selection(ds_independent_tau_solve):
     assert ds.attrs["bands_requested"] == "default_high_freq"
     assert set(ds.attrs["selected_bands"]) == bands_present
     assert ds.attrs["selected_scans"] == list(ds.coords["scan"].values.tolist())
+
+
+@pytest.mark.slow
+def test_independent_tau_solve_skips_stage_c(ds_independent_tau_solve):
+    """Stage C must not run against an anchor fit to the solve mode's τ."""
+    assert "sigma_tcal" not in ds_independent_tau_solve.data_vars
+
+
+# ---------------------------------------------------------------------------
+# Tests — independent_tau (Stage A + B + C)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ds_independent_tau(n_workers):
+    """Run the Stage-A + B + C path end-to-end on the validation MS."""
+    from tipopac import TippingAnalysis
+
+    ta = TippingAnalysis.from_path(MS_PATH)
+    ta.apply_flags(online=True)
+    ta.fetch_atm_profile(source="afgl")
+    ta.build_atm_grids()
+    ta.fit(mode="independent_tau", n_workers=n_workers)
+    return ta.dataset
+
+
+@pytest.mark.slow
+def test_independent_tau_schema(ds_independent_tau):
+    """Stage-C outputs must satisfy the schema."""
+    from tipopac import schema
+
+    schema.validate(ds_independent_tau)
+
+
+@pytest.mark.slow
+def test_stage_c_outputs_populated(ds_independent_tau):
+    """Stage C writes a finite c and a positive σ_c on some cells."""
+    ds = ds_independent_tau
+
+    for name in ("tcal_fit", "sigma_tcal"):
+        assert name in ds.data_vars, f"missing Stage-C output: {name}"
+
+    c = ds["tcal_fit"].values / ds["tcal_ref"].values[None, ...]
+    sigma_c = ds["sigma_tcal"].values / ds["tcal_ref"].values[None, ...]
+    finite = np.isfinite(c)
+    assert finite.any(), "Stage C produced no finite c"
+
+    # c and σ_c are measured together; σ_c is the measured-ness flag.
+    np.testing.assert_array_equal(finite, np.isfinite(sigma_c))
+    assert (sigma_c[finite] > 0).all()
+
+    # The array-common level is absorbed by the anchor, so c sits near 1.
+    assert 0.5 < float(np.median(c[finite])) < 2.0
+
+
+@pytest.mark.slow
+def test_stage_c_respects_min_airmass_span(n_workers):
+    """An unreachable leverage floor gates every cell to NaN."""
+    from tipopac import TippingAnalysis
+
+    ta = TippingAnalysis.from_path(MS_PATH)
+    ta.apply_flags(online=True)
+    ta.fetch_atm_profile(source="afgl")
+    ta.build_atm_grids()
+    ta.fit(mode="independent_tau", n_workers=n_workers, min_airmass_span=100.0)
+
+    assert not np.isfinite(ta.dataset["tcal_fit"].values).any()
+    assert not np.isfinite(ta.dataset["sigma_tcal"].values).any()

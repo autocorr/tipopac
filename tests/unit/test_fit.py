@@ -247,6 +247,31 @@ def test_fit_too_few_samples() -> None:
     assert ds["fit_reason"].values[0, 0, 0] == "too_few_samples"
 
 
+def test_valid_samples_applies_tr_upper_to_both_pols() -> None:
+    """The 300 K ceiling gates L as well as R (it used to gate R only)."""
+    from tipopac.fit import _TR_UPPER, valid_samples
+
+    n = 5
+    tsys_R = np.full(n, 100.0)
+    tsys_L = np.full(n, 100.0)
+    tsys_L[2] = _TR_UPPER + 1.0
+    sigma = np.full(n, 1.0)
+    flag = np.zeros(n, dtype=bool)
+
+    keep = valid_samples(tsys_R, tsys_L, sigma, sigma, flag, flag)
+    assert not keep[2]
+    assert keep.sum() == n - 1
+
+
+def test_fit_screens_hot_l_pol_sample() -> None:
+    """A single L>300 K sample is dropped, matching the R-side behaviour."""
+    ds = _make_tip_ds(n_time=10, noise_K=0.0)
+    ds["switched_sum"].values[0, 0, 0, 1, 3] *= 20.0
+    fit_dataset(ds, mode="tau_per_antenna")
+    # Dropping one sample of ten still leaves a converged fit.
+    assert bool(ds["fit_success"].values[0, 0, 0])
+
+
 def test_fit_resid_clip_removes_outlier() -> None:
     """A single large outlier is clipped and the fit still converges."""
     ds = _make_tip_ds(noise_K=0.0)  # noiseless baseline

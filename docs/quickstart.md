@@ -137,7 +137,8 @@ ds = result.dataset
 ds["tau_zenith"]             # zenith opacity (scan, antenna, spw)
 ds["tau_err"]                # its 1-sigma uncertainty
 ds["pwv"], ds["pwv_err"]     # per-antenna precipitable water vapor [mm]
-ds["tcal_fit"]               # fitted Tcal (independent_tau_solve)
+ds["tcal_fit"]               # fitted Tcal; NaN where not measured
+ds["sigma_tcal"]             # its 1-sigma uncertainty (independent_tau, Stage C)
 ds["fit_reason"]             # per-cell QA label (ok, poorly_identified, ...)
 ```
 

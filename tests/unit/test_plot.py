@@ -908,6 +908,19 @@ def test_save_all_skips_tcal_fit_and_c_in_independent_tau_mode(
     assert not (_g(tmp_path) / "c_vs_frequency.html").exists()
 
 
+def test_save_all_emits_tcal_fit_and_c_when_stage_c_ran(tmp_path: Path) -> None:
+    """independent_tau plus a Stage-C sigma_tcal is a fitted c, so it plots."""
+    ds = _make_plot_ds(n_spw=2, success=True, mode="independent_tau")
+    ds["tcal_fit"].values *= 1.05
+    ds["sigma_tcal"] = (
+        ("scan", "antenna", "spw", "polarization"),
+        np.full(ds["tcal_fit"].shape, 0.05, dtype=np.float32),
+    )
+    PlotData(ds).save_all(tmp_path)
+    assert (_g(tmp_path) / "tcal_fit_vs_frequency.html").exists()
+    assert (_g(tmp_path) / "c_vs_frequency.html").exists()
+
+
 def test_save_all_emits_tcal_fit_and_c_in_solve_mode(tmp_path: Path) -> None:
     ds = _make_plot_ds(n_spw=2, success=True, mode="independent_tau_solve")
     ds["tcal_fit"].values *= 1.05

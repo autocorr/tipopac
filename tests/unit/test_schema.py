@@ -119,6 +119,10 @@ def make_minimal_ds(
             ("scan", "antenna", "spw", "polarization"),
             np.full((n_scans, n_ant, n_spw, n_pol), 1.0, dtype=np.float32),
         )
+        ds["sigma_tcal"] = (
+            ("scan", "antenna", "spw", "polarization"),
+            np.full((n_scans, n_ant, n_spw, n_pol), 0.01, dtype=np.float32),
+        )
         ds["fit_success"] = (
             ("scan", "antenna", "spw"),
             np.ones((n_scans, n_ant, n_spw), dtype=np.bool_),
