@@ -40,8 +40,12 @@ def _module_version(name: str) -> str:
     """Return ``module.__version__``, or a sentinel if import/attr fails."""
     import importlib
 
+    from tipopac._casa import import_casatools
+
     try:
-        mod = importlib.import_module(name)
+        mod = (
+            import_casatools() if name == "casatools" else importlib.import_module(name)
+        )
     except Exception:
         return "unavailable"
     return str(getattr(mod, "__version__", "unknown"))

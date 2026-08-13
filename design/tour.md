@@ -285,6 +285,17 @@ VLA receiver-band labels and scan/SPW selection helpers; used at read time, not 
 
 ---
 
+## `_casa.py` — quiet `casatools` import
+
+`casatools` opens `casa-<timestamp>.log` in the working directory at import time. Every casatools import in the package goes through this module so that file never appears. Leaving `logfile` unset (`None`) also drops it, but then casaconfig's start-up messages print to the terminal instead.
+
+- `silence_casa_log` — `src/tipopac/_casa.py:9` — point `casaconfig.config.logfile` at `os.devnull`. Only effective before the process's first `import casatools`, which is why `tests/conftest.py` calls it at import time.
+- `import_casatools` — `src/tipopac/_casa.py:21` — silence, then import and return the module.
+
+Consumers: `readers/ms.py`, `flags.py`, `caltables.py`, `api._module_version`.
+
+---
+
 ## `timeutils.py` — MJD↔Unix
 
 The smallest module. One conversion used wherever code needs to talk to pandas / `datetime`-aware libraries (open-meteo SDK timestamps, altair axes).

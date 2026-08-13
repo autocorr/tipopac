@@ -24,6 +24,8 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from tipopac._casa import import_casatools
+
 __all__ = ["apply"]
 
 _log = logging.getLogger(__name__)
@@ -186,7 +188,7 @@ def apply(ds: xr.Dataset, online: bool, file: Path | None) -> xr.Dataset:
 
 
 def _apply_online_flags_ms(ds: xr.Dataset, source_path: str) -> None:
-    from casatools import table as _table
+    _table = import_casatools().table
 
     flag_cmd_path = Path(source_path) / "FLAG_CMD"
     if not flag_cmd_path.exists():

@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from tipopac._casa import import_casatools
 from tipopac.schema import antenna_weighted_tau
 
 __all__ = ["write_opacity", "write_tcal"]
@@ -39,7 +40,7 @@ def write_opacity(ds: xr.Dataset, path: str | Path) -> None:
     Requires: tau_zenith, tau_err, fit_success in ds.data_vars.
     Uses ds.attrs["source_path"] as the template MS for schema creation.
     """
-    import casatools
+    casatools = import_casatools()
 
     msname = ds.attrs["source_path"]
     path = str(path)
@@ -75,7 +76,7 @@ def write_tcal(ds: xr.Dataset, path: str | Path) -> None:
             f"write_tcal requires {missing!r} on the dataset; run fit first"
         )
 
-    import casatools
+    casatools = import_casatools()
 
     msname = ds.attrs["source_path"]
     path = str(path)

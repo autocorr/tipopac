@@ -20,6 +20,7 @@ import numpy as np
 import xarray as xr
 
 from tipopac import schema
+from tipopac._casa import import_casatools
 from tipopac.bands import attach_selection_attrs, band_for_spw_name
 from tipopac.readers.base import (
     SkydipScanInfo,
@@ -145,7 +146,7 @@ class MSReader:
 
 def _read_antenna(path: Path) -> tuple[list[str], np.ndarray]:
     """Return (names, positions) where positions is (n_ant, 3) ITRF metres."""
-    from casatools import table as _table
+    _table = import_casatools().table
 
     tb = _table()
     try:
@@ -161,7 +162,7 @@ def _read_spectral_window(
     path: Path,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return (ref_frequency, total_bandwidth, band_labels) for all SPWs."""
-    from casatools import table as _table
+    _table = import_casatools().table
 
     tb = _table()
     try:
@@ -182,7 +183,7 @@ def _read_scan_meta(
     path: Path,
 ) -> tuple[list[int], dict[int, list[int]], dict[int, float], dict[int, float]]:
     """Return scan ids, per-scan SPW lists, and scan start/end times (MJD-sec)."""
-    from casatools import msmetadata as _msmd
+    _msmd = import_casatools().msmetadata
 
     msmd = _msmd()
     try:
@@ -212,7 +213,7 @@ def _read_caldevice(
     Missing (ant, spw) cells are filled by copying from the previous spw
     (matching v2.6's fallback at task_tipopac.py:1003–1007).
     """
-    from casatools import table as _table
+    _table = import_casatools().table
 
     n_spw = len(tip_spws)
     out = np.full((n_ant, n_spw, 2), np.nan, dtype=np.float32)
@@ -251,7 +252,7 @@ def _read_pointing(
 
     `times[a]` and `zenith_angles[a]` are 1-D float64 arrays sorted by time.
     """
-    from casatools import table as _table
+    _table = import_casatools().table
 
     tb = _table()
     try:
@@ -285,7 +286,7 @@ def _read_weather(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.nd
       PRESSURE (stored hPa) → Pa  (×100)
       REL_HUMIDITY (stored %) → fraction (÷100)
     """
-    from casatools import table as _table
+    _table = import_casatools().table
 
     tb = _table()
     try:
@@ -331,7 +332,7 @@ def _build_dataset(
     wx_P: np.ndarray,
     wx_RH: np.ndarray,
 ) -> xr.Dataset:
-    from casatools import table as _table
+    _table = import_casatools().table
 
     n_scan = len(scan_ids)
     n_ant = len(ant_names)

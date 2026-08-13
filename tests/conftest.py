@@ -14,6 +14,10 @@ from pathlib import Path
 import pytest
 import xarray as xr
 
+from tipopac._casa import silence_casa_log
+
+silence_casa_log()
+
 DATA_DIR = Path(__file__).parents[1] / "data"
 MS_PATH = DATA_DIR / "tip_test.ms"
 SDM_PATH = DATA_DIR / "tip_test.sdm"
