@@ -107,26 +107,9 @@ def test_apply_selection_mirrors_ms() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Slow tests — require data/tip_test.sdm (and data/tip_test.ms for parity)
+# Slow tests — require data/tip_test.sdm (and data/tip_test.ms for parity).
+# ds_sdm / ds_ms come from tests/conftest.py.
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def ds_sdm():
-    from tipopac.readers.sdm import SDMReader
-
-    if not SDMReader.supports(SDM_PATH):
-        pytest.skip(f"tip_test.sdm not found at {SDM_PATH}")
-    return SDMReader.from_path(SDM_PATH).read()
-
-
-@pytest.fixture(scope="module")
-def ds_ms():
-    from tipopac.readers.ms import MSReader
-
-    if not MSReader.supports(MS_PATH):
-        pytest.skip(f"tip_test.ms not found at {MS_PATH}")
-    return MSReader.from_path(MS_PATH).read()
 
 
 @pytest.mark.slow
@@ -407,10 +390,9 @@ def test_sdm_online_flags_change_flag_array(ds_sdm) -> None:
     """
     from tipopac import flags
 
-    ds = ds_sdm.copy(deep=True)
-    before = int(ds["flag"].values.sum())
-    flags.apply(ds, online=True, file=None)
-    delta = int(ds["flag"].values.sum()) - before
+    before = int(ds_sdm["flag"].values.sum())
+    flags.apply(ds_sdm, online=True, file=None)
+    delta = int(ds_sdm["flag"].values.sum()) - before
 
     assert delta > 0, "online flags set no cells"
     assert 0.5 < delta / 17856 < 2.0, f"delta {delta} far from the MS's 17856"

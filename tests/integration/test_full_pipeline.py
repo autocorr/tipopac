@@ -9,7 +9,6 @@ test exercises the live open-meteo call.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -18,24 +17,13 @@ import pytest
 MS_PATH = Path(__file__).parents[2] / "data" / "tip_test.ms"
 
 
-def _n_workers() -> int | None:
-    """Read `TIPOPAC_TEST_WORKERS` env var to set Stage-A fit parallelism.
-
-    CI / local runs can export this var to a sensible value
-    (e.g. ``min(16, cpu_count())``); unset → serial (the historical
-    default).
-    """
-    v = os.environ.get("TIPOPAC_TEST_WORKERS")
-    return int(v) if v else None
-
-
 # ---------------------------------------------------------------------------
 # Tests — independent_tau_solve (Stage A + B, design/independent_tau_fit.md)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
-def ds_independent_tau_solve():
+def ds_independent_tau_solve(n_workers):
     """Run the Stage-A + Stage-B path end-to-end on the validation MS.
 
     AFGL profile (no network) so the test is reproducible; the grid is
@@ -47,7 +35,7 @@ def ds_independent_tau_solve():
     ta.apply_flags(online=True)
     ta.fetch_atm_profile(source="afgl")
     ta.build_atm_grids()
-    ta.fit(mode="independent_tau_solve", n_workers=_n_workers())
+    ta.fit(mode="independent_tau_solve", n_workers=n_workers)
     return ta.dataset
 
 

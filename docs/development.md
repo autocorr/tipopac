@@ -31,8 +31,10 @@ uv run pytest tests/unit/test_fit.py::test_global_tau   # a single test
 
 - **`slow`** — the full-pipeline integration test against the ~7 GB
   `data/tip_test.ms` (see [Installation](installation.md#optional-the-test-dataset)).
-  It uses the AFGL profile source for determinism. Worker count comes from
-  `TIPOPAC_TEST_WORKERS` (unset → serial).
+  It uses the AFGL profile source for determinism. Worker count defaults to
+  `min(16, cpu_count())`; set `TIPOPAC_TEST_WORKERS` to override (`1` for
+  serial). Shared MS/SDM reads live in `tests/conftest.py`, so the test data
+  is read once per session rather than once per test.
 - **`network`** — tests that exercise the live Open-Meteo API.
 
 Tests are organized under `tests/unit/` (one module per source module),

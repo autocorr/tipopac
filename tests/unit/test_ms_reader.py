@@ -158,16 +158,12 @@ MS_PATH = Path(__file__).parents[2] / "data" / "tip_test.ms"
 
 
 @pytest.mark.slow
-def test_ms_reader_schema_validates() -> None:
+def test_ms_reader_schema_validates(ds_ms) -> None:
     """MSReader.read() on the real MS must pass schema.validate()."""
     from tipopac import schema
-    from tipopac.readers.ms import MSReader
 
-    assert MSReader.supports(MS_PATH), f"tip_test.ms not found at {MS_PATH}"
-    reader = MSReader.from_path(MS_PATH)
-    ds = reader.read()
-    schema.validate(ds)  # raises SchemaError on failure
-    assert ds.attrs["source_format"] == "ms"
+    schema.validate(ds_ms)  # raises SchemaError on failure
+    assert ds_ms.attrs["source_format"] == "ms"
 
 
 @pytest.mark.slow
@@ -203,12 +199,9 @@ def test_ms_reader_dims_match_reference() -> None:
 
 
 @pytest.mark.slow
-def test_ms_reader_flag_pad_invariant() -> None:
+def test_ms_reader_flag_pad_invariant(ds_ms) -> None:
     """flag must be True at every NaN-padded position (advisor requirement)."""
-    from tipopac.readers.ms import MSReader
-
-    reader = MSReader.from_path(MS_PATH)
-    ds = reader.read()
+    ds = ds_ms
 
     # Every time index where time_utc is NaN must be fully flagged
     nan_mask = np.isnan(ds["time_utc"].values)  # (scan, time)
@@ -223,47 +216,37 @@ def test_ms_reader_flag_pad_invariant() -> None:
 
 
 @pytest.mark.slow
-def test_ms_reader_no_data_in_flagged_cells() -> None:
+def test_ms_reader_no_data_in_flagged_cells(ds_ms) -> None:
     """switched_diff must be NaN wherever flag is True for all (ant, spw, pol, t)."""
-    from tipopac.readers.ms import MSReader
-
-    reader = MSReader.from_path(MS_PATH)
-    ds = reader.read()
-
-    diff = ds["switched_diff"].values
-    fl = ds["flag"].values
+    diff = ds_ms["switched_diff"].values
+    fl = ds_ms["flag"].values
     # All flagged cells must be NaN
     assert np.all(np.isnan(diff[fl])), "flagged cells contain non-NaN switched_diff"
 
 
 @pytest.mark.slow
-def test_ms_reader_default_keeps_only_high_freq_bands() -> None:
+def test_ms_reader_default_keeps_only_high_freq_bands(ds_ms) -> None:
     """Default `bands=None` keeps only Ku/K/Ka/Q SPWs."""
-    from tipopac.readers.ms import MSReader
-
-    ds = MSReader.from_path(MS_PATH).read()
-    bands = set(ds.coords["band"].values.tolist())
+    bands = set(ds_ms.coords["band"].values.tolist())
     assert bands <= {"Ku", "K", "Ka", "Q"}, f"unexpected low band(s) survived: {bands}"
 
 
 @pytest.mark.slow
-def test_ms_reader_explicit_band_filter_narrows() -> None:
+def test_ms_reader_explicit_band_filter_narrows(ds_ms) -> None:
     """`bands=["Ka"]` keeps only Ka-band SPWs (covers low-Ka + high-Ka)."""
     from tipopac.readers.ms import MSReader
 
-    ds_default = MSReader.from_path(MS_PATH).read()
     ds_ka = MSReader.from_path(MS_PATH, bands=["Ka"]).read()
     assert set(ds_ka.coords["band"].values.tolist()) == {"Ka"}
-    assert ds_ka.sizes["spw"] <= ds_default.sizes["spw"]
+    assert ds_ka.sizes["spw"] <= ds_ms.sizes["spw"]
 
 
 @pytest.mark.slow
-def test_ms_reader_scan_subset_keeps_only_requested() -> None:
+def test_ms_reader_scan_subset_keeps_only_requested(ds_ms) -> None:
     """`scans=[first]` returns a dataset with exactly that scan."""
     from tipopac.readers.ms import MSReader
 
-    ds_all = MSReader.from_path(MS_PATH).read()
-    first_scan = int(ds_all.coords["scan"].values[0])
+    first_scan = int(ds_ms.coords["scan"].values[0])
     ds_one = MSReader.from_path(MS_PATH, scans=[first_scan]).read()
     assert ds_one.sizes["scan"] == 1
     assert int(ds_one.coords["scan"].values[0]) == first_scan
@@ -288,11 +271,11 @@ def test_ms_reader_no_match_band_raises() -> None:
 
 
 @pytest.mark.slow
-def test_ms_reader_sets_provenance_attrs() -> None:
+def test_ms_reader_sets_provenance_attrs(ds_ms) -> None:
     """Selection attrs are set by the reader itself, not the api layer."""
     from tipopac.readers.ms import MSReader
 
-    ds = MSReader.from_path(MS_PATH).read()
+    ds = ds_ms
     assert ds.attrs["scans_requested"] == "all"
     assert ds.attrs["bands_requested"] == "default_high_freq"
     assert ds.attrs["selected_scans"] == [int(s) for s in ds.coords["scan"].values]

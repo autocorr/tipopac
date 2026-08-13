@@ -325,15 +325,12 @@ MS_PATH = Path(__file__).parents[2] / "data" / "tip_test.ms"
 
 
 @pytest.mark.slow
-def test_write_opacity_roundtrip(tmp_path: Path) -> None:
+def test_write_opacity_roundtrip(tmp_path: Path, ds_ms, n_workers) -> None:
     """Write a real TOpac table and read it back via casatools.table."""
     import casatools
 
-    from tipopac.readers.ms import MSReader
-
-    assert MSReader.supports(MS_PATH), f"tip_test.ms not found at {MS_PATH}"
-    ds = MSReader(MS_PATH).read()
-    fit_dataset(ds, "tau_per_antenna")
+    ds = ds_ms
+    fit_dataset(ds, "tau_per_antenna", n_workers=n_workers)
     out = tmp_path / "test_opacity.cal"
     write_opacity(ds, out)
 
