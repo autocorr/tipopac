@@ -33,11 +33,10 @@ plot.PlotData.save_all  +  weblog.build_weblog  +  caltables.write_{opacity,tcal
 
 ### Fit modes
 
-Three fit modes are exposed through `fit.fit_dataset(mode=...)` (resolved from `TippingAnalysis(..., mode=...)`):
+Two *public* modes, each resolving to a Stage-A backend through `api._INDEPENDENT_TO_BACKEND`. `fit.fit_dataset(mode=...)` takes the backend name; `TippingAnalysis.fit(mode=...)` and `tipopac(mode=...)` take the public one, and `ds.attrs["mode"]` ends up holding the public label.
 
-- `tau_per_antenna` — each `(scan, ant, spw)` cell gets its own 3-parameter LM fit (`T0_R`, `T0_L`, `τ`). Stage B then anchors per-antenna PWV against the per-antenna τ_z(ν) curve.
-- `tcal_solve` — joint fit per `(scan, spw)`: shared `τ` across antennas, per-antenna `(T0, c)` where `c = tcal_fit / tcal_ref`. This is the mode that yields the Tcal caltable.
-- `independent_tau_solve` — degenerate per-antenna mode where each antenna's τ is treated independently but the antenna dim is retained for shape compatibility; `tau_zenith` and `pwv(antenna)` carry the antenna dim with broadcast-equal values. (See CLAUDE.md: "Antenna dim is retained even when degenerate.")
+- `independent_tau` (default) → backend `tau_per_antenna`. Each `(scan, ant, spw)` cell gets its own 3-parameter LM fit (`T0_R`, `T0_L`, `τ`) at `c ≡ 1`. Stage B anchors per-antenna PWV against the per-antenna τ_z(ν) curve, and Stage C then fits `c` against that anchor in closed form.
+- `independent_tau_solve` (legacy) → backend `tcal_solve`. Joint fit per `(scan, spw)`: one `τ` shared across antennas, per-antenna `(T0, c)` where `c = tcal_fit / tcal_ref`. The shared `τ` is broadcast equal into the antenna dim, so `tau_zenith` and `pwv(antenna)` carry that dim with identical values. (See CLAUDE.md: "Antenna dim is retained even when degenerate.") Stage C does not run here — the anchor is fit to this mode's own `τ`.
 
 ### Architectural invariants
 

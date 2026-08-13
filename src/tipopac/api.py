@@ -158,7 +158,7 @@ def tipopac(
     *,
     scans: Sequence[int] | None = None,
     bands: Sequence[str] | None = None,
-    mode: str = "independent_tau_solve",
+    mode: str = "independent_tau",
     flags_online: bool = True,
     flags_file: str | Path | None = None,
     atm_profile_source: str = "open-meteo",
@@ -187,12 +187,16 @@ def tipopac(
         are well-conditioned; pass ``bands=["L", ...]`` to opt into low
         bands explicitly.
     mode:
-        Fit mode. Defaults to ``"independent_tau_solve"`` — per-(scan, spw)
-        Stage-A Tcal-solve fit followed by a per-antenna PWV anchor (Stage
-        B); legacy, and its free per-curve gain biases ``tau_zenith`` high.
-        The other accepted value is ``"independent_tau"`` — per-(scan, ant,
-        spw) opacity Stage-A fit with the same Stage-B anchor, plus Stage C,
-        which estimates the Tcal scale against that anchor in closed form.
+        Fit mode. Defaults to ``"independent_tau"`` — per-(scan, ant, spw)
+        opacity Stage-A fit at ``c ≡ 1``, a per-antenna PWV anchor (Stage B),
+        and Stage C, which estimates the Tcal scale against that anchor in
+        closed form. The other accepted value is
+        ``"independent_tau_solve"`` — per-(scan, spw) Stage-A fit solving τ
+        and a per-antenna Tcal gain jointly. It is **legacy**: over the
+        sampled airmass the data cannot separate a change in τ from a gain,
+        so the free gain buys no fit quality while biasing ``tau_zenith``
+        high against an independent atmospheric prediction, and it runs no
+        Stage C.
     flags_online:
         Apply online flags (MS ``FLAG_CMD`` / SDM ``Flag.xml``).
     flags_file:
@@ -458,7 +462,7 @@ class TippingAnalysis:
 
     def fit(
         self,
-        mode: str = "independent_tau_solve",
+        mode: str = "independent_tau",
         *,
         n_workers: int | None = None,
         spillover_model: bool = True,

@@ -60,7 +60,7 @@ result: Result = tipopac(
     *,
     scans=None,                                      # iterable[int] of DO_SKYDIP scan numbers; None = all
     bands=None,                                      # iterable[str] of VLA bands; None = ("Ku","K","Ka","Q")
-    mode="independent_tau_solve",                    # | "independent_tau"
+    mode="independent_tau",                          # | "independent_tau_solve" (legacy)
     flags_online=True,
     flags_file=None,
     atm_profile_source="open-meteo",                 # | "afgl"
@@ -80,7 +80,7 @@ ta = TippingAnalysis.from_path("data/tip_test.ms", scans=None, bands=None)
 ta.apply_flags(online=True, file=None)
 ta.fetch_atm_profile(source="open-meteo")
 ta.build_atm_grids()
-ta.fit(mode="independent_tau_solve")
+ta.fit(mode="independent_tau")
 ta.write_outputs("out/", caltable_opacity=True, caltable_tcal=True)
 result = ta.result
 ```
@@ -119,12 +119,15 @@ Stage-A fit routing and in whether Stage C runs.
 | `independent_tau`         | `(scan, antenna, spw)` | `T0_R, T0_L, τ_z`                                       | yes     |
 | `independent_tau_solve`   | `(scan, spw)`          | per-antenna `(T0_R, c_R, T0_L, c_L)` + one shared `τ_z` | no      |
 
-`independent_tau_solve` is the default, and is **legacy**: its free
-per-curve gain buys no fit quality (the tipping curve cannot separate a
-change in τ from a gain over the sampled airmass) while biasing
-`tau_zenith` high against an independent atmospheric prediction. Prefer
-`independent_tau`, which fits τ with `c ≡ 1` and then estimates the Tcal
-scale against the Stage-B anchor in Stage C.
+`independent_tau` is the default: it fits τ with `c ≡ 1` and then
+estimates the Tcal scale against the Stage-B anchor in Stage C (§6.1).
+
+`independent_tau_solve` is **legacy**, retained for reproducing earlier
+runs. Its free per-curve gain buys no fit quality — the tipping curve
+cannot separate a change in τ from a gain over the sampled airmass — while
+biasing `tau_zenith` high against an independent atmospheric prediction
+and adding cell-to-cell scatter to it. Since `tau_zenith` is the primary
+science product, that trade is not worth a `c` the data cannot identify.
 
 ### 2.2 Staging contract
 

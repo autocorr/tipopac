@@ -47,7 +47,7 @@ from tipopac import tipopac
 
 result = tipopac(
     "data/tip_test.ms",
-    mode="independent_tau_solve",   # default; per-(scan, spw) Tcal-solve + PWV anchor
+    mode="independent_tau",         # default; per-(scan, ant, spw) opacity + PWV anchor + Tcal
     n_workers=8,                    # Stage-A process-pool parallelism (None = serial)
     output_dir="run",               # write outputs here; None = compute-only
 )
@@ -62,7 +62,7 @@ print(ds["tau_zenith"], ds["pwv"], ds["tcal_fit"])
 | --- | --- |
 | `scans` | `DO_SKYDIP` scan numbers to keep. `None` keeps all skydip scans. |
 | `bands` | VLA receiver bands (case-insensitive, e.g. `["Ku", "K"]`). `None` keeps the well-conditioned high bands `Ku, K, Ka, Q`. |
-| `mode` | `"independent_tau_solve"` (default) or `"independent_tau"`. See [Theory](theory.md). |
+| `mode` | `"independent_tau"` (default) or the legacy `"independent_tau_solve"`. See [Theory](theory.md). |
 | `flags_online` | Apply online flags (MS `FLAG_CMD` / SDM `Flag.xml`). Default `True`. |
 | `flags_file` | Path to a user flag file (`antenna/spw/timerange` per line). |
 | `atm_profile_source` | `"open-meteo"` (default, one HTTP call) or `"afgl"` (offline). |
@@ -83,7 +83,7 @@ ta = TippingAnalysis.from_path("data/tip_test.ms", bands=["K", "Ka"])
 ta.apply_flags(online=True)
 ta.fetch_atm_profile(source="open-meteo")   # the only network stage
 ta.build_atm_grids()                         # runs `am` once per scan
-ta.fit(mode="independent_tau_solve", n_workers=8)
+ta.fit(mode="independent_tau", n_workers=8)
 
 ds = ta.dataset
 ta.write_outputs("run")                      # or ta.plot(...) / ta.weblog(...)

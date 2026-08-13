@@ -196,3 +196,31 @@ def test_build_atm_grids_uses_full_band_span(monkeypatch: pytest.MonkeyPatch) ->
 
     assert seen["freq_min_Hz"] == pytest.approx(1e9)
     assert seen["freq_max_Hz"] == pytest.approx(51e9)
+
+
+# ---------------------------------------------------------------------------
+# Public mode defaults
+# ---------------------------------------------------------------------------
+
+
+def test_default_mode_is_independent_tau() -> None:
+    """The default drives Stage C; flipping it back must break a test."""
+    import inspect
+
+    from tipopac.api import tipopac
+
+    assert inspect.signature(tipopac).parameters["mode"].default == "independent_tau"
+    assert (
+        inspect.signature(TippingAnalysis.fit).parameters["mode"].default
+        == "independent_tau"
+    )
+
+
+def test_both_public_modes_are_accepted() -> None:
+    """independent_tau_solve stays selectable as a legacy backend."""
+    from tipopac.api import _INDEPENDENT_TO_BACKEND
+
+    assert _INDEPENDENT_TO_BACKEND == {
+        "independent_tau": "tau_per_antenna",
+        "independent_tau_solve": "tcal_solve",
+    }

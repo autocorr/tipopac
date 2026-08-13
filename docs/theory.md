@@ -86,14 +86,21 @@ There are two modes:
 
 | Mode | Fit unit | Free parameters |
 | --- | --- | --- |
-| `independent_tau` | `(scan, antenna, spw)` | $T_{0,R},\ T_{0,L},\ \tau_z$ |
-| `independent_tau_solve` (default) | `(scan, spw)` | per-antenna $(T_{0,R}, c_R, T_{0,L}, c_L)$ and one shared $\tau_z$ |
+| `independent_tau` (default) | `(scan, antenna, spw)` | $T_{0,R},\ T_{0,L},\ \tau_z$ |
+| `independent_tau_solve` (legacy) | `(scan, spw)` | per-antenna $(T_{0,R}, c_R, T_{0,L}, c_L)$ and one shared $\tau_z$ |
 
-`independent_tau` trusts the lab Tcal and fits opacity per antenna.
-`independent_tau_solve` additionally solves a **Tcal correction factor**
-$c$ per (antenna, polarization), sharing a single $\tau_z$ across all
-antennas in a (scan, SPW); its Jacobian is sparse (block-diagonal in the
-per-antenna $(T_0, c)$ columns, dense in the shared $\tau_z$ column).
+`independent_tau` holds the lab Tcal fixed ($c \equiv 1$) and fits opacity
+per antenna; the **Tcal correction factor** $c$ is then estimated after the
+PWV anchor, in closed form at pinned $\tau$ (Stage C, below).
+
+`independent_tau_solve` instead solves $c$ per (antenna, polarization)
+jointly with a single $\tau_z$ shared across all antennas in a (scan, SPW);
+its Jacobian is sparse (block-diagonal in the per-antenna $(T_0, c)$
+columns, dense in the shared $\tau_z$ column). It is retained only for
+reproducing earlier runs: over the airmass a tipping curve samples, a
+change in $\tau$ and a gain are very nearly the same change to the model,
+so the extra freedom buys no fit quality while biasing $\tau_z$ high and
+adding scatter to it. It runs no Stage C.
 
 The fit runs under a single set of physical bounds — no escalation ladder:
 
@@ -150,6 +157,44 @@ is broadcast equal across antennas, so the anchor returns identical
 `pwv[antenna]` — shared-PWV semantics that fall out of the per-antenna fit.
 The antenna dimension is retained either way.
 
+## Stage C — the Tcal scale at pinned opacity
+
+Under `independent_tau` only. Stage B leaves one `am` opacity curve per
+time group; evaluating it at the SPW centers gives a $\tau_\mathrm{am}$
+that came from outside the individual tipping curve. With $\tau$ held
+there, the Stage-A model stops being nonlinear — it is a straight line in
+the model brightness:
+
+$$
+T_\mathrm{sys}(z) = \frac{T_0 + T_\mathrm{cmb}e^{-\tau_\mathrm{am}a}
++ T_\mathrm{wmt}(1 - e^{-\tau_\mathrm{am}a}) + T_\mathrm{spill}(z)}{c}
+= A + B\,\mathrm{pred}(z), \qquad A = \frac{T_0}{c},\ B = \frac{1}{c}
+$$
+
+so $c = 1/B$ is an inverse-variance weighted regression slope from the
+$2\times2$ normal equations — exact in $\tau$, with
+$\sigma_c = \sigma_B / B^2$ falling out of the same covariance. No
+optimizer, no second `am` run. Sample screening and the joint-polarization
+4σ rejection are Stage A's, so the two stages see the same data.
+
+**What is and is not measurable.** The anchor is `am` at the group's
+*fitted* PWV, which was itself derived from these opacities. One scalar per
+group is therefore absorbed by construction: the array-common level of $c$
+is not a measurement, and any array-common model error — $T_\mathrm{wmt}$,
+the 22 GHz water line, the spillover $\eta(\nu)$ — lands there. What
+survives is the per-antenna contrast and the per-SPW shape.
+
+**Per-scan $c$ is not calibration-grade.** A single tip's $c$ carries a
+scatter an order of magnitude above $\sigma_c$, and the reproducible
+per-antenna structure itself drifts over months. Average over a window
+before treating $c$ as a Tcal correction. Cells with too little airmass
+leverage (`min_airmass_span`) are not reported at all: with $\tau$ pinned,
+$c$ is a *level* measurement, and a short tip does not constrain it.
+
+`tcal_fit` $= c \cdot$ `tcal_ref` and `sigma_tcal` $= \sigma_c \cdot$
+`tcal_ref`, both NaN where no estimate was made — a finite `sigma_tcal` is
+what marks a cell as measured.
+
 ## The atmosphere model
 
 The opacity grid $\tau_\mathrm{grid}(\mathrm{PWV}, \nu)$ and the
@@ -169,9 +214,9 @@ code, run through `amwrap`:
    water column in `am`.
 
 Crucially, `am` runs only during grid construction — **never inside the
-per-sample fit loop**. Both stages read from the precomputed grid: Stage A
-takes its $T_\mathrm{mean}$ input from it, and Stage B fits PWV against its
-$\tau_z(\nu)$.
+per-sample fit loop**. Every stage reads from the precomputed grid: Stage A
+takes its $T_\mathrm{mean}$ input from it, Stage B fits PWV against its
+$\tau_z(\nu)$, and Stage C reuses the curve Stage B already wrote.
 
 ## The canonical dataset
 
@@ -182,6 +227,6 @@ a `flag` array masks the padding and bad data, so flag-respecting
 reductions must go through `tipopac.schema.apply_flags(ds, var)`. Variable
 groups cover reader inputs (switched power, zenith angle, Tcal, weather),
 fit results ($T_\mathrm{sys}$, $\sigma_{T_\mathrm{sys}}$, `tau_zenith`,
-`tau_err`, `tcal_fit`, `fit_reason`), the atmospheric profile, and the PWV
-anchor. The schema is defined in `src/tipopac/schema.py` and §4 of the
+`tau_err`, `tcal_fit`, `sigma_tcal`, `fit_reason`), the atmospheric
+profile, and the PWV anchor. The schema is defined in `src/tipopac/schema.py` and §4 of the
 design document.

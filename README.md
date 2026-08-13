@@ -58,7 +58,7 @@ from tipopac import TippingAnalysis
 ta = TippingAnalysis.from_path("data/tip_test.ms")
 ta.apply_flags(online=True)
 ta.build_atm_grids(atm_profile_source="open-meteo")
-ta.fit(mode="independent_tau_solve", n_workers=8)
+ta.fit(mode="independent_tau", n_workers=8)
 ta.plot(out_dir="run/plots")
 ta.write_caltables(opacity="run/topac.cal", tcal="run/tcal.cal")
 ds = ta.dataset
@@ -66,11 +66,13 @@ ds = ta.dataset
 
 Available fit modes:
 
-- `independent_tau_solve` (default) — per-(scan, spw) Tcal-solve fit, then
-  per-antenna PWV anchor against the precomputed `am` grid.
-- `independent_tau` — per-(scan, antenna, spw) opacity fit + PWV anchor.
-- `tau_per_antenna`, `global_tau`, `tcal_solve` — legacy single-stage v2.6
-  modes (use the Ulvestad `T_mean` heuristic; skip the PWV anchor).
+- `independent_tau` (default) — per-(scan, antenna, spw) opacity fit at
+  `c ≡ 1`, then a per-antenna PWV anchor against the precomputed `am` grid,
+  then a closed-form Tcal scale pinned to that anchor.
+- `independent_tau_solve` — legacy. Solves τ and a per-antenna Tcal gain
+  jointly per (scan, spw). The data cannot separate the two over the sampled
+  airmass, so the free gain buys no fit quality while biasing `tau_zenith`
+  high; it runs no Tcal stage.
 
 ## Development
 

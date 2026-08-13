@@ -1,6 +1,7 @@
 """Full-pipeline integration test on the validation MS.
 
-Runs the Stage A+B ``independent_tau_solve`` pipeline on data/tip_test.ms.
+Runs both public modes on data/tip_test.ms: the default ``independent_tau``
+(Stage A+B+C) and the legacy ``independent_tau_solve`` (Stage A+B).
 
 Uses AFGL climatology for the atmospheric model so the test is fully
 deterministic without network access. A separate @pytest.mark.network
@@ -113,15 +114,25 @@ def test_independent_tau_solve_skips_stage_c(ds_independent_tau_solve):
 
 @pytest.fixture(scope="module")
 def ds_independent_tau(n_workers):
-    """Run the Stage-A + B + C path end-to-end on the validation MS."""
+    """Run the Stage-A + B + C path end-to-end on the validation MS.
+
+    Deliberately passes no `mode`, so this exercises the library default.
+    """
     from tipopac import TippingAnalysis
 
     ta = TippingAnalysis.from_path(MS_PATH)
     ta.apply_flags(online=True)
     ta.fetch_atm_profile(source="afgl")
     ta.build_atm_grids()
-    ta.fit(mode="independent_tau", n_workers=n_workers)
+    ta.fit(n_workers=n_workers)
     return ta.dataset
+
+
+@pytest.mark.slow
+def test_default_mode_runs_stage_c(ds_independent_tau):
+    """The default mode is independent_tau, and it populates Stage C."""
+    assert ds_independent_tau.attrs["mode"] == "independent_tau"
+    assert "sigma_tcal" in ds_independent_tau.data_vars
 
 
 @pytest.mark.slow
