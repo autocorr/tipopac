@@ -417,7 +417,9 @@ linear `Tsys` vs. `airmass` y-intercept; `τ_init = 0.05`.
 1. σ-weighted `soft_l1` `least_squares` with the bounds above.
 2. Drop time samples whose `χ² = ((Tsys − model)/σ)² > 16` (4σ) in
    *either* polarization; refit. Repeat up to 3 iterations or until
-   no sample is rejected.
+   no sample is rejected. A rejection on the final iteration is
+   discarded, so the reported fit and its kept-sample set always come
+   from the same mask.
 3. For `independent_tau_solve` the per-antenna screening above
    produces a passing set; one global LM follows over all passing
    antennas.

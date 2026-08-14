@@ -577,6 +577,7 @@ def _screen_antenna(
 
     # iterative-rejection loop: refit, drop samples with χ² > 16 (=4σ), repeat
     mask = np.ones(len(z_v), dtype=bool)
+    fit_mask = mask
     res = None
     for _ in range(_RES_REJECT_MAX_PASS):
         n_keep = int(mask.sum())
@@ -602,11 +603,11 @@ def _screen_antenna(
             )
         except Exception:
             return {"reason": "fit_failed"}
+        fit_mask = mask
         # χ² per (kept) sample, separately for R and L halves of res.fun
         chi2 = res.fun**2
-        n_kept = int(mask.sum())
-        chi2_R = chi2[:n_kept]
-        chi2_L = chi2[n_kept:]
+        chi2_R = chi2[:n_keep]
+        chi2_L = chi2[n_keep:]
         keep_R = chi2_R < _RES_REJECT_CHI2
         keep_L = chi2_L < _RES_REJECT_CHI2
         # Drop the time sample if EITHER polarization exceeds 4σ. Per-pol
@@ -624,12 +625,12 @@ def _screen_antenna(
     assert res is not None
     T0_R, T0_L, tau0 = (float(v) for v in res.x)
 
-    z_c = z_v[mask]
-    tsys_R_c = tsys_R_v[mask]
-    tsys_L_c = tsys_L_v[mask]
-    sigma_R_c = sigma_R_v[mask]
-    sigma_L_c = sigma_L_v[mask]
-    spill_c = spill_v[mask]
+    z_c = z_v[fit_mask]
+    tsys_R_c = tsys_R_v[fit_mask]
+    tsys_L_c = tsys_L_v[fit_mask]
+    sigma_R_c = sigma_R_v[fit_mask]
+    sigma_L_c = sigma_L_v[fit_mask]
+    spill_c = spill_v[fit_mask]
     n_data = len(res.fun)
     dof = max(1, n_data - 3)
     reduced_chi2 = float(np.sum(res.fun**2)) / dof

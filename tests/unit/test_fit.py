@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from tipopac import fit
 from tipopac import schema
 from tipopac import physics
 from tipopac.fit import fit_dataset
@@ -281,6 +282,52 @@ def test_fit_resid_clip_removes_outlier() -> None:
     assert bool(ds["fit_success"].values[0, 0, 0]), (
         f"Expected success after clip, got: {ds['fit_reason'].values[0, 0, 0]}"
     )
+
+
+@pytest.mark.parametrize("max_pass", [1, 3])
+def test_screen_antenna_kept_samples_match_the_fitted_mask(
+    monkeypatch: pytest.MonkeyPatch, max_pass: int
+) -> None:
+    """The kept samples and `res` always come from the same mask.
+
+    `max_pass=1` forces the exhaustion path (the H3 bug: mask narrowed, `res`
+    not refit). `max_pass=3` takes the ordinary break path, where the mask is
+    non-trivial — it guards against hoisting the in-loop mask capture.
+    """
+    monkeypatch.setattr(fit, "_RES_REJECT_MAX_PASS", max_pass)
+
+    freq_Hz = 10e9
+    T_surf = 280.0
+    Twmt = float(physics.k2nt(physics.mean_radiating_T(T_surf), freq_Hz))
+    Tcmb = float(physics.k2nt(physics.T_CMB, freq_Hz))
+    z = np.linspace(35.0, 65.0, 30)
+    tsys_R = np.asarray(physics.tsys_model(z, 50.0, 0.04, Twmt, Tcmb))
+    tsys_L = np.asarray(physics.tsys_model(z, 48.0, 0.04, Twmt, Tcmb))
+    # ~6.7σ: past the 4σ cut, small enough to stay under the reduced-χ² gate
+    # once the loop retains it.
+    tsys_R[5] += 2.0
+    sigma = np.full(z.size, 0.3)
+    flag = np.zeros(z.size, dtype=bool)
+
+    sc = fit._screen_antenna(
+        z,
+        tsys_R,
+        tsys_L,
+        sigma,
+        sigma.copy(),
+        flag,
+        flag.copy(),
+        np.full(z.size, T_surf),
+        freq_Hz,
+        1.0,
+    )
+
+    assert sc["reason"] in ("ok", "poorly_identified")
+    n_c = sc["z_c"].size
+    assert sc["fun"].size == 2 * n_c
+    assert sc["jac"].shape[0] == sc["fun"].size
+    for key in ("tsys_R_c", "tsys_L_c", "sigma_R_c", "sigma_L_c", "spill_c"):
+        assert sc[key].size == n_c
 
 
 def test_fit_invalid_mode_raises() -> None:
