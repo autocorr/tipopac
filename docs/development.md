@@ -23,11 +23,17 @@ never bare `python`.
 
 ```bash
 uv run pytest                              # fast unit + synth tests
-uv run pytest -m "not slow"                # everything except integration
+uv run pytest -m "not slow and not network"   # explicit form of the default
 uv run pytest -m slow                      # integration; needs data/tip_test.ms
 uv run pytest -m network                   # hits the live Open-Meteo endpoint
-uv run pytest tests/unit/test_fit.py::test_global_tau   # a single test
+uv run pytest tests/unit/test_fit.py::test_fit_tau_per_antenna_recovers_params
 ```
+
+!!! warning "`-m` replaces the default marker expression"
+    `addopts` in `pyproject.toml` already carries
+    `-m "not slow and not network"`. A `-m` on the command line
+    *overrides* it rather than adding to it, so `-m "not slow"` silently
+    re-enables the live-network test. Spell out both markers.
 
 - **`slow`** — the full-pipeline integration test against the ~7 GB
   `data/tip_test.ms` (see [Installation](installation.md#optional-the-test-dataset)).
@@ -58,23 +64,26 @@ uv run ty check src/tipopac                # type-check
 src/tipopac/        # the package
   readers/          # MSReader, SDMReader → one canonical Dataset
   schema.py         # the canonical xarray schema + apply_flags()
-  physics.py        # tipping-curve model, k2nt, Bevis T_wmt
+  physics.py        # tipping-curve model, k2nt, Ulvestad T_wmt fallback
+  spillover.py      # η(ν) ground-pickup forward-model term
   fit.py            # Stage A least-squares solver
   anchor.py         # Stage B PWV anchor + T_mean grid
+  tcal.py           # Stage C closed-form Tcal scale
+  flags.py          # online (FLAG_CMD / Flag.xml) + user flag files
+  timeutils.py      # scan time grouping (assign_groups)
   atmosphere.py     # profile fetch (Open-Meteo / AFGL)
   atmgrid.py        # PwvGrid + build_pwv_grid (runs am)
-  plot.py, weblog.py, caltables.py, summary.py, api.py
+  tables.py, plot.py, weblog.py, caltables.py, summary.py, api.py
 tests/              # unit / synth / integration
 design/             # design.md (the contract) + derivations
 docs/               # this documentation
-run/                # example driver scripts
 vendor/             # read-only legacy tipopac_v1.0 / v2.6 references
 ```
 
 ## The design document is the contract
 
 `design/design.md` specifies the API shape, the dataset schema, the
-Stage-A/Stage-B fit architecture, and the acceptance criteria. **If an
+Stage-A/B/C fit architecture, and the acceptance criteria. **If an
 implementation change forces a change to any of those, update
 `design/design.md` in the same commit** — do not let code-vs-doc skew
 accumulate. The schema in `src/tipopac/schema.py` and the SDM↔MS mapping in

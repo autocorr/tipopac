@@ -430,13 +430,16 @@ diagonal entry on `τ_z` is stored as `tau_err`.
 
 **Identifiability and QA gates.** Single tier, five reason strings:
 
-- `ok` — fit converged, reduced χ² < 5, σ_τ / τ < 0.5.
-- `poorly_identified` — fit converged but σ_τ / τ > 0.5. Fit values
-  are still written; `fit_success` is False so downstream callers
-  decide whether to consume them.
+- `ok` — fit converged, reduced χ² ≤ 5, σ_τ / τ < 0.5.
+- `poorly_identified` — fit converged but σ_τ / τ > 0.5, σ_τ is
+  non-finite, or τ_z ≤ 0. Fit values are still written;
+  `fit_success` is False so downstream callers decide whether to
+  consume them. The τ_z ≤ 0 route is the replacement for v2.6's
+  retired negative-τ fallback (§11): non-physical opacity is reported
+  as unidentified, not repaired.
 - `too_few_samples` — fewer than 3 unflagged time samples after
   rejection.
-- `high_chi2` — reduced χ² ≥ 5 after iterative rejection.
+- `high_chi2` — reduced χ² > 5 after iterative rejection.
 - `fit_failed` — `least_squares` raised or refused to converge.
 
 The legacy v2.6 cascade (`_STD_RESI`, freq-dependent `_stdtsys` bins,

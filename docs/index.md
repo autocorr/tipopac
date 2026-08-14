@@ -35,10 +35,10 @@ precipitable water vapor (PWV), and Tcal corrections.
   [`amwrap`](https://github.com/autocorr/amwrap) wrapper), driven by
   vertical profiles from NCEP's HRRR forecast analysis (Open-Meteo), with
   AFGL climatologies as an offline fallback.
-- **Two-stage solver** — Stage A fits the tipping curve for zenith
-  opacity (and, optionally, a Tcal correction); Stage B anchors a
-  per-antenna PWV against a precomputed opacity grid. See
-  [Theory &amp; method](theory.md).
+- **Three-stage solver** — Stage A fits the tipping curve for zenith
+  opacity; Stage B anchors a per-antenna PWV against a precomputed
+  opacity grid; Stage C solves the Tcal scale in closed form at that
+  pinned opacity. See [Theory &amp; method](theory.md).
 - **Self-contained outputs** — a NetCDF dataset, interactive HTML plots, a
   browsable weblog, and opt-in CASA caltables. See [Quickstart](quickstart.md).
 - **Modern tooling** — `uv` + `pyproject.toml`, type hints checked with
@@ -55,7 +55,7 @@ precipitable water vapor (PWV), and Tcal corrections.
   MS/SDM, run the pipeline, and open the weblog.
 - :material-function-variant: **[Theory &amp; method](theory.md)** — the
   tipping-curve model, the radiometer-equation noise, and the
-  Stage-A/Stage-B fit.
+  Stage-A/B/C fit.
 - :material-api: **[API reference](api.md)** — `tipopac()`,
   `TippingAnalysis`, and `Result`.
 

@@ -40,7 +40,6 @@ from tipopac import tipopac
 
 result = tipopac(
     "data/tip_test.ms",
-    mode="independent_tau",                # default; per-spw τ + PWV anchor
     n_workers=8,                           # process-pool parallelism
     output_dir="run",                      # optional
 )
@@ -57,22 +56,17 @@ from tipopac import TippingAnalysis
 
 ta = TippingAnalysis.from_path("data/tip_test.ms")
 ta.apply_flags(online=True)
-ta.build_atm_grids(atm_profile_source="open-meteo")
-ta.fit(mode="independent_tau", n_workers=8)
+ta.fetch_atm_profile(source="open-meteo")
+ta.build_atm_grids()
+ta.fit(n_workers=8)
 ta.plot(out_dir="run/plots")
 ta.write_caltables(opacity="run/topac.cal", tcal="run/tcal.cal")
 ds = ta.dataset
 ```
 
-Available fit modes:
-
-- `independent_tau` (default) — per-(scan, antenna, spw) opacity fit at
-  `c ≡ 1`, then a per-antenna PWV anchor against the precomputed `am` grid,
-  then a closed-form Tcal scale pinned to that anchor.
-- `independent_tau_solve` — legacy. Solves τ and a per-antenna Tcal gain
-  jointly per (scan, spw). The data cannot separate the two over the sampled
-  airmass, so the free gain buys no fit quality while biasing `tau_zenith`
-  high; it runs no Tcal stage.
+The fit runs in three stages: a per-(scan, antenna, spw) opacity fit at
+`c ≡ 1`, then a per-antenna PWV anchor against the precomputed `am` grid,
+then a closed-form Tcal scale pinned to that anchor.
 
 ## Development
 
@@ -83,7 +77,7 @@ uv run pytest                              # unit tests (fast)
 uv run pytest tests/unit                   # explicit
 uv run pytest -m slow                      # integration; needs data/tip_test.ms
 uv run pytest -m network                   # hits live open-meteo
-uv run pytest tests/unit/test_fit.py::test_global_tau   # single test
+uv run pytest tests/unit/test_fit.py::test_fit_tau_per_antenna_recovers_params
 
 uv run ruff check .                        # lint
 uv run ruff format .                       # format
