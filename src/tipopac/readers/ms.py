@@ -25,6 +25,7 @@ from tipopac.bands import attach_selection_attrs, band_for_spw_name
 from tipopac.readers.base import (
     SkydipScanInfo,
     _apply_selection,
+    _drop_empty_scans,
     _nearest_idx,
     build_canonical_dataset,
 )
@@ -132,6 +133,7 @@ class MSReader:
             wx_T=wx_T,
             wx_P=wx_P,
             wx_RH=wx_RH,
+            scans_requested=self._scans_requested,
         )
 
         attach_selection_attrs(ds, self._scans_requested, self._bands_requested)
@@ -331,35 +333,33 @@ def _build_dataset(
     wx_T: np.ndarray,
     wx_P: np.ndarray,
     wx_RH: np.ndarray,
+    scans_requested: Sequence[int] | None,
 ) -> xr.Dataset:
     _table = import_casatools().table
 
-    n_scan = len(scan_ids)
     n_ant = len(ant_names)
     n_spw = len(tip_spws)
 
-    # determine n_time: read sample counts per scan then take the maximum
+    # per-scan time axis: unique SYSPOWER timestamps across all antennas/spws
+    # (shared dump cadence); n_time is the maximum over scans
     tb = _table()
     tb.open(str(path / "SYSPOWER"))
 
     scan_times: list[np.ndarray] = []
     for sc in scan_ids:
-        sc_spws = scan_spws[sc]
         t_start, t_end = scan_t_start[sc], scan_t_end[sc]
-        spw0 = sc_spws[0]
-        sub = tb.query(
-            f"TIME>={t_start} && TIME<={t_end}"
-            f" && ANTENNA_ID==0 && SPECTRAL_WINDOW_ID=={spw0}"
-        )
+        sub = tb.query(f"TIME>={t_start} && TIME<={t_end}")
         ts = (
             sub.getcol("TIME").copy()
             if sub.nrows() > 0
             else np.array([], dtype=np.float64)
         )
         sub.close()
-        scan_times.append(np.sort(ts))
+        scan_times.append(np.unique(ts))
 
-    n_time = max((len(t) for t in scan_times), default=1)
+    scan_ids, scan_times = _drop_empty_scans(scan_ids, scan_times, scans_requested)
+    n_scan = len(scan_ids)
+    n_time = max(len(t) for t in scan_times)
 
     # allocate output arrays
     switched_diff = np.full((n_scan, n_ant, n_spw, 2, n_time), np.nan, dtype=np.float32)
@@ -372,14 +372,12 @@ def _build_dataset(
     # flag is True for NaN-pad and missing-spw positions
     flag = np.ones((n_scan, n_ant, n_spw, 2, n_time), dtype=bool)
     time_utc = np.full((n_scan, n_time), np.nan, dtype=np.float64)
-    scan_time_start_arr = np.empty(n_scan, dtype=np.float64)
-    scan_time_end_arr = np.empty(n_scan, dtype=np.float64)
+    scan_time_start_arr = np.full(n_scan, np.nan, dtype=np.float64)
+    scan_time_end_arr = np.full(n_scan, np.nan, dtype=np.float64)
 
     for i, sc in enumerate(scan_ids):
         ts = scan_times[i]
         n_t = len(ts)
-        if n_t == 0:
-            continue
 
         scan_time_start_arr[i] = ts[0]
         scan_time_end_arr[i] = ts[-1]

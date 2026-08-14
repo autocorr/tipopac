@@ -201,6 +201,12 @@ the band filter is removed from the dataset. The selection helpers
 both readers — the MS↔SDM parity contract extends to selection
 behaviour.
 
+The per-scan `time` axis is the unique SYSPOWER timestamps across all
+antennas and SPWs in the scan window (the correlator shares one dump
+clock, so any antenna with data yields the same axis). A scan with no
+SYSPOWER samples is dropped with a warning — or raises if it was
+explicitly requested — via the shared `_drop_empty_scans` helper.
+
 ### SDM ↔ MS column mapping
 
 Both readers must produce datasets that pass `schema.validate(ds)` —

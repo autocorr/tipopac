@@ -29,6 +29,7 @@ from tipopac.readers import _fastbin
 from tipopac.readers.base import (
     SkydipScanInfo,
     _apply_selection,
+    _drop_empty_scans,
     _nearest_idx,
     build_canonical_dataset,
 )
@@ -166,6 +167,7 @@ class SDMReader:
             wx_RH=wx_RH,
             sp_data=sp_data,
             ant_id_to_idx=ant_id_to_idx,
+            scans_requested=self._scans_requested,
         )
 
         attach_selection_attrs(ds, self._scans_requested, self._bands_requested)
@@ -405,33 +407,24 @@ def _build_dataset(
     wx_RH: np.ndarray,
     sp_data: np.ndarray,
     ant_id_to_idx: dict[str, int],
+    scans_requested: Sequence[int] | None,
 ) -> xr.Dataset:
-    n_scan = len(scan_ids)
     n_ant = len(ant_names)
     n_spw = len(tip_spws)
 
-    # build reverse maps for binary table lookups
-    idx_to_ant_id = {v: k for k, v in ant_id_to_idx.items()}
-    # reverse: spw integer index → 'SpectralWindow_N'
-    int_to_spw_id: dict[int, str] = {v: k for k, v in spw_id_to_idx.items()}
-
-    # determine per-scan sample times using Antenna_0 + first scan SPW as reference
+    # per-scan time axis: unique SysPower timestamps across all antennas/spws
+    # (shared dump cadence); n_time is the maximum over scans
     scan_times: list[np.ndarray] = []
     for sc in scan_ids:
         t0_ns = int(scan_t_start[sc] * 1e9)
         t1_ns = int(scan_t_end[sc] * 1e9)
-        ref_ant_id = idx_to_ant_id[0]
-        ref_spw_id = int_to_spw_id[scan_spws[sc][0]]
-        mask = (
-            (sp_data["timeMid"] >= t0_ns)
-            & (sp_data["timeMid"] <= t1_ns)
-            & (sp_data["antennaId"] == ref_ant_id)
-            & (sp_data["spectralWindowId"] == ref_spw_id)
-        )
-        ts_ns = np.sort(np.unique(sp_data["timeMid"][mask]))
+        mask = (sp_data["timeMid"] >= t0_ns) & (sp_data["timeMid"] <= t1_ns)
+        ts_ns = np.unique(sp_data["timeMid"][mask])
         scan_times.append(ts_ns.astype(np.float64) / 1e9)
 
-    n_time = max((len(t) for t in scan_times), default=1)
+    scan_ids, scan_times = _drop_empty_scans(scan_ids, scan_times, scans_requested)
+    n_scan = len(scan_ids)
+    n_time = max(len(t) for t in scan_times)
 
     # allocate output arrays
     switched_diff = np.full((n_scan, n_ant, n_spw, 2, n_time), np.nan, dtype=np.float32)
@@ -450,14 +443,12 @@ def _build_dataset(
             sp_interval_field = cand
             break
     time_utc = np.full((n_scan, n_time), np.nan, dtype=np.float64)
-    scan_time_start_arr = np.empty(n_scan, dtype=np.float64)
-    scan_time_end_arr = np.empty(n_scan, dtype=np.float64)
+    scan_time_start_arr = np.full(n_scan, np.nan, dtype=np.float64)
+    scan_time_end_arr = np.full(n_scan, np.nan, dtype=np.float64)
 
     for i, sc in enumerate(scan_ids):
         ts = scan_times[i]
         n_t = len(ts)
-        if n_t == 0:
-            continue
 
         scan_time_start_arr[i] = ts[0]
         scan_time_end_arr[i] = ts[-1]

@@ -8,6 +8,7 @@ here so the two readers cannot drift — the SDM↔MS parity contract.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,8 @@ import xarray as xr
 
 from tipopac import schema
 from tipopac.bands import normalize_bands, select_spws_by_band, validate_scan_selection
+
+_log = logging.getLogger(__name__)
 
 
 class TippingReader(Protocol):
@@ -110,6 +113,30 @@ def _apply_selection(
         scan_t_end.pop(sc, None)
 
     return kept_scan_ids, scan_spws, scan_t_start, scan_t_end, tip_spws
+
+
+def _drop_empty_scans(
+    scan_ids: list[int],
+    scan_times: list[np.ndarray],
+    scans_requested: Sequence[int] | None,
+) -> tuple[list[int], list[np.ndarray]]:
+    """Drop scans with an empty SYSPOWER time axis; raise when explicitly requested."""
+    dropped = [sc for sc, ts in zip(scan_ids, scan_times) if len(ts) == 0]
+    if not dropped:
+        return scan_ids, scan_times
+    if scans_requested is not None:
+        raise ValueError(
+            f"requested scan(s) {dropped} have no SYSPOWER samples in their "
+            "time window; drop these scans from the request"
+        )
+    if len(dropped) == len(scan_ids):
+        raise ValueError("no scan has any SYSPOWER samples in its time window")
+    for sc in dropped:
+        _log.warning(
+            "scan %d has no SYSPOWER samples in its time window — dropping it", sc
+        )
+    kept = [(sc, ts) for sc, ts in zip(scan_ids, scan_times) if len(ts) > 0]
+    return [sc for sc, _ in kept], [ts for _, ts in kept]
 
 
 def _nearest_idx(ref_times: np.ndarray, query_times: np.ndarray) -> np.ndarray:
