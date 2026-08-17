@@ -688,8 +688,11 @@ None) -> None` updates `ds["flag"]` in place.
 
 - **Online flags.** Rows whose `REASON` is **not** in
   `{ANTENNA_NOT_ON_SOURCE, SHADOW, CLIP_ZERO_ALL}` — the v2.6
-  inclusion contract. MS: `FLAG_CMD`, each `COMMAND` parsed by a
-  single regex into `(antenna_name, t_start, t_end)`. SDM: `Flag.xml`,
+  inclusion contract. MS: `FLAG_CMD`, each `COMMAND` parsed into
+  `(antenna_name, t_start, t_end)` by order-insensitive field regexes;
+  `timerange` is required, a missing antenna field means "all", and
+  commands that do not parse are logged at warning level with their
+  count. SDM: `Flag.xml`,
   the table `importasdm` writes `FLAG_CMD` from, so both readers apply
   the same commands. `spectralWindowId` / `polarizationType` are
   ignored even when present — `importasdm` drops them, so honouring
@@ -700,8 +703,8 @@ None) -> None` updates `ds["flag"]` in place.
   directives with no timerange, not per-integration flags.
 - **User file.** Lines of the form
   `antenna='ea05' spw='7' timerange='YYYY/MM/DD/HH:MM:SS~YYYY/MM/DD/HH:MM:SS'`.
-  Single regex. `*`, empty, or missing means "all" for the
-  corresponding field.
+  Same field regexes as the online path, plus one for `spw`. `*`,
+  empty, or missing means "all" for the corresponding field.
 - **Application.** One interval-overlap mask broadcast across
   `(scan, antenna, spw, polarization, time)` via the `time_utc`
   coord:

@@ -11,6 +11,10 @@ Online flags go through `_apply_intervals`, which accumulates that same
 expression at (scan, antenna, time) and broadcasts once for the whole
 batch; user-file flags keep the per-command `_apply_interval` because
 they may select an spw.
+
+Both paths share order-insensitive field regexes: `timerange` is
+required, an absent antenna field selects all antennas, and commands or
+rows that do not parse are warned about with their count.
 """
 
 from __future__ import annotations
@@ -36,14 +40,9 @@ _REASON_EXCLUDE = frozenset({"ANTENNA_NOT_ON_SOURCE", "SHADOW", "CLIP_ZERO_ALL"}
 # MJD epoch: 1858-11-17 00:00:00 UTC
 _MJD_EPOCH = datetime(1858, 11, 17, tzinfo=timezone.utc)
 
-# Regex for CASA FLAG_CMD COMMAND strings.
-# Antenna field: 'ea14&&*' — extract the name before '&&' or end of quotes.
-_CMD_RE = re.compile(
-    r"antenna\s*=\s*'(?P<antenna>[^&']+)(?:&&[^']*)?"
-    r".*?"
-    r"timerange\s*=\s*'(?P<t0>[^~']+)~(?P<t1>[^']+)'",
-    re.DOTALL,
-)
+# Field regexes for CASA FLAG_CMD COMMAND strings and user flag-file lines.
+_TIMERANGE_RE = re.compile(r"timerange\s*=\s*'(?P<t0>[^~']+)~(?P<t1>[^']+)'")
+_ANTENNA_RE = re.compile(r"(?<![A-Za-z_])antenna\s*=\s*'?(?P<v>[^&'\s]*)")
 
 
 def _ymd_to_mjd_sec(s: str) -> float:
@@ -56,21 +55,49 @@ def _ymd_to_mjd_sec(s: str) -> float:
     return (dt.replace(tzinfo=timezone.utc) - _MJD_EPOCH).total_seconds()
 
 
-def _parse_command(cmd: str) -> tuple[str, float, float] | None:
-    """Parse a FLAG_CMD COMMAND string → (antenna_name, t_start, t_end).
+def _antenna_field(text: str) -> str | None:
+    """Extract the antenna name from a flag command; '*' means all antennas.
 
-    Returns None if the string does not match the expected pattern or the
-    time fields are unparseable.
+    Returns None for a malformed field — an antenna value that ran into the
+    next field — so the caller drops the command instead of widening it.
     """
-    m = _CMD_RE.search(cmd)
+    m = _ANTENNA_RE.search(text)
+    if m is None:
+        return "*"
+    value = m.group("v")
+    if value in ("", "-1", "*"):
+        return "*"
+    if "=" in value:
+        return None
+    return value
+
+
+def _parse_timerange(text: str) -> tuple[float, float] | None:
+    """Extract (t_start, t_end) in MJD-seconds from a timerange field."""
+    m = _TIMERANGE_RE.search(text)
     if m is None:
         return None
     try:
-        t_start = _ymd_to_mjd_sec(m.group("t0"))
-        t_end = _ymd_to_mjd_sec(m.group("t1"))
+        return _ymd_to_mjd_sec(m.group("t0")), _ymd_to_mjd_sec(m.group("t1"))
     except ValueError:
         return None
-    return m.group("antenna"), t_start, t_end
+
+
+def _parse_command(cmd: str) -> tuple[str, float, float] | None:
+    """Parse a FLAG_CMD COMMAND string → (antenna_name, t_start, t_end).
+
+    Field order is immaterial; an absent antenna field selects all antennas.
+    Returns None if no timerange is found, the times are unparseable, or the
+    antenna field is malformed — mode directives without a timerange are
+    dropped by the first route.
+    """
+    tr = _parse_timerange(cmd)
+    if tr is None:
+        return None
+    antenna = _antenna_field(cmd)
+    if antenna is None:
+        return None
+    return antenna, tr[0], tr[1]
 
 
 def _parse_user_line(line: str) -> tuple[str, str, float, float] | None:
@@ -78,30 +105,25 @@ def _parse_user_line(line: str) -> tuple[str, str, float, float] | None:
 
     Fields antenna and spw default to '*' (all) when absent, empty, or '*'.
     Legacy '-1' from v2.6 flag files is also treated as 'all'.
-    Returns None if no timerange is found or the times are unparseable.
+    Returns None if no timerange is found, the times are unparseable, or the
+    antenna field is malformed.
     """
-    tr_m = re.search(r"timerange\s*=\s*'(?P<t0>[^~']+)~(?P<t1>[^']+)'", line)
-    if tr_m is None:
-        return None
-    try:
-        t_start = _ymd_to_mjd_sec(tr_m.group("t0"))
-        t_end = _ymd_to_mjd_sec(tr_m.group("t1"))
-    except ValueError:
+    tr = _parse_timerange(line)
+    if tr is None:
         return None
 
-    ant_m = re.search(r"antenna\s*=\s*'?(?P<v>[^'\s]*)'?", line)
+    antenna = _antenna_field(line)
+    if antenna is None:
+        return None
+
     spw_m = re.search(r"spw\s*=\s*'?(?P<v>[^'\s]*)'?", line)
-
-    antenna = ant_m.group("v") if ant_m else "*"
     spw = spw_m.group("v") if spw_m else "*"
 
     # Treat empty or legacy '-1' as wildcard
-    if antenna in ("", "-1"):
-        antenna = "*"
     if spw in ("", "-1"):
         spw = "*"
 
-    return antenna, spw, t_start, t_end
+    return antenna, spw, tr[0], tr[1]
 
 
 def _apply_interval(
@@ -164,6 +186,31 @@ def _apply_intervals(
     ds["flag"] = ds["flag"] | xr.DataArray(acc, dims=("scan", "antenna", "time"))
 
 
+def _warn_dropped(dropped: Sequence[str], label: str, n_total: int) -> None:
+    """Warn that online flag commands or rows were unusable, with examples."""
+    if not dropped:
+        return
+    examples = ", ".join(repr(d[:120]) for d in dropped[:3])
+    _log.warning(
+        "Dropped %d of %d online %ss (no usable timerange or antenna); first: %s",
+        len(dropped),
+        n_total,
+        label,
+        examples,
+    )
+
+
+def _warn_global(commands: Sequence[tuple[str, float, float]]) -> None:
+    """Warn that antenna-less online flag commands flag every antenna."""
+    n = sum(1 for antenna, _, _ in commands if antenna == "*")
+    if n:
+        _log.warning(
+            "%d online flag commands carry no antenna field — "
+            "applying them to all antennas",
+            n,
+        )
+
+
 def apply(ds: xr.Dataset, online: bool, file: Path | None) -> xr.Dataset:
     """Apply online and user-file flags into ds['flag'] in-place.
 
@@ -212,9 +259,19 @@ def _apply_online_flags_ms(ds: xr.Dataset, source_path: str) -> None:
         tb.close()
 
     # Online flags apply to all spws (v2.6 does not filter by spw)
-    parsed = [p for p in (_parse_command(str(c)) for c in commands) if p is not None]
+    parsed: list[tuple[str, float, float]] = []
+    dropped: list[str] = []
+    for cmd in commands:
+        p = _parse_command(str(cmd))
+        if p is None:
+            dropped.append(str(cmd))
+        else:
+            parsed.append(p)
+
     _apply_intervals(ds, parsed)
     _log.debug("Applied %d online flag commands", len(parsed))
+    _warn_dropped(dropped, "FLAG_CMD command", len(commands))
+    _warn_global(parsed)
 
 
 def _parse_antenna_ids(field: str) -> list[str]:
@@ -246,21 +303,35 @@ def _apply_online_flags_sdm(ds: xr.Dataset, source_path: str) -> None:
     ant_names = {str(a.antennaId): str(a.name) for a in sdm["Antenna"]}
 
     commands: list[tuple[str, float, float]] = []
+    dropped: list[str] = []
+    n_considered = 0
     for row in rows:
         if str(row.reason) in _REASON_EXCLUDE:
             continue
+        n_considered += 1
         try:
             t_start = int(str(row.startTime)) / 1e9
             t_end = int(str(row.endTime)) / 1e9
         except ValueError:
+            dropped.append(f"startTime={row.startTime} endTime={row.endTime}")
             continue
-        for ant_id in _parse_antenna_ids(str(row.antennaId)):
-            name = ant_names.get(ant_id)
-            if name is not None:
-                commands.append((name, t_start, t_end))
+        names = [
+            name
+            for ant_id in _parse_antenna_ids(str(row.antennaId))
+            if (name := ant_names.get(ant_id)) is not None
+        ]
+        if not names:
+            dropped.append(f"antennaId={row.antennaId}")
+            continue
+        commands.extend((name, t_start, t_end) for name in names)
 
     _apply_intervals(ds, commands)
-    _log.debug("Applied %d online flag commands", len(commands))
+    _log.debug(
+        "Applied %d online flag commands from %d Flag.xml rows",
+        len(commands),
+        n_considered - len(dropped),
+    )
+    _warn_dropped(dropped, "Flag.xml row", n_considered)
 
 
 def _apply_user_flags(ds: xr.Dataset, file: Path) -> None:

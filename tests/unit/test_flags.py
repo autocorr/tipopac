@@ -7,12 +7,15 @@ subsumes v2.6's four-case block (task_tipopac.py:1116-1199).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import xarray as xr
 
+from tipopac import flags as flags_module
 from tipopac.flags import (
     _apply_interval,
     _apply_intervals,
@@ -224,6 +227,72 @@ def test_parse_command_bad_time_returns_none() -> None:
     assert result is None
 
 
+def test_parse_command_reversed_field_order() -> None:
+    """Field order is immaterial: timerange before antenna parses."""
+    cmd = (
+        "timerange='2021/02/01/01:02:29.060~2021/02/01/01:02:45.969' antenna='ea14&&*'"
+    )
+    result = _parse_command(cmd)
+    assert result is not None
+    assert result[0] == "ea14"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "timerange='2021/02/01/00:00:00~2021/02/01/00:05:00'",
+        "antenna='*' timerange='2021/02/01/00:00:00~2021/02/01/00:05:00'",
+        "antenna='' timerange='2021/02/01/00:00:00~2021/02/01/00:05:00'",
+    ],
+)
+def test_parse_command_antenna_optional(cmd: str) -> None:
+    """An absent, wildcard, or empty antenna field selects all antennas."""
+    result = _parse_command(cmd)
+    assert result is not None
+    assert result[0] == "*"
+
+
+def test_parse_command_antenna_less_flags_all_antennas() -> None:
+    """A global command reaches every antenna through _apply_intervals."""
+    ds = _make_flag_ds()
+    parsed = _parse_command("timerange='2021/02/01/00:00:00~2021/02/01/00:05:00'")
+    assert parsed is not None
+    antenna, _, _ = parsed
+    _apply_intervals(ds, [(antenna, 3.0, 6.0)])
+
+    flag = _flag_vals(ds)
+    for ant_idx in range(flag.shape[1]):
+        np.testing.assert_array_equal(
+            flag[0, ant_idx, 0, 0, 3:7], np.array([True, True, True, True])
+        )
+
+
+def test_parse_command_malformed_antenna_returns_none() -> None:
+    """An antenna value running into the next field drops the command."""
+    cmd = "antenna= timerange='2021/02/01/00:00:00~2021/02/01/00:05:00'"
+    assert _parse_command(cmd) is None
+
+
+def test_parse_command_ignores_other_fields_ending_in_antenna() -> None:
+    """'refantenna=' does not supply the antenna field."""
+    cmd = "refantenna=ea01 timerange='2021/02/01/00:00:00~2021/02/01/00:05:00'"
+    result = _parse_command(cmd)
+    assert result is not None
+    assert result[0] == "*"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "mode='clip' clipzeros=True correlation='ABS_ALL'",
+        "tolerance=0.0 mode='shadow'",
+    ],
+)
+def test_parse_command_mode_directives_return_none(cmd: str) -> None:
+    """Mode directives carry no timerange, so antenna-optional cannot admit them."""
+    assert _parse_command(cmd) is None
+
+
 def test_parse_command_fractional_seconds() -> None:
     """Fractional seconds in timerange are handled."""
     cmd = (
@@ -386,6 +455,98 @@ def test_apply_online_skipped_for_unknown_format() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _apply_online_flags_ms: FLAG_CMD with a stubbed casatools.table
+# ---------------------------------------------------------------------------
+
+
+def _stub_flag_cmd(monkeypatch: pytest.MonkeyPatch, commands: list[str]) -> None:
+    """Stub casatools.table so _apply_online_flags_ms sees `commands`."""
+
+    class _Table:
+        def open(self, path: str) -> None: ...
+
+        def nrows(self) -> int:
+            return len(commands)
+
+        def query(self, tql: str) -> "_Table":
+            return self
+
+        def getcol(self, name: str) -> list[str]:
+            return commands
+
+        def close(self) -> None: ...
+
+    monkeypatch.setattr(
+        flags_module, "import_casatools", lambda: SimpleNamespace(table=_Table)
+    )
+
+
+def _ms_flag_ds(tmp_path: Path) -> xr.Dataset:
+    ms = tmp_path / "synth.ms"
+    (ms / "FLAG_CMD").mkdir(parents=True)
+    ds = _make_flag_ds()
+    ds.attrs["source_format"] = "ms"
+    ds.attrs["source_path"] = str(ms)
+    return ds
+
+
+def test_ms_online_warns_on_dropped_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Commands surviving the REASON filter but not the parser are warned about."""
+    good = "antenna='ea01&&*' timerange='1858/11/17/00:00:03~1858/11/17/00:00:06'"
+    _stub_flag_cmd(
+        monkeypatch, [good, "mode='clip' clipzeros=True", "tolerance=0.0 mode='shadow'"]
+    )
+    ds = _ms_flag_ds(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="tipopac.flags"):
+        apply(ds, online=True, file=None)
+
+    assert "Dropped 2 of 3" in caplog.text
+    assert "clipzeros" in caplog.text
+    np.testing.assert_array_equal(
+        _flag_vals(ds)[0, 0, 0, 0, 3:7], np.array([True, True, True, True])
+    )
+
+
+def test_ms_online_warns_on_antenna_less_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A global command is applied to all antennas and announced."""
+    _stub_flag_cmd(monkeypatch, ["timerange='1858/11/17/00:00:03~1858/11/17/00:00:06'"])
+    ds = _ms_flag_ds(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="tipopac.flags"):
+        apply(ds, online=True, file=None)
+
+    assert "no antenna field" in caplog.text
+    assert _flag_vals(ds)[0, :, 0, 0, 3:7].all()
+
+
+def test_ms_online_quiet_when_all_commands_parse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No warning when every command parses and names an antenna."""
+    _stub_flag_cmd(
+        monkeypatch,
+        ["antenna='ea01&&*' timerange='1858/11/17/00:00:03~1858/11/17/00:00:06'"],
+    )
+    ds = _ms_flag_ds(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="tipopac.flags"):
+        apply(ds, online=True, file=None)
+
+    assert not [r for r in caplog.records if r.name == "tipopac.flags"]
+
+
+# ---------------------------------------------------------------------------
 # _parse_antenna_ids: ASDM antenna-id arrays
 # ---------------------------------------------------------------------------
 
@@ -518,15 +679,19 @@ def test_sdm_flag_xml_multi_antenna_row(tmp_path: Path) -> None:
         )
 
 
-def test_sdm_flag_xml_unknown_antenna_skipped(tmp_path: Path) -> None:
-    """A row naming an antenna absent from the dataset is silently skipped."""
+def test_sdm_flag_xml_unknown_antenna_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A row naming an antenna absent from the dataset is skipped, and reported."""
     pytest.importorskip("sdmpy")
     sdm = _write_sdm(tmp_path, _flag_row("Antenna_99", 0.0, 10.0, "FOCUS_ERROR"))
     ds = _sdm_flag_ds(tmp_path, sdm)
 
-    apply(ds, online=True, file=None)
+    with caplog.at_level(logging.WARNING, logger="tipopac.flags"):
+        apply(ds, online=True, file=None)
 
     assert not ds["flag"].values.any()
+    assert "Dropped 1 of 1" in caplog.text
 
 
 def test_apply_preserves_existing_flags() -> None:
