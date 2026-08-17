@@ -66,5 +66,5 @@ precipitable water vapor (PWV), and Tcal corrections.
 This rewrite is based on Chris Hales' `tipopac_v1.0` with contributions
 from Pedro Beaklini (`tipopac_v2.6`); both live under `vendor/`. The
 numerical method has been modernized (robust loss, radiometer-equation
-weighting, a single-tier QA gate), so exact parity with v2.6 is a smoke
-test rather than a contract.
+weighting, a single-tier QA gate), so results drift from v2.6 by design
+and parity with it is not a contract.

@@ -92,7 +92,8 @@ accumulate. The schema in `src/tipopac/schema.py` and the SDM↔MS mapping in
 The legacy task at
 `vendor/tipopac_v2.6/lastversion/tipping/private/task_tipopac.py` is
 reference only — read it to understand behavior, but do not import from it
-or modify it. v2.6 numerical parity is a smoke test, not a contract.
+or modify it. Numerical parity with v2.6 is not a contract and is not
+tested — the method has changed deliberately.
 
 ## Building the documentation
 

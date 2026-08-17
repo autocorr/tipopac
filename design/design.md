@@ -818,18 +818,12 @@ than broken iframes.
   `anchor.anchor_pwv` matches the empirical Monte-Carlo σ across
   realisations within √(2/(n−1)) — standard test for correct error
   propagation.
-- **v2.6 numerical-parity check.** Retained as a **smoke test only**
-  with loose tolerances (≈ 10× the original `max(0.005, 0.05·τ_v26)`
-  and 10× the 1 % Tcal tolerance). Systematic drift is expected:
-  v2.6 uses unit weights + L2 + 2σ clip + 3-pass bound escalation +
-  geometric `dz`/`min(z)` gates; this rewrite uses radiometer-eq σ +
-  `soft_l1` + single-tier bounds + an identifiability ratio. Parity
-  is a sanity floor, not a contract.
-- Integration test on `data/tip_test.ms` runs end-to-end in all
-  three pipeline modes (open-meteo, AFGL fallback, AFGL-forced).
-  Open-meteo network calls are monkeypatched in CI via the fixture at
-  `tests/integration/reference/open_meteo_response.json`; a separate
-  `pytest -m network` test exercises the live endpoint.
+- Integration test on `data/tip_test.ms` runs both public modes
+  end-to-end under forced AFGL climatology, so the slow suite needs no
+  network. The three profile-source routes (open-meteo, pre-2021 skip
+  to AFGL, fetch-failure fallback) are covered at the
+  `atmosphere.attach_profile` seam in `tests/unit/test_atmosphere.py`;
+  a separate `pytest -m network` test exercises the live endpoint.
 
 ---
 

@@ -63,10 +63,10 @@ The integration test is gated by `pytest.mark.slow` and needs the
 - **"No CASA at runtime"** means no `buildmytasks` and no `casa`
   process. `casatools.table` / `casatools.calibrater` are ordinary
   imports used by readers and the optional caltable writers.
-- **v2.6 numerical parity is a smoke test, not a contract.** The
-  rewrite uses radiometer-eq σ + `soft_l1` + single-tier bounds + an
-  identifiability ratio in place of v2.6's unit-weight L2 + 2σ clip +
-  3-pass bound escalation + geometric `dz`/`min(z)` gates. Drift is
-  expected.
+- **v2.6 numerical parity is not tested.** The rewrite uses
+  radiometer-eq σ + `soft_l1` + single-tier bounds + an identifiability
+  ratio in place of v2.6's unit-weight L2 + 2σ clip + 3-pass bound
+  escalation + geometric `dz`/`min(z)` gates, so drift is expected;
+  testing is regression-focused instead.
 - **`data/` is a symlink** to `../data/`. The MS is large and shared;
   don't write to it.

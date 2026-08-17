@@ -167,34 +167,24 @@ def test_ms_reader_schema_validates(ds_ms) -> None:
 
 
 @pytest.mark.slow
-def test_ms_reader_dims_match_reference() -> None:
-    """Dataset dimensions must match the reference.json captured from v2.6.
+def test_ms_reader_dims_on_validation_ms() -> None:
+    """Coords on data/tip_test.ms must match the known selection.
 
-    v2.6 processed every DO_SKYDIP SPW with no band filter, so this
-    comparison reads with all VLA bands enabled.
+    All VLA bands are enabled, so the spw list is the unfiltered
+    DO_SKYDIP set rather than the default high-frequency subset.
     """
-    import json
-
     from tipopac.bands import VLA_BAND_LABELS
     from tipopac.readers.ms import MSReader
 
-    ref_path = (
-        Path(__file__).parents[2]
-        / "tests"
-        / "integration"
-        / "reference"
-        / "v26"
-        / "tau_per_antenna"
-        / "reference.json"
-    )
-    ref = json.loads(ref_path.read_text())
+    # ea22 is absent from this observation.
+    expected_antennas = [f"ea{i:02d}" for i in range(1, 29) if i != 22]
 
     reader = MSReader.from_path(MS_PATH, bands=list(VLA_BAND_LABELS))
     ds = reader.read()
 
-    assert list(ds.coords["antenna"].values) == ref["coords"]["antenna"]
-    assert len(ds.coords["scan"]) == len(ref["coords"]["scan"])
-    assert list(ds.coords["spw"].values) == ref["coords"]["spw"]
+    assert list(ds.coords["antenna"].values) == expected_antennas
+    assert len(ds.coords["scan"]) == 7
+    assert list(ds.coords["spw"].values) == list(range(112))
     assert list(ds.coords["polarization"].values) == ["R", "L"]
 
 

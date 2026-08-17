@@ -4,8 +4,8 @@ Runs both public modes on data/tip_test.ms: the default ``independent_tau``
 (Stage A+B+C) and the legacy ``independent_tau_solve`` (Stage A+B).
 
 Uses AFGL climatology for the atmospheric model so the test is fully
-deterministic without network access. A separate @pytest.mark.network
-test exercises the live open-meteo call.
+deterministic without network access. The profile-source routes and the
+live open-meteo call are covered in tests/unit/test_atmosphere.py.
 """
 
 from __future__ import annotations
@@ -65,8 +65,7 @@ def test_independent_tau_solve_outputs_populated(ds_independent_tau_solve):
     assert np.isfinite(ds["tau_zenith"].values).any(), "all tau_zenith are NaN"
 
     # Stage B wrote pwv + pwv_err per (time group, antenna). This MS spans
-    # ~25 min, so the 1 h default groups every scan together — which is what
-    # keeps the v2.6 reference numerics in tests/integration/reference/ valid.
+    # ~25 min, so the 1 h default groups every scan together.
     assert "pwv" in ds.data_vars
     assert "pwv_err" in ds.data_vars
     assert ds["pwv"].dims == ("group", "antenna")
