@@ -41,8 +41,8 @@ def _fast_or_sdmpy(table: Any, fast: Callable[[Any], np.ndarray]) -> np.ndarray:
     """Return ``fast(table)``, falling back to sdmpy ``table.data`` on drift.
 
     The fast binary readers assume the VLA column layout; if a future sdmpy
-    changes it, degrade to the (slow but correct) sdmpy unpack rather than
-    returning wrong bytes.
+    changes it, or a payload does not decode row-by-row, degrade to the (slow
+    but correct) sdmpy unpack rather than returning wrong or truncated bytes.
     """
     try:
         return fast(table)

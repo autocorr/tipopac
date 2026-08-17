@@ -18,7 +18,10 @@ The ASDM header records ``nrows = -1`` (unknown) and rows are variable-length
 (leading length-prefixed id strings + optional fields), so the row count is
 not known a priori and there is no fixed stride. Each table is therefore
 walked twice: a cheap count pass (advance the cursor only), then an
-exact-size fill pass — no over-allocation, no incremental growth.
+exact-size fill pass — no over-allocation, no incremental growth. A row that
+does not decode, or two passes that disagree on the row count, raise
+``FastBinLayoutError`` so the caller falls back to sdmpy; the alternative is a
+short read that looks like a scan with missing samples.
 
 Row format (``sdmpy/bintab.py`` ``_get_val`` + the unpacker ``columns``):
 big-endian; string = 4-byte length prefix + bytes; optional field = 1
@@ -100,6 +103,23 @@ def _payload_bounds(table: Any) -> tuple[bytes, int, int]:
     return buf, start, end
 
 
+def _truncated(name: str, row: int, p: int, end: int) -> FastBinLayoutError:
+    """Error for a row walk that ran off its payload before the end."""
+    return FastBinLayoutError(
+        f"{name}: row {row} does not decode at byte {p}; "
+        f"{end - p} of {end} payload bytes unread — fast reader disabled"
+    )
+
+
+def _check_count(name: str, n_count: int, n_fill: int) -> None:
+    """Both walks must agree; a short fill pass would leave arrays uninitialised."""
+    if n_fill != n_count:
+        raise FastBinLayoutError(
+            f"{name}: fill pass read {n_fill} rows, count pass {n_count} "
+            "— fast reader disabled"
+        )
+
+
 def _check_layout(table: Any, expected: list) -> None:
     if list(table._unpacker.columns) != expected:
         raise FastBinLayoutError(
@@ -129,7 +149,7 @@ def unpack_syspower(table: Any) -> np.ndarray:
         switchedPowerDifference=np.zeros((n, 2), "f4"),
         switchedPowerSum=np.zeros((n, 2), "f4"),
     )
-    _walk_syspower(buf, start, end, cols)
+    _check_count("SysPower", n, _walk_syspower(buf, start, end, cols))
 
     out = np.empty(
         n,
@@ -166,10 +186,12 @@ def _walk_syspower(buf: bytes, p: int, end: int, cols: _SysPowerCols | None) -> 
 
     ``cols is None`` counts only (advance the cursor, no decode). Otherwise
     fills the exact-size column arrays in ``cols`` (sized by the count pass).
+    Raises FastBinLayoutError if a row does not decode.
     """
     n = 0
     fill = cols is not None
     while p < end - 4:
+        row_start = p
         try:
             length = _I4.unpack_from(buf, p)[0]
             p += 4
@@ -209,8 +231,8 @@ def _walk_syspower(buf: bytes, p: int, end: int, cols: _SysPowerCols | None) -> 
                 p += 1 + 4 + 8
             else:
                 p += 1
-        except (struct.error, IndexError):
-            break
+        except (struct.error, IndexError, UnicodeDecodeError) as exc:
+            raise _truncated("SysPower", n, row_start, end) from exc
 
         if fill:
             cols.antennaId[n] = a
@@ -243,7 +265,7 @@ def unpack_pointing(table: Any) -> np.ndarray:
         timeMid=np.empty(n, "i8"),
         encoder=np.zeros((n, 1, 2), "f8"),
     )
-    _walk_pointing(buf, start, end, cols)
+    _check_count("Pointing", n, _walk_pointing(buf, start, end, cols))
 
     out = np.empty(
         n,
@@ -270,11 +292,13 @@ def _walk_pointing(buf: bytes, p: int, end: int, cols: _PointingCols | None) -> 
     """Walk Pointing rows from ``p`` to ``end``; return the row count.
 
     ``cols is None`` counts only (no decode). Otherwise fills the exact-size
-    column arrays in ``cols``.
+    column arrays in ``cols``. Raises FastBinLayoutError if a row does not
+    decode.
     """
     n = 0
     fill = cols is not None
     while p < end - 4:
+        row_start = p
         try:
             length = _I4.unpack_from(buf, p)[0]
             p += 4
@@ -301,8 +325,8 @@ def _walk_pointing(buf: bytes, p: int, end: int, cols: _PointingCols | None) -> 
                     p += 1 + w
                 else:
                     p += 1
-        except (struct.error, IndexError):
-            break
+        except (struct.error, IndexError, UnicodeDecodeError) as exc:
+            raise _truncated("Pointing", n, row_start, end) from exc
 
         if fill:
             cols.antennaId[n] = a

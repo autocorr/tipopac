@@ -106,6 +106,29 @@ def test_apply_selection_mirrors_ms() -> None:
     assert ms_out == sdm_out
 
 
+def test_fast_or_sdmpy_falls_back_on_unreadable_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A payload the fast reader cannot walk degrades to sdmpy, loudly."""
+    import logging
+
+    from tipopac.readers import _fastbin
+    from tipopac.readers.sdm import _fast_or_sdmpy
+
+    class _Table:
+        name = "SysPower"
+        data = np.array([1, 2, 3])
+
+    def _fast(table: object) -> np.ndarray:
+        raise _fastbin.FastBinLayoutError("row 7 does not decode")
+
+    with caplog.at_level(logging.WARNING, logger="tipopac.readers.sdm"):
+        out = _fast_or_sdmpy(_Table(), _fast)
+
+    np.testing.assert_array_equal(out, np.array([1, 2, 3]))
+    assert "fast binary reader disabled" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Slow tests — require data/tip_test.sdm (and data/tip_test.ms for parity).
 # ds_sdm / ds_ms come from tests/conftest.py.
