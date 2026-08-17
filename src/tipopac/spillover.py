@@ -13,12 +13,9 @@ constant — which is exactly why η, not δτ, is what we store. Injecting this
 into the Stage-A model makes ``tau_zenith`` spillover-free at the fit output, so
 Stage B anchors PWV on it directly with no add-back.
 
-η(ν) provenance: fitted-τ excess ``tau_zenith − am(hrrr_pwv)``, 1-GHz binned over
-76 ``THIG0007_wide_CXUKAQ`` epochs, curvature-corrected to be sampling-
-independent. See ``run/spillover_band/findings_roundtrip.md`` and
-``run/spillover_band/eta_forward_model.json`` (the source of ``ETA_POLY_COEF``).
-
-This module supersedes the retired flat post-hoc δτ de-bias.
+``ETA_POLY_COEF`` was derived from the fitted-τ excess against HRRR-anchored am
+opacity, binned in frequency and curvature-corrected to be sampling-independent
+— see design.md §6.
 """
 
 from __future__ import annotations
@@ -40,9 +37,7 @@ __all__ = [
     "spillover_tsys",
 ]
 
-# Aggregate VLA spillover efficiency η(ν) = c2·ν² + c1·ν + c0 (ν in GHz,
-# η dimensionless), from run/spillover_band/eta_forward_model.json
-# ("eta_poly_coef_hi_to_lo"). η ≈ 0.47 % (4 GHz) → 0.14 % (50 GHz).
+# Aggregate VLA spillover efficiency η(ν) = c2·ν² + c1·ν + c0, ν in GHz.
 ETA_POLY_COEF: tuple[float, float, float] = (
     8.471277285232635e-07,
     -1.1846536203413985e-04,

@@ -302,7 +302,7 @@ In `independent_tau_solve` (tcal_solve) mode, the fit produces a per-cell
 factor in the (T_0, c, τ) model. One might naively expect that the
 "true" Tcal for the noise budget is `tcal_fit` rather than `tcal_ref`.
 
-Empirically (see `run/sigma_tsys/test_sigma_tsys.py`), substituting
+Empirically, substituting
 `tcal_fit` for `tcal_ref` slightly **degrades** the agreement between
 predicted and empirical σ:
 
@@ -324,7 +324,7 @@ computed pre-fit), so χ² and σ_τ are directly comparable across modes.
 
 ## 7. Empirical confirmation summary
 
-From `run/sigma_tsys/test_sigma_tsys.py`, 6048 (scan, ant, spw, pol)
+From an out-of-tree archive probe over 6048 (scan, ant, spw, pol)
 cells:
 
 ```
@@ -362,6 +362,7 @@ Tsys²/T_c functional form over the naive Tsys/√BT.
 
 - Implementation: `src/tipopac/fit.py` → `_compute_sigma_tsys`
 - Spec contract: `design/design.md` §5.3
-- Empirical validation: `run/sigma_tsys/`
+- Empirical validation: out-of-tree archive probe (§7); not in this
+  repository
 - Related: AIPS Memo 199 (Perley/Butler) on VLA switched power; Rohlfs
   & Wilson *Tools of Radio Astronomy* §4 on the Dicke radiometer.

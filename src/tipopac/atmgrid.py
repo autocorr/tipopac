@@ -1,7 +1,5 @@
 """PWV-parameterised opacity / sky-brightness grid for the forward-model fit.
 
-Stage 2 of the model refactor (design/model_refactor.md §2.1).
-
 For each scan, the atmospheric profile (pressure, temperature, H₂O VMR) is
 fixed; the single free atmospheric DOF is PWV. ``PwvGrid`` precomputes
 ``τ_z(ν, PWV)`` and ``Tb_z(ν, PWV)`` over a regular PWV axis by running am
@@ -53,12 +51,6 @@ _DEFAULT_CACHE_BASE: str | None = "/dev/shm" if Path("/dev/shm").is_dir() else N
 _M_WATER_OVER_M_DRY: float = 18.015 / 28.9647
 _G_EARTH: float = 9.80665  # m s⁻²
 _RHO_LIQ_WATER: float = 1000.0  # kg m⁻³
-
-# am's brightness_temperature column is the *Planck* Tb and includes the CMB
-# attenuated through the atmosphere. Stage A's T_mean needs the atmosphere-only
-# mean, so the CMB is subtracted before dividing by the absorbed fraction — but
-# that decomposition is linear in radiance, so it must be done on `trj_z`, not
-# on `tb_z`. See run/cmb_term/findings.md §2.
 
 
 @dataclass(frozen=True)

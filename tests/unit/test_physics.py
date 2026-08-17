@@ -98,7 +98,7 @@ def test_mean_radiating_T_vectorised() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Attenuated-CMB term (run/cmb_term/findings.md §1)
+# Attenuated-CMB term (design.md §5.1)
 # ---------------------------------------------------------------------------
 
 

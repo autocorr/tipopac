@@ -86,9 +86,7 @@ OPTIONAL_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
     "fit_reason": (("scan", "antenna", "spw"), np.dtype("O")),
     "am_freq_grid": (("frequency_dense",), np.dtype(np.float64)),
     "am_tau": (("group", "frequency_dense"), np.dtype(np.float64)),
-    # Post-fit atmospheric anchor (see design/independent_tau_fit.md):
-    # one PWV per antenna per time group, fitted against τ_z(ν) from this
-    # antenna's per-spw fits across that group's scans.
+    # Post-fit atmospheric anchor (design.md §6)
     "pwv": (("group", "antenna"), np.dtype(np.float32)),
     "pwv_err": (("group", "antenna"), np.dtype(np.float32)),
     # Atmospheric profile attached by fetch_atm_profile. Per-scan with index

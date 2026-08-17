@@ -10,8 +10,7 @@ Modes
   per-antenna (T0_R, c_R, T0_L, c_L). Sparse Jacobian.
 
 PWV is not a fit parameter at this layer — the atmospheric anchor lives in
-:mod:`tipopac.anchor` (post-hoc fit of PWV against τ_z(ν)). See
-``design/independent_tau_fit.md``.
+:mod:`tipopac.anchor` (post-hoc fit of PWV against τ_z(ν)). See design.md §6.
 """
 
 from __future__ import annotations
@@ -30,10 +29,7 @@ from tipopac.spillover import ETA_MODEL_NAME, ETA_POLY_COEF, spillover_tsys
 
 __all__ = ["fit_dataset", "valid_samples"]
 
-# Per-sample validity / physical bounds. The legacy 6-gate QA cascade
-# (`_STD_RESI`, freq-dep `stdTsys` bins, `_DZ_MIN`, `_MZ_MIN`, mean-Tsys)
-# has been replaced by σ-weighted robust loss + reduced-χ² + identifiability
-# checks (see design/model_refactor.md §1.2–1.3).
+# Per-sample validity / physical bounds (design.md §5.3).
 _TR_UPPER: float = 300.0  # K — per-sample Tsys validity ceiling
 _MIN_SAMPLES: int = 3  # minimum unflagged time samples
 _C_LO: float = 0.5  # Tcal correction multiplier lower bound (physical prior)
@@ -68,9 +64,8 @@ def fit_dataset(
         :func:`tipopac.physics.k2nt`). When provided, the per-cell value
         replaces the v2.6 ``k2nt(0.95·T_surface)`` heuristic for
         Stage A. ``NaN`` entries fall back to the Ulvestad form on that
-        cell — see ``design/independent_tau_fit.md`` §1. ``T_mean`` from
-        :func:`tipopac.anchor.compute_t_mean_grid` is the recommended
-        feed.
+        cell (design.md §5.3). ``T_mean`` from
+        :func:`tipopac.anchor.compute_t_mean_grid` is the recommended feed.
     n_workers:
         If ``> 1``, dispatch Stage-A fit work via a
         :class:`multiprocessing.Pool` with the ``spawn`` start method;
@@ -279,7 +274,7 @@ def _compute_sigma_tsys(ds: xr.Dataset) -> xr.DataArray:
         τ_int   — ``exposure_time`` (per scan, time), s
         T_c     — ``tcal_ref`` (per antenna, spw, pol), K
 
-    See ``design/design.md`` §5.2 and ``old_context/sigma_tsys_derivation.md``.
+    See ``design/design.md`` §5.2 and ``design/sigma_tsys_derivation.md``.
 
     ``tcal_ref(ant, spw, pol)``, ``bandwidth(spw)``, and ``exposure_time(scan,
     time)`` broadcast against ``Tsys`` by dim name; the result follows ``Tsys``'s
@@ -510,9 +505,7 @@ def _screen_antenna(
     Single-pass soft_l1 fit with iterative 4σ residual rejection. Acceptance:
     reduced χ² < `_REDUCED_CHI2_MAX`. Identifiability: if `σ_τ/τ` exceeds
     `_TAU_REL_ERR_MAX`, returns reason="poorly_identified" with the fit
-    values intact. The old QA cascade (dz, min(z), Tsys std bins, residual σ
-    ceiling) is replaced by these two signals — see
-    design/model_refactor.md §1.2–1.3.
+    values intact (design.md §5.3).
 
     Returns {"reason": "ok" | "poorly_identified", "z_c", "tsys_R_c",
              "tsys_L_c", "sigma_R_c", "sigma_L_c", "spill_c", "Twmt", "T0_R",

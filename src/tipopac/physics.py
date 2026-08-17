@@ -47,7 +47,7 @@ def tsys_model(
 
     All temperatures in noise K; z_deg in degrees. ``Tcmb`` is the CMB
     radiation temperature ``k2nt(T_CMB, ν)``; ``Tcmb=0`` reproduces the
-    pre-2026-07 model, which biased τ low by ~0.8% (run/cmb_term/findings.md).
+    pre-2026-07 model, which biased τ low by ~0.8%.
     ``spillover`` is a pre-evaluated per-z ground-pickup term (0 disables it);
     see :func:`tipopac.spillover.spillover_tsys`.
     """

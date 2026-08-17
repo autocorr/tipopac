@@ -1,6 +1,6 @@
 """Stage B — post-fit per-antenna PWV anchor against per-spw τ_z.
 
-See ``design/independent_tau_fit.md`` §2. Given the Stage-A outputs
+See design.md §6. Given the Stage-A outputs
 (`τ_z(scan, ant, spw)`, `σ_τ(scan, ant, spw)`) and a per-scan
 :class:`tipopac.atmgrid.PwvGrid`, fit a single PWV per antenna by
 weighted least-squares against ``τ_grid(PWV, ν_spw)``. σ_PWV comes from

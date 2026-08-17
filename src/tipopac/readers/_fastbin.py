@@ -2,7 +2,7 @@
 
 sdmpy unpacks *every* column of *every* row of the ``SysPower`` and
 ``Pointing`` binary tables in pure Python (``sdmpy/bintab.py``), which is
-~97 % of a typical SDM read (``run/profiling/findings.md``). tipopac uses
+~97 % of a typical SDM read. tipopac uses
 only 6 of SysPower's 9 columns and 3 of Pointing's 19. These functions walk
 the binary payload, extract just the needed columns, and return a numpy
 structured array that drops in for ``sdm[name].data`` — measured ~37× faster

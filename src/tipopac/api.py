@@ -18,8 +18,7 @@ from tipopac.readers import detect_reader as _detect_reader
 
 _log = logging.getLogger(__name__)
 
-# Public Stage A+B modes (independent τ fit + per-antenna PWV anchor;
-# `design/independent_tau_fit.md`). The values are the Stage-A backend
+# Public Stage A+B modes (design.md §2.1); values are the Stage-A backend
 # mode in :func:`tipopac.fit.fit_dataset`.
 _INDEPENDENT_TO_BACKEND: dict[str, str] = {
     "independent_tau": "tau_per_antenna",
@@ -227,10 +226,9 @@ def tipopac(
         When ``True`` (default), model instrumental ground pickup as a
         ``η(ν)·k2nt(T_surf,ν)·airmass`` term inside the Stage-A Tsys forward
         model, so ``tau_zenith`` is fit spillover-free and PWV anchors on it
-        directly (``run/spillover_band/findings_roundtrip.md``). ``False``
-        reproduces the pre-spillover fit for parity/repro. This replaces the
-        retired flat post-hoc δτ de-bias; the old ``0.0036`` behaviour is
-        intentionally not preserved.
+        directly. ``False`` reproduces the pre-spillover fit for
+        parity/repro. This replaces the retired flat post-hoc δτ de-bias; the
+        old ``0.0036`` behaviour is intentionally not preserved.
     group_duration_s:
         Stage-B time grouping. Scans are partitioned into greedy sequential
         windows of at most this many seconds and one PWV per antenna is fit
@@ -370,8 +368,8 @@ class TippingAnalysis:
         Auto-calls :meth:`fetch_atm_profile` with defaults if the profile
         is not yet on the dataset. Populates ``self._grids[scan_id] =
         PwvGrid`` for every scan and writes the ``pwv_profile_source(scan,)``
-        and ``pwv_model(scan,)`` data vars for provenance. Used by the post-fit atmospheric anchor
-        (see ``design/independent_tau_fit.md``); not consumed by :meth:`fit`.
+        and ``pwv_model(scan,)`` data vars for provenance. The grids feed
+        Stage A's ``T_mean`` and the Stage-B anchor (design.md §6).
         """
         import astropy.units as u
 

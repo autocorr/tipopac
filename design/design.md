@@ -5,9 +5,9 @@ VLA zenith opacity and noise-diode temperatures from `DO_SKYDIP`
 tipping-scan data, without requiring a CASA runtime.
 
 > **Scope of this document.** Requirements / contract for the current
-> implementation. This file supersedes `old_context/initial_design.md`
-> and `old_context/independent_tau_fit.md`. When implementation drifts
-> from this spec, this file is updated in the same commit (see CLAUDE.md).
+> implementation. This file supersedes the earlier design notes. When
+> implementation drifts from this spec, this file is updated in the same
+> commit (see CLAUDE.md).
 
 ---
 
@@ -352,8 +352,8 @@ Attrs
 - `tsys_model(z_deg, T0, tau0, Twmt, Tcmb, spill) = T0 + Tcmb·exp(−τ₀/cos z)
   + Twmt·(1 − exp(−τ₀/cos z)) + spill`, `Tcmb = k2nt(T_CMB, ν)`. The tipping
   amplitude is `(Twmt − Tcmb)`; omitting the CMB term biases τ low by
-  ~0.8% (`run/cmb_term/findings.md`). `spill = η(ν)·k2nt(T_surf,ν)·airmass`
-  is the fixed (τ-independent) spillover term (§6); `spill = 0` disables it.
+  ~0.8%. `spill = η(ν)·k2nt(T_surf,ν)·airmass` is the fixed
+  (τ-independent) spillover term (§6); `spill = 0` disables it.
 - `T_CMB = 2.725` K (Fixsen 2009).
 - `k2nt(T_K, ν_Hz) = T·(hν/kT) / (exp(hν/kT) − 1)` — Nyquist
   (Rayleigh-Jeans) correction.
@@ -523,12 +523,14 @@ antenna sidelobes unattenuated by the sky, adding a Tsys term
 `η(ν)·k2nt(T_surf,ν)·airmass` that a naive fit absorbs into `tau_zenith`.
 Rather than de-bias post-hoc, Stage A carries this term *inside* the model
 (§5.1, §5.3): `η(ν)` is the stored, sampling-independent spillover efficiency
-(`spillover.ETA_POLY_COEF`, a quadratic in ν over the full 4–50 GHz JSON
+(`spillover.ETA_POLY_COEF`, a quadratic in ν over the full 4–50 GHz
 validity range, 0 outside — edges less constrained), and the fit supplies each scan's airmass
-integral, so the emergent δτ is sampling-independent by construction
-(`run/spillover_band/findings_roundtrip.md`). `tau_zenith` is therefore
-spillover-free at the Stage-A output and Stage B anchors PWV on it directly —
-no add-back. The term is `∝ airmass` and τ-independent, i.e. a fixed additive
+integral, so the emergent δτ is sampling-independent by construction. η was
+derived from the fitted-τ excess `tau_zenith − am(hrrr_pwv)`, 1-GHz binned over
+76 `THIG0007_wide_CXUKAQ` epochs and curvature-corrected to remove the
+elevation-sampling dependence; it runs ≈0.47 % at 4 GHz to 0.14 % at 50 GHz.
+`tau_zenith` is therefore spillover-free at the Stage-A output and Stage B
+anchors PWV on it directly — no add-back. The term is `∝ airmass` and τ-independent, i.e. a fixed additive
 offset (no new fit parameter, `dpred/dτ` unchanged). The `tipopac(...,
 spillover_model=)` flag toggles it (default `True`, the physically-correct
 post-CMB model; `False` reproduces the pre-spillover fit).
@@ -842,7 +844,7 @@ than broken iframes.
 - **Legacy public modes** `global_tau`, `per_antenna_pwv`,
   `shared_pwv`. Gone. `tcal_solve` is retained as the private
   Stage-A backend for `independent_tau_solve`.
-- **am-based forward fit (Stage 2 of `model_refactor.md`).** Reverted.
+- **am-based forward fit with PWV as an inner fit parameter.** Reverted.
   PWV is fitted post-hoc against the per-spw τ samples (§6), never as
   an inner LM parameter.
 - **Replacement of `mean_radiating_T` as the default Twmt.**
