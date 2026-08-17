@@ -1,4 +1,4 @@
-"""Unit tests for tipopac.fit — both public modes (design.md §5.3)."""
+"""Unit tests for tipopac.fit — both Stage-A backends (design.md §5.3)."""
 
 from __future__ import annotations
 

@@ -328,8 +328,8 @@ Attrs
   selected_bands      : list[str]           (sorted unique band labels present after filtering)
   atm_profile_source  : "open_meteo" | "afgl_<climatology>"
   open_meteo_query    : dict | None      (provenance: lat, lon, time, endpoint, model)
-  spillover_model     : str              (η(ν) model label; both absent when the
-  spillover_eta_coef  : list[float]       spillover term is switched off)
+  spillover_model     : str              (η(ν) model label; absent when the term is off)
+  spillover_eta_coef  : list[float]      (η(ν) polynomial coefficients; same)
 ```
 
 ### 4.1 Representation choices
