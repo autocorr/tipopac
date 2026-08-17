@@ -191,7 +191,9 @@ def validate(ds: xr.Dataset) -> None:
             _check_var(ds, name, dims, dtype, kind="optional coord")
 
 
-def apply_flags(ds: xr.Dataset, var: str) -> xr.DataArray:
+def apply_flags(
+    ds: xr.Dataset, var: str, *, joint_over: tuple[str, ...] = ()
+) -> xr.DataArray:
     """Return `ds[var]` with flagged (or NaN-pad-flagged) samples masked.
 
     For full-rank variables this is `ds[var].where(~ds.flag)`. For
@@ -201,15 +203,19 @@ def apply_flags(ds: xr.Dataset, var: str) -> xr.DataArray:
     counts as flagged if any `(antenna, spw, polarization)` cell at that
     sample is flagged.
 
+    `joint_over` names dims to reduce with `.any` even when `var` carries
+    them: `joint_over=("polarization",)` gives the joint-R/L masking that
+    `fit.valid_samples` applies on the numpy fit path.
+
     Callers must use this helper instead of touching `ds[var]` directly
     for any reduction over the `time` axis (Tsys statistics, residual σ,
-    σ-clip masking) — see DESIGN.md §5 "Representation choices".
+    σ-clip masking) — see DESIGN.md §4.1 "Representation choices".
     """
     da = ds[var]
     flag = ds["flag"]
-    extra_dims = tuple(d for d in flag.dims if d not in da.dims)
-    if extra_dims:
-        flag = flag.any(dim=extra_dims)
+    reduce_dims = tuple(d for d in flag.dims if d not in da.dims or d in joint_over)
+    if reduce_dims:
+        flag = flag.any(dim=reduce_dims)
     return da.where(~flag)
 
 

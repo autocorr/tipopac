@@ -293,6 +293,26 @@ def test_apply_flags_partial_rank_any_semantics() -> None:
     assert np.isfinite(out.values[1, 0])
 
 
+def test_apply_flags_joint_over_collapses_a_dim_the_var_has() -> None:
+    ds = make_minimal_ds()
+    ds["flag"].values[0, 0, 0, 0, 2] = True
+    out = apply_flags(ds, "switched_diff", joint_over=("polarization",))
+    assert out.dims == ds["switched_diff"].dims
+    assert np.isnan(out.values[0, 0, 0, 0, 2])
+    assert np.isnan(out.values[0, 0, 0, 1, 2])
+    assert np.isfinite(out.values[0, 0, 0, 1, 1])
+    assert np.isfinite(out.values[1, 0, 0, 1, 2])
+
+
+def test_apply_flags_joint_over_naming_a_dim_the_var_lacks() -> None:
+    ds = make_minimal_ds()
+    ds["flag"].values[0, 0, 0, 0, 2] = True
+    joint = apply_flags(ds, "weather_T", joint_over=("antenna",))
+    plain = apply_flags(ds, "weather_T")
+    assert joint.dims == ("scan", "time")
+    np.testing.assert_array_equal(np.isnan(joint.values), np.isnan(plain.values))
+
+
 def test_apply_flags_missing_var_raises() -> None:
     ds = make_minimal_ds()
     with pytest.raises(KeyError):

@@ -31,6 +31,7 @@ from tipopac.physics import predicted_tsys
 from tipopac.schema import (
     SchemaError,
     antenna_weighted_tau,
+    apply_flags,
     inverse_variance_mean,
     select_group,
 )
@@ -280,8 +281,7 @@ class ElevationCurve(Plot):
     def build(self) -> alt.LayerChart | alt.FacetChart:
         cell = self.ds.sel(scan=self.scan, antenna=self.antenna, spw=self.spw)
 
-        good = ~cell["flag"].any(dim="polarization")
-        tsys_masked = cell["Tsys"].where(good)
+        tsys_masked = apply_flags(cell, "Tsys", joint_over=("polarization",))
         df = _to_df(
             xr.Dataset({"Tsys": tsys_masked, "zenith_angle": cell["zenith_angle"]}),
             dropna=["Tsys", "zenith_angle"],
@@ -956,7 +956,7 @@ class ResidualRmsHeatmap(_Heatmap):
 
     def _metric_array(self) -> xr.DataArray:
         pred = predicted_tsys(self.ds_sub)
-        resid = (self.ds_sub["Tsys"] - pred).where(~self.ds_sub["flag"])
+        resid = apply_flags(self.ds_sub, "Tsys") - pred
         rms = (resid**2).mean(dim=("polarization", "time")) ** 0.5
         return rms.astype(np.float64).round(2)
 

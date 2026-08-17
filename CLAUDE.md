@@ -49,7 +49,9 @@ The integration test is gated by `pytest.mark.slow` and needs the
   Downstream code simplification — deliberate.
 - **Time axis is per-scan-local and NaN-padded.** No MultiIndex; the
   `flag` array masks the pad. Reductions over `time` must go through
-  `schema.apply_flags(ds, var)`, never `ds[var]` directly.
+  `schema.apply_flags(ds, var)`, never `ds[var]` directly. The two
+  sanctioned exceptions (design.md §4.1) are `fit.valid_samples` on the
+  numpy fit path and station-level weather, which takes no flag mask.
 - **Online-flag application is one interval-overlap expression**, not
   the four-case interval expansion at v2.6 lines ~1117–1199. If a
   contributor reintroduces case splitting, push back.

@@ -228,6 +228,17 @@ def test_elevation_curve_tooltip_has_polarization_and_tsys() -> None:
     assert "zenith_angle" in fields
 
 
+def test_elevation_curve_drops_a_sample_flagged_in_one_polarization_only() -> None:
+    """Masking is joint over R/L, matching the samples the fit kept."""
+    ds = _make_plot_ds(success=True)
+    ds["flag"].values[0, 0, 0, 1, 2] = True  # L only, third time sample
+    chart = PlotData(ds).elevation_curve(scan=1, antenna="ea01", spw=0).build()
+    df = chart.layer[0].data
+    za_flagged = float(ds["zenith_angle"].values[0, 0, 2])
+    assert not (df["zenith_angle"] == round(za_flagged, 2)).any()
+    assert len(df) == 8
+
+
 def test_tau_vs_frequency_with_am_overlay() -> None:
     ds = _make_plot_ds(n_ant=2, n_spw=4, success=True, with_am=True)
     chart = PlotData(ds).tau_vs_frequency(scans=1).build()
@@ -805,6 +816,20 @@ def test_residual_rms_heatmap_matches_closed_form_offset() -> None:
 
     ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
     ds["Tsys"].values[:] = predicted_tsys(ds).values + 2.0
+    spec = PlotData(ds).residual_rms_heatmap(scans=1).build().to_dict()
+    rows = spec["datasets"][spec["data"]["name"]]
+    [row] = rows
+    assert abs(row["residual_rms_K"] - 2.0) < 1e-4
+
+
+def test_residual_rms_heatmap_excludes_flagged_samples() -> None:
+    """A flagged outlier leaves the closed-form 2 K RMS untouched."""
+    from tipopac.physics import predicted_tsys
+
+    ds = _make_plot_ds(n_scan=1, n_ant=1, n_spw=1, success=True)
+    ds["Tsys"].values[:] = predicted_tsys(ds).values + 2.0
+    ds["Tsys"].values[0, 0, 0, 0, 1] = 1e4
+    ds["flag"].values[0, 0, 0, 0, 1] = True
     spec = PlotData(ds).residual_rms_heatmap(scans=1).build().to_dict()
     rows = spec["datasets"][spec["data"]["name"]]
     [row] = rows

@@ -327,9 +327,17 @@ Attrs
   `ds["flag"]` masks the pad and any flagged sample.
 - **Flag-respecting projections.** `schema.apply_flags(ds, var)`
   returns `ds[var].where(~ds.flag)` (with `flag` reduced over any
-  dims missing from `var`). All reductions over `time` must go
+  dims missing from `var`, plus any named in `joint_over` —
+  `joint_over=("polarization",)` masks a sample in both pols if
+  either is flagged). All reductions over `time` must go
   through this helper; touching `ds[var]` directly silently
   contaminates the reduction with NaN-padding and flagged samples.
+  Two sanctioned exceptions: `fit.valid_samples`, the numpy joint-R/L
+  mask shared by Stage A and Stage C, which adds positivity and
+  finiteness screens the helper cannot express; and station-level
+  weather (`weather_T`, `weather_P`), which skips the NaN pad but takes
+  no flag mask, since collapsing per-antenna flags onto a station
+  quantity would reject weather samples for unrelated reasons.
 - **Pure-Python `xr.Dataset` is the science output.** Caltable writers
   (§9.2) are optional, gated, and the only path that links
   `casatools`. `result.dataset.to_netcdf(...)` / `.to_zarr(...)` is
