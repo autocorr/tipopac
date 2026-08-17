@@ -248,6 +248,38 @@ def test_fit_too_few_samples() -> None:
     assert ds["fit_reason"].values[0, 0, 0] == "too_few_samples"
 
 
+def test_fit_twmt_fallback_tolerates_a_nan_weather_sample() -> None:
+    """One NaN weather sample no longer NaNs Twmt and fails the whole cell."""
+    ds = _make_tip_ds()
+    ds["weather_T"].values[0, 4] = np.nan
+    fit_dataset(ds, mode="tau_per_antenna")
+    assert ds["fit_reason"].values[0, 0, 0] == "ok"
+    assert np.isfinite(ds["tau_zenith"].values[0, 0, 0])
+
+
+def test_fit_twmt_fallback_nan_weather_does_not_shift_tau() -> None:
+    """The surviving samples are identical, so the NaN must change nothing."""
+    ds_ref = _make_tip_ds()
+    fit_dataset(ds_ref, mode="tau_per_antenna")
+
+    ds_nan = _make_tip_ds()
+    ds_nan["weather_T"].values[0, 4] = np.nan
+    fit_dataset(ds_nan, mode="tau_per_antenna")
+
+    np.testing.assert_allclose(
+        ds_nan["tau_zenith"].values, ds_ref["tau_zenith"].values, rtol=1e-6
+    )
+
+
+def test_fit_twmt_fallback_all_nan_weather_is_fit_failed() -> None:
+    """No grid T_mean and no finite weather → reported, not raised."""
+    ds = _make_tip_ds()
+    ds["weather_T"].values[:] = np.nan
+    fit_dataset(ds, mode="tau_per_antenna")
+    assert ds["fit_reason"].values[0, 0, 0] == "fit_failed"
+    assert not bool(ds["fit_success"].values[0, 0, 0])
+
+
 def test_valid_samples_applies_tr_upper_to_both_pols() -> None:
     """The 300 K ceiling gates L as well as R (it used to gate R only)."""
     from tipopac.fit import _TR_UPPER, valid_samples

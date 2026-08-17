@@ -160,7 +160,9 @@ Each cell gets one `fit_reason`:
   repaired.
 - **`too_few_samples`** — fewer than 3 unflagged samples after rejection.
 - **`high_chi2`** — reduced $\chi^2 > 5$.
-- **`fit_failed`** — the optimizer raised or refused to converge.
+- **`fit_failed`** — the optimizer raised or refused to converge, or the
+  cell had no usable $T'_\mathrm{wmt}$ (no grid value and no finite surface
+  temperature).
 
 ## Stage B — per-antenna PWV anchor
 

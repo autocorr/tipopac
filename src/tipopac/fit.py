@@ -532,13 +532,21 @@ def _screen_antenna(
     sigma_R_v = sigma_R_all[valid].astype(np.float64)
     sigma_L_v = sigma_L_all[valid].astype(np.float64)
 
+    # Shared by the Twmt fallback and the spillover term; NaN weather samples
+    # are reachable and valid_samples does not screen them.
+    w_valid = weather_T[valid]
+    T_surf_mean = (
+        float(np.nanmean(w_valid)) if bool(np.isfinite(w_valid).any()) else np.nan
+    )
+
     if Twmt_override is not None and np.isfinite(Twmt_override):
         Twmt = float(Twmt_override)
-    else:
+    elif np.isfinite(T_surf_mean):
         # Ulvestad fallback: surface-T proxy when no grid T_mean is available
         # (e.g. legacy modes, or independent_tau with grid build failure).
-        T_surf_mean = float(np.mean(weather_T[valid]))
         Twmt = float(k2nt(mean_radiating_T(T_surf_mean), freq_Hz))
+    else:
+        return {"reason": "fit_failed"}
     # CMB radiation temperature at this spw; attenuated by the atmosphere
     # in the model, so it is not absorbed by the free T0.
     Tcmb = float(k2nt(T_CMB, freq_Hz))
@@ -546,9 +554,8 @@ def _screen_antenna(
     # Fixed (τ-independent) spillover term η(ν)·Bg·airmass, aligned to z_v.
     # Bg uses the scan's mean surface temperature (Rayleigh-Jeans-insensitive);
     # a missing weather record → no spillover on that cell rather than a NaN fit.
-    T_surf_spill = float(np.nanmean(weather_T[valid]))
-    if apply_spillover and np.isfinite(T_surf_spill):
-        spill_v = np.asarray(spillover_tsys(freq_Hz, T_surf_spill, z_v))
+    if apply_spillover and np.isfinite(T_surf_mean):
+        spill_v = np.asarray(spillover_tsys(freq_Hz, T_surf_mean, z_v))
     else:
         spill_v = np.zeros_like(z_v)
 

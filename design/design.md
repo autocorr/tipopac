@@ -401,7 +401,9 @@ sparse path to pay.
 native PWV via `anchor.compute_t_mean_grid`; it is already
 Rayleigh-Jeans noise K, so no further `k2nt` is applied. NaN cells fall
 back to `k2nt(mean_radiating_T(T_surface))` — that path *does* apply
-`k2nt`, its input being kinetic.
+`k2nt`, its input being kinetic. `T_surface` is the NaN-tolerant mean of
+the cell's kept weather samples; a cell reaching the fallback with no
+finite weather sample has no usable `Twmt` and is reported `fit_failed`.
 
 **Single physical bound set** (no escalation ladder):
 
@@ -440,7 +442,8 @@ diagonal entry on `τ_z` is stored as `tau_err`.
 - `too_few_samples` — fewer than 3 unflagged time samples after
   rejection.
 - `high_chi2` — reduced χ² > 5 after iterative rejection.
-- `fit_failed` — `least_squares` raised or refused to converge.
+- `fit_failed` — `least_squares` raised or refused to converge, or the
+  cell had no usable `Twmt`.
 
 The legacy v2.6 cascade (`_STD_RESI`, freq-dependent `_stdtsys` bins,
 `_DZ_MIN`, `_MZ_MIN`, mean-Tsys upper-limit, 3-pass bound escalation)
