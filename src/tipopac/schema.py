@@ -1,6 +1,6 @@
 """Canonical `xarray.Dataset` schema for tipopac.
 
-The schema is defined in DESIGN.md §5. This module exposes the contract
+The schema is defined in design.md §4. This module exposes the contract
 (`INPUT_DATA_VARS`, `REQUIRED_COORDS`, `OPTIONAL_DATA_VARS`, `POL_VALUES`),
 a validator (`validate`), and the flag-respecting projection helper
 (`apply_flags`) used by every reduction over the time axis.
@@ -27,7 +27,7 @@ __all__ = [
 
 
 class SchemaError(ValueError):
-    """Raised when a dataset does not conform to the §5 contract."""
+    """Raised when a dataset does not conform to the §4 contract."""
 
 
 INPUT_DATA_VARS: dict[str, tuple[tuple[str, ...], np.dtype]] = {
@@ -144,7 +144,7 @@ def _check_var(
 
 
 def validate(ds: xr.Dataset) -> None:
-    """Assert that `ds` conforms to the canonical schema (DESIGN.md §5).
+    """Assert that `ds` conforms to the canonical schema (design.md §4).
 
     Required dims, coords, and input data vars must be present with the
     listed dim signature and dtype. Optional vars (fit results, am output)
@@ -207,7 +207,7 @@ def apply_flags(
 
     Callers must use this helper instead of touching `ds[var]` directly
     for any reduction over the `time` axis (Tsys statistics, residual σ,
-    σ-clip masking) — see DESIGN.md §4.1 "Representation choices".
+    σ-clip masking) — see design.md §4.1 "Representation choices".
     """
     da = ds[var]
     flag = ds["flag"]
@@ -221,7 +221,7 @@ def select_group(ds: xr.Dataset, group: int) -> xr.Dataset:
     """Return the slice of `ds` belonging to time group `group`.
 
     The `group` dim is kept at length 1 rather than dropped, so the result
-    still satisfies the §5 contract and `validate` applies to it unchanged.
+    still satisfies the §4 contract and `validate` applies to it unchanged.
     Output writers (plots, tables, caltables) run against this slice instead
     of threading a group argument through every builder.
     """

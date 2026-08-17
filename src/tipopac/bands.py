@@ -153,7 +153,7 @@ def attach_selection_attrs(
 ) -> None:
     """Record scan / band selection provenance on `ds.attrs` in place.
 
-    Writes four attrs (see DESIGN.md §4):
+    Writes four attrs (see design.md §4):
       - ``scans_requested``: ``"all"`` or ``list[int]`` (raw user input).
       - ``bands_requested``: ``"default_high_freq"`` or ``list[str]``.
       - ``selected_scans``: resolved DO_SKYDIP scan ids on ``ds``.

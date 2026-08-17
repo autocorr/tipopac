@@ -1,4 +1,4 @@
-"""Unit tests for `tipopac.schema` (DESIGN.md §5)."""
+"""Unit tests for `tipopac.schema` (design.md §4)."""
 
 from __future__ import annotations
 

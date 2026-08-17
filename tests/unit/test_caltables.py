@@ -1,4 +1,4 @@
-"""Unit tests for tipopac.caltables (DESIGN.md §9.2)."""
+"""Unit tests for tipopac.caltables (design.md §9.2)."""
 
 from __future__ import annotations
 

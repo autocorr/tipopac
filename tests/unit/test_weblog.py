@@ -1,4 +1,4 @@
-"""Unit tests for tipopac.weblog (DESIGN.md §9.3)."""
+"""Unit tests for tipopac.weblog (design.md §9.3)."""
 
 from __future__ import annotations
 

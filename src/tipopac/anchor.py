@@ -9,9 +9,8 @@ no Hessian inversion, no SVD.
 
 Also exposes :func:`compute_t_mean_grid` — the Stage-A Twmt input
 (noise-K) per (scan, spw) sampled from the grid at each scan's unscaled
-profile PWV. Stage A uses this when the new ``independent_tau`` /
-``independent_tau_solve`` modes are active; the legacy modes keep the
-v2.6 ``0.95·T_surface`` form.
+profile PWV. Stage A uses it in both public modes; cells where it is
+NaN fall back to :func:`tipopac.physics.mean_radiating_T`.
 """
 
 from __future__ import annotations
@@ -71,9 +70,8 @@ def anchor_pwv(
     Notes
     -----
     Under ``independent_tau_solve`` mode the Stage-A τ_z(scan, spw) is
-    broadcast equal across all antennas (per the schema §5 convention),
-    so the per-antenna anchor returns identical PWV per antenna — the
-    ``shared_pwv`` semantics noted in the design. Under
+    broadcast equal across all antennas (per the schema §4 convention),
+    so the per-antenna anchor returns identical PWV per antenna. Under
     ``independent_tau`` the τ_z varies per (scan, ant, spw) and the
     fit produces a distinct PWV per antenna.
     """

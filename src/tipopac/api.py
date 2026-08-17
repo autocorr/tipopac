@@ -1,4 +1,4 @@
-"""Public API for tipopac — one-shot function and staged class (DESIGN.md §2)."""
+"""Public API for tipopac — one-shot function and staged class (design.md §2)."""
 
 from __future__ import annotations
 

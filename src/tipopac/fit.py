@@ -55,16 +55,15 @@ def fit_dataset(
     Parameters
     ----------
     ds:
-        Canonical xarray.Dataset (schema §5).
+        Canonical xarray.Dataset (schema §4).
     mode:
         One of the strings listed in the module docstring.
     t_mean:
         Optional ``(n_scan, n_spw)`` array of effective radiating
         temperatures (noise K, already Rayleigh-Jeans-corrected via
         :func:`tipopac.physics.k2nt`). When provided, the per-cell value
-        replaces the v2.6 ``k2nt(0.95·T_surface)`` heuristic for
-        Stage A. ``NaN`` entries fall back to the Ulvestad form on that
-        cell (design.md §5.3). ``T_mean`` from
+        is Stage A's Twmt; ``NaN`` entries fall back to the Ulvestad
+        form on that cell (design.md §5.3). ``T_mean`` from
         :func:`tipopac.anchor.compute_t_mean_grid` is the recommended feed.
     n_workers:
         If ``> 1``, dispatch Stage-A fit work via a
@@ -191,7 +190,7 @@ def fit_dataset(
             tau0 = global_result["tau0"]
             tau_err_val = global_result["tau_err"]
 
-            # tau_zenith broadcasts equal across ALL antennas (schema §5)
+            # tau_zenith broadcasts equal across ALL antennas (schema §4)
             tau_zenith[i_scan, :, i_spw] = tau0
             tau_err[i_scan, :, i_spw] = tau_err_val
 
@@ -536,7 +535,7 @@ def _screen_antenna(
         Twmt = float(Twmt_override)
     elif np.isfinite(T_surf_mean):
         # Ulvestad fallback: surface-T proxy when no grid T_mean is available
-        # (e.g. legacy modes, or independent_tau with grid build failure).
+        # for this cell.
         Twmt = float(k2nt(mean_radiating_T(T_surf_mean), freq_Hz))
     else:
         return {"reason": "fit_failed"}

@@ -1,4 +1,4 @@
-"""Unit tests for tipopac.plot (DESIGN.md §9.3)."""
+"""Unit tests for tipopac.plot (design.md §9.3)."""
 
 from __future__ import annotations
 

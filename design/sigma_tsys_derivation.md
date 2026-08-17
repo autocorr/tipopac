@@ -2,7 +2,7 @@
 
 Reference / pedagogical writeup of the formula computed in
 `tipopac.fit._compute_sigma_tsys`. The canonical implementation contract
-is `design/design.md` §5.3; this file shows the math step by step and
+is `design/design.md` §5.2; this file shows the math step by step and
 spells out the assumptions.
 
 The headline result:
@@ -361,7 +361,7 @@ Tsys²/T_c functional form over the naive Tsys/√BT.
 ## 8. Pointers
 
 - Implementation: `src/tipopac/fit.py` → `_compute_sigma_tsys`
-- Spec contract: `design/design.md` §5.3
+- Spec contract: `design/design.md` §5.2
 - Empirical validation: out-of-tree archive probe (§7); not in this
   repository
 - Related: AIPS Memo 199 (Perley/Butler) on VLA switched power; Rohlfs

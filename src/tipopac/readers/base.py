@@ -1,7 +1,7 @@
 """TippingReader Protocol and shared MS/SDM reader helpers.
 
 Both ``MSReader`` and ``SDMReader`` parse their format-specific tables into
-the *same* canonical :class:`xarray.Dataset` (DESIGN.md §5). The selection,
+the *same* canonical :class:`xarray.Dataset` (design.md §4). The selection,
 nearest-sample, and final-assembly logic is identical between them and lives
 here so the two readers cannot drift — the SDM↔MS parity contract.
 """
@@ -24,13 +24,19 @@ _log = logging.getLogger(__name__)
 
 
 class TippingReader(Protocol):
-    """Parse a tipping-data source into the canonical xarray.Dataset (DESIGN.md §5)."""
+    """Parse a tipping-data source into the canonical xarray.Dataset (design.md §4)."""
 
     @classmethod
     def supports(cls, path: Path) -> bool: ...
 
     @classmethod
-    def from_path(cls, path: Path) -> "TippingReader": ...
+    def from_path(
+        cls,
+        path: Path,
+        *,
+        scans: Sequence[int] | None = None,
+        bands: Sequence[str] | None = None,
+    ) -> "TippingReader": ...
 
     def read(self) -> xr.Dataset: ...
 

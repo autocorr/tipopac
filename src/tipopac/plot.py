@@ -1,4 +1,4 @@
-"""Interactive diagnostic plots for tipopac (DESIGN §9.3).
+"""Interactive diagnostic plots for tipopac (design.md §9.3).
 
 Each plot is a standalone vega-altair ``LayerChart`` that serialises to
 one self-contained ``.html`` with hover tooltips disclosing the

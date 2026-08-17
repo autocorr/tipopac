@@ -1,4 +1,4 @@
-"""Unit tests for tipopac.spillover — Tsys forward-model η(ν) term (DESIGN.md §5, §6)."""
+"""Unit tests for tipopac.spillover — Tsys forward-model η(ν) term (design.md §5.1, §6)."""
 
 from __future__ import annotations
 

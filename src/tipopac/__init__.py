@@ -3,8 +3,7 @@
 # ~4590 rows for the global tcal fit). 20× wall speedup measured at full
 # scale; pure overhead at small. Also a hard prerequisite for the
 # multiprocessing.Pool dispatch in fit.py — 40 workers × ~10 default BLAS
-# threads would oversubscribe a 40-core box.  See
-# design/performance_refactor_considerations.md §1.
+# threads would oversubscribe a 40-core box.
 #
 # `setdefault` so an explicit upstream export still wins.
 import os as _os

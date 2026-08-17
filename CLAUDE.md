@@ -8,9 +8,9 @@ tipping-curve opacity / Tcal estimation). The package is `tipopac` under
   first for ambiguities concerning API shape, schema, fit modes, the
   Stage-A/Stage-B fit architecture, or acceptance criteria. Flag
   disagreements with code and raise them to the user.
-- `tipopac_v2.6/lastversion/tipping/private/task_tipopac.py` — **read-
-  only** legacy reference (~1900 lines). Useful for understanding
-  behaviour; do not import from it and do not modify it.
+- `vendor/tipopac_v2.6/lastversion/tipping/private/task_tipopac.py` —
+  **read-only** legacy reference (~1900 lines). Useful for
+  understanding behaviour; do not import from it and do not modify it.
 - `old_context/` — superseded design notes (`initial_design.md`,
   `independent_tau_fit.md`, `model_refactor.md`, …). Historical
   context only; `design/design.md` overrides any of these on conflict.

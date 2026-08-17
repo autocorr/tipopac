@@ -1,7 +1,7 @@
 """SDMReader — read a VLA/ALMA Science Data Model into the canonical xarray.Dataset.
 
 Reads DO_SKYDIP tipping scans from `sdmpy` binary and XML tables.
-Returns a schema-valid `xr.Dataset` per DESIGN.md §5; flag application
+Returns a schema-valid `xr.Dataset` per design.md §4; flag application
 (online Flag.xml) is deferred to `flags.py`.
 
 Unit notes (verified against tip_test.sdm):

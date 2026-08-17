@@ -1,4 +1,4 @@
-"""Unit tests for tipopac.fit — all three modes (DESIGN.md §6.3, §11.1)."""
+"""Unit tests for tipopac.fit — both public modes (design.md §5.3)."""
 
 from __future__ import annotations
 
@@ -494,7 +494,7 @@ def test_fit_tcal_solve_recovers_params() -> None:
     noise_K=0.002 is intentionally low: at ≥0.01 K the bounded optimizer finds a
     local minimum where all c values shift by a common factor α and tau scales with
     α — the (T0, c, tau)→(T0·α, c·α, tau·α) near-degeneracy that v2.6 escaped via
-    multi-layer bound relaxation (DESIGN.md §12 deferred, §6.3 single-pass policy).
+    multi-layer bound relaxation (design.md §5.3 single-pass policy).
     """
     tau_true = 0.06
     c_R_true = [1.0, 1.05, 0.97]

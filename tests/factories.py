@@ -138,7 +138,7 @@ def make_fitted_dataset(
         )
 
     if with_atm:
-        # 10-level synthetic profile, 850 → 10 hPa. Stored in Pa (schema §5).
+        # 10-level synthetic profile, 850 → 10 hPa. Stored in Pa (schema §4).
         atm_p_hPa = np.array(
             [850, 700, 500, 300, 200, 100, 50, 30, 20, 10], dtype=np.float64
         )

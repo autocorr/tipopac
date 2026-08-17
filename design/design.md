@@ -67,6 +67,7 @@ result: Result = tipopac(
     afgl_climatology="auto",                         # | "midlatitude_summer" | ...
     group_duration_s=7200.0,                         # Stage-B time grouping; None = one group
     min_airmass_span=0.3,                            # Stage-C leverage floor; below it c is NaN
+    spillover_model=True,                            # in-fit η(ν) ground-pickup term (§6)
     n_workers=None,                                  # int → multiprocessing.Pool
     output_dir=Path("."),                            # dir for all outputs; None = compute-only
     caltable_opacity=False,                          # opt-in CASA TOpac table → output_dir/tipopac.opacity
@@ -143,9 +144,10 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
 - `build_atm_grids(pwv_step_mm, freq_step_Hz, n_workers)` — precompute
   per-scan `PwvGrid` and stash on `self._grids` (§7.2). Auto-calls
   `fetch_atm_profile` if needed.
-- `fit(mode, n_workers, group_duration_s, min_airmass_span)` — Stage A
-  + Stage B, plus Stage C under `independent_tau`. Auto-calls
-  `build_atm_grids` if needed. After this `result` is available.
+- `fit(mode, n_workers, group_duration_s, min_airmass_span,
+  spillover_model)` — Stage A + Stage B, plus Stage C under
+  `independent_tau`. Auto-calls `build_atm_grids` if needed. After this
+  `result` is available.
 - `plot(out_dir)` — interactive plot `.html` files via
   `plot.PlotData(ds).save_all`.
 - `weblog(plot_dir)` — self-contained GUI `index.html` over the
@@ -195,7 +197,9 @@ SPW NAME (`SPECTRAL_WINDOW.NAME` in the MS, `SpectralWindow.xml`
 and drops SPWs whose band is not in the user's allowlist. The SDM's
 `Receiver.xml` `<frequencyBand>` carries the same information and is
 the equivalent SDM-only source. A scan whose SPWs are all dropped by
-the band filter is removed from the dataset. The selection helpers
+the band filter is removed from the dataset — or raises if it was
+explicitly requested, matching `validate_scan_selection`'s raise-on-miss
+behaviour. The selection helpers
 (`band_for_spw_name`, `normalize_bands`, `validate_scan_selection`,
 `select_spws_by_band`) live in `tipopac.bands` and are shared between
 both readers — the MS↔SDM parity contract extends to selection
@@ -207,22 +211,36 @@ clock, so any antenna with data yields the same axis). A scan with no
 SYSPOWER samples is dropped with a warning — or raises if it was
 explicitly requested — via the shared `_drop_empty_scans` helper.
 
+Two divergences the parity contract tolerates, because the formats offer
+no equivalent path: the MS takes each scan's SPW set from
+`msmd.spwsforscan`, while the SDM derives it from the SPWs present in a
+SysPower time mask over the scan window; and SDM weather reads only the
+`Station_0` rows, the WX monitor, where the MS WEATHER subtable is
+already single-station.
+
 ### SDM ↔ MS column mapping
 
 Both readers must produce datasets that pass `schema.validate(ds)` —
 identical dims, coords, dtypes. The mapping below is the parity
 contract.
 
-| MS subtable / column                                      | SDM table                  | sdmpy access pattern                                                |
+| MS subtable / column                                      | SDM table                  | SDM access pattern                                                  |
 | --------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------- |
 | `ANTENNA.NAME`                                            | `Antenna.xml`              | `sdm['Antenna'][i].name`                                            |
-| `SPECTRAL_WINDOW.REF_FREQUENCY/NUM_CHAN/TOTAL_BANDWIDTH`  | `SpectralWindow.xml`       | `sdm['SpectralWindow'][spw_id]`                                     |
-| `POINTING.TIME/ENCODER`                                   | `Pointing.xml`             | `sdm['Pointing'][ant_id, time_id]`                                  |
-| `SYSPOWER.TIME/SWITCHED_DIFF/SWITCHED_SUM`                | `SysPower.xml`             | `sdm['SysPower'][ant_id, feed_id, spw_id]`                          |
-| `CALDEVICE.NOISE_CAL`                                     | `CalDevice.xml`            | iterate rows; row key `(antennaId, feedId, spectralWindowId)`; load 0 = noise tube; R = col 3, L = col 3+ncols |
-| `WEATHER.TIME/TEMPERATURE/REL_HUMIDITY/PRESSURE`          | `Weather.xml`              | `sdm['Weather'][station, time]`                                     |
-| scan intent `*DO_SKYDIP*`                                 | `Scan.xml` + `Subscan.xml` | `sdm['Scan'][i].scanIntent` / `sdm['Subscan'][i,j].subscanIntent`   |
+| `ANTENNA.POSITION`                                        | `Station.xml`              | `station.position`, ITRF metres, via each antenna's `stationId`      |
+| `SPECTRAL_WINDOW.REF_FREQUENCY/TOTAL_BANDWIDTH/NAME`      | `SpectralWindow.xml`       | `sdm['SpectralWindow'][spw_id]`; `NAME`/`<name>` carries the band label |
+| `POINTING.TIME/ENCODER`                                   | `Pointing.xml`             | `_fastbin.unpack_pointing`, sdmpy fallback                          |
+| `SYSPOWER.TIME/SWITCHED_DIFF/SWITCHED_SUM`                | `SysPower.xml`             | `_fastbin.unpack_syspower`, sdmpy fallback                          |
+| `SYSPOWER.INTERVAL` (when present)                        | `SysPower.xml`             | first of `interval`/`duration`/`integrationTime` present, ns         |
+| `CALDEVICE.NOISE_CAL/ANTENNA_ID/SPECTRAL_WINDOW_ID`       | `CalDevice.xml`            | iterate rows; row key `(antennaId, feedId, spectralWindowId)`; load 0 = noise tube; R = col 3, L = col 3+ncols |
+| `WEATHER.TIME/TEMPERATURE/REL_HUMIDITY/PRESSURE`          | `Weather.xml`              | iterate rows; `Station_0` only                                      |
+| `WEATHER.TEMPERATURE_FLAG` (when present)                 | —                          | MS-only; flagged rows become NaN                                    |
+| scan intent `*DO_SKYDIP*`                                 | `Scan.xml`                 | `sdm['Scan'][i].scanIntent`                                         |
 | `FLAG_CMD` (online flags)                                 | `Flag.xml`                 | iterate rows; `reason`, `startTime`/`endTime` ns, `antennaId` array  |
+
+The two binary-heavy tables go through `readers/_fastbin.py`, a direct
+walker over the `.bin` payloads; sdmpy is the fallback when the layout
+does not parse.
 
 ---
 
@@ -279,6 +297,7 @@ Data variables — fit results (filled by fit.py)
   T0            (scan, antenna, spw, polarization)         float32   K
   tcal_fit      (scan, antenna, spw, polarization)         float32   K   Stage C (or the legacy joint fit); NaN where not measured
   sigma_tcal    (scan, antenna, spw, polarization)         float32   K   Stage C only; finite ⇔ tcal_fit was measured
+  Twmt          (scan, spw)                                float32   K   the Twmt each cell was fitted with (grid T_mean, or the Ulvestad fallback)
   fit_success   (scan, antenna, spw)                       bool
   fit_reason    (scan, antenna, spw)                       str
 
@@ -309,6 +328,8 @@ Attrs
   selected_bands      : list[str]           (sorted unique band labels present after filtering)
   atm_profile_source  : "open_meteo" | "afgl_<climatology>"
   open_meteo_query    : dict | None      (provenance: lat, lon, time, endpoint, model)
+  spillover_model     : str              (η(ν) model label; both absent when the
+  spillover_eta_coef  : list[float]       spillover term is switched off)
 ```
 
 ### 4.1 Representation choices
@@ -349,11 +370,11 @@ Attrs
 
 ### 5.1 Physics primitives (`physics.py`)
 
-- `tsys_model(z_deg, T0, tau0, Twmt, Tcmb, spill) = T0 + Tcmb·exp(−τ₀/cos z)
-  + Twmt·(1 − exp(−τ₀/cos z)) + spill`, `Tcmb = k2nt(T_CMB, ν)`. The tipping
+- `tsys_model(z_deg, T0, tau0, Twmt, Tcmb, spillover) = T0 + Tcmb·exp(−τ₀/cos z)
+  + Twmt·(1 − exp(−τ₀/cos z)) + spillover`, `Tcmb = k2nt(T_CMB, ν)`. The tipping
   amplitude is `(Twmt − Tcmb)`; omitting the CMB term biases τ low by
-  ~0.8%. `spill = η(ν)·k2nt(T_surf,ν)·airmass` is the fixed
-  (τ-independent) spillover term (§6); `spill = 0` disables it.
+  ~0.8%. `spillover = η(ν)·k2nt(T_surf,ν)·airmass` is the fixed
+  (τ-independent) spillover term (§6); `spillover = 0` disables it.
 - `T_CMB = 2.725` K (Fixsen 2009).
 - `k2nt(T_K, ν_Hz) = T·(hν/kT) / (exp(hν/kT) − 1)` — Nyquist
   (Rayleigh-Jeans) correction.
@@ -543,11 +564,12 @@ from the `THIG0007_wide_CXUKAQ` campaign — a single config, so a config-depend
 
 **Outputs on the dataset.**
 
-- `pwv(antenna)`, `pwv_err(antenna)`.
-- `am_freq_grid(frequency_dense)`, `am_tau(frequency_dense)` — a
-  representative am τ(ν) slice sampled from the reference grid at
-  the median fitted PWV (falling back to `pwv_unscaled_mm` if every
-  antenna is NaN). Used for the plot overlay.
+- `pwv(group, antenna)`, `pwv_err(group, antenna)`.
+- `am_freq_grid(frequency_dense)` — the axis, shared by all groups —
+  and `am_tau(group, frequency_dense)`, a representative am τ(ν) slice
+  per group, sampled from the reference grid at that group's median
+  fitted PWV (falling back to `pwv_unscaled_mm` if every antenna is
+  NaN). Used for the plot overlay.
 
 ---
 
@@ -642,6 +664,13 @@ stores them on `TippingAnalysis._grids[scan_id]`. Auto-calls
 `fetch_atm_profile` if `atm_pressure` is not yet on the dataset.
 Writes the `pwv_profile_source(scan,)` data var for provenance.
 
+Scans whose am inputs match — identical profile above the surface level
+and surface pressures within 0.2 hPa — share one grid object, so a short
+observation on a single hourly profile costs one am run rather than one
+per scan. `PwvGrid` is frozen and read-only downstream, so sharing is
+safe. This is the whole of the analysis's am work: §1's "am runs once
+per analysis" means no am call happens after this step.
+
 The frequency axis spans 1–51 GHz on exact `freq_step_Hz` nodes,
 extended outward in whole steps when the observed spws plus a ±5 %
 margin fall outside it. The span is wider than the tipping data so
@@ -663,7 +692,11 @@ class PwvGrid:
     profile_source: str             # provenance label
 ```
 
-Two read methods:
+Two `cached_property` fields derive from those: `trj_z` (`tb_z` in
+Rayleigh-Jeans noise K — the linear coordinate for any arithmetic
+combining sky terms) and `tmean` (the atmosphere-only radiating
+temperature, CMB-subtracted). Both are `(n_pwv, n_freq)` and back the
+`T_mean` returned by the two read methods:
 
 - `lookup(pwv_mm, freqs_Hz) -> (τ, T_mean)` — `T_mean` is the
   atmosphere-only mean brightness in **RJ noise K**, derived from
@@ -728,7 +761,9 @@ None) -> None` updates `ds["flag"]` in place.
 
 ### 9.2 Optional CASA caltables
 
-Gated by the corresponding `caltable_*` argument being non-None.
+Gated by the corresponding `caltable_*` argument: a boolean on the
+public `tipopac()` / `write_outputs()` surface, which resolves it to the
+output path (or `None`) that the inner `write_caltables` gates on.
 Both keep `casatools.calibrater` / `casatools.table` as runtime
 imports. "No CASA at runtime" in this project means we don't depend
 on `buildmytasks` or a `casa` process; it does not mean zero
@@ -736,7 +771,7 @@ on `buildmytasks` or a `casa` process; it does not mean zero
 
 - **Opacity caltable (`TOpac`).** `cb.createcaltable(name, "Real",
   "TOpac", True)`, then `tb.putcell` row-by-row with TIME, FIELD_ID,
-  SPECTRAL_WINDOW_ID, ANTENNA1, ANTENNA2=−1, SCAN_NUMBER, FPARAM=τ₀,
+  SPECTRAL_WINDOW_ID, ANTENNA1, ANTENNA2=−1, SCAN_NUMBER, FPARAM,
   PARAMERR, FLAG, SNR. Schema matches v2.6 so downstream `applycal`
   works unchanged. Requires `tau_zenith`, `tau_err`, `fit_success`.
   Rows are enumerated `(scan, spw, antenna)` — spw slow, antenna fast

@@ -1,4 +1,4 @@
-"""Unit tests for tipopac.flags (DESIGN.md §8, §11.1).
+"""Unit tests for tipopac.flags (design.md §8).
 
 The five interval-overlap cases confirm that one boolean expression
     (time_utc >= t_start) & (time_utc <= t_end)

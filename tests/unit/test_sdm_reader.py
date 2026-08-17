@@ -3,7 +3,7 @@
 Fast tests exercise supports() and helper logic without loading the SDM.
 Slow tests require data/tip_test.sdm and data/tip_test.ms, and include a
 field-by-field parity check between the two readers on the shared observation
-(DESIGN.md §4, lines 187–189).
+(design.md §3 — the SDM↔MS parity contract).
 """
 
 from __future__ import annotations

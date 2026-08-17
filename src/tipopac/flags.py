@@ -1,4 +1,4 @@
-"""Online and user-file flag application for tipopac (DESIGN.md §8).
+"""Online and user-file flag application for tipopac (design.md §8).
 
 Public entry point: `apply(ds, online, file)` — updates ds['flag'] in-place.
 

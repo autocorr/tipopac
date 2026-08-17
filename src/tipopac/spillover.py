@@ -1,4 +1,4 @@
-"""Instrumental spillover as a Tsys forward-model term (DESIGN.md §5, §6).
+"""Instrumental spillover as a Tsys forward-model term (design.md §5.1, §6).
 
 Ground emission entering the antenna sidelobes is *not* attenuated by the sky
 column, so it adds a Tsys contribution ``∝ airmass`` that a naive opacity fit

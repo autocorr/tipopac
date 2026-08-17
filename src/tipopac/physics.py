@@ -1,4 +1,4 @@
-"""Physics primitives for tipopac (DESIGN.md §6.1).
+"""Physics primitives for tipopac (design.md §5.1).
 
 Constants match v2.6 (task_tipopac.py:109-112).
 """

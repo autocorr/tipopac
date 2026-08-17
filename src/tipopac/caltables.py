@@ -1,4 +1,4 @@
-"""CASA-format caltable writers for tipopac (DESIGN.md §9.2).
+"""CASA-format caltable writers for tipopac (design.md §9.2).
 
 Public entry points:
   `write_opacity(ds, path)` — write a TOpac calibration table.

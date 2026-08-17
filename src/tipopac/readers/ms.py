@@ -1,7 +1,7 @@
 """MSReader — read a CASA Measurement Set into the canonical xarray.Dataset.
 
 Reads DO_SKYDIP tipping scans from `casatools.table` and
-`casatools.msmetadata`.  Returns a schema-valid `xr.Dataset` per DESIGN.md §5;
+`casatools.msmetadata`.  Returns a schema-valid `xr.Dataset` per design.md §4;
 flag application (online FLAG_CMD) is deferred to `flags.py`.
 
 Unit notes (confirmed against tip_test.ms):

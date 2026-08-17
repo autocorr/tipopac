@@ -1,4 +1,4 @@
-"""Atmospheric opacity model: am + open-meteo or AFGL fallback (DESIGN.md §7).
+"""Atmospheric opacity model: am + open-meteo or AFGL fallback (design.md §7).
 
 Public entry point
 ------------------
