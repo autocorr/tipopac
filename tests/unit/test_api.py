@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from tipopac.api import TippingAnalysis, _grid_freq_span
+from tipopac.api import TippingAnalysis, _grid_freq_span, _module_version
 from tipopac.atmgrid import PwvGrid
 
 
@@ -53,6 +53,37 @@ def _make_ds(
         },
         attrs={"atm_profile_source": "afgl_midlatitude_winter"},
     )
+
+
+def test_module_version_falls_back_to_distribution_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Modules with no ``__version__`` (casatools, sdmpy) report the installed one."""
+    import importlib
+    import importlib.metadata
+    import types
+
+    monkeypatch.setattr(importlib, "import_module", lambda name: types.ModuleType(name))
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "1.71.2")
+
+    assert _module_version("sdmpy") == "1.71.2"
+
+
+def test_module_version_unavailable_when_import_fails() -> None:
+    """A module that cannot be imported reports the sentinel, not a crash."""
+    assert _module_version("no_such_module_qqq") == "unavailable"
+
+
+def test_software_versions_attr_written_at_construction() -> None:
+    """The §4 attr lands on the dataset, so any archive of it keeps provenance."""
+    ds = _make_ds(1, atm_p_Pa=np.array([[85000.0, 50000.0]]), surface_P_hPa=None)
+
+    TippingAnalysis(ds, Path("fake.ms"))
+
+    versions = ds.attrs["software_versions"]
+    assert isinstance(versions, dict)
+    assert set(versions) == {"tipopac", "casatools", "sdmpy", "amwrap", "am"}
+    assert all(isinstance(v, str) and v for v in versions.values())
 
 
 def test_build_atm_grids_reuses_grid_for_identical_inputs(

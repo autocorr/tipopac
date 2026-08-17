@@ -59,6 +59,13 @@ def _messy_dataset() -> xr.Dataset:
         "endpoint": "historical-forecast-api",
         "model": "gfs_hrrr",
     }
+    ds.attrs["software_versions"] = {
+        "tipopac": "0.1.0",
+        "casatools": "6.7.0.31",
+        "sdmpy": "1.62",
+        "amwrap": "0.3.0",
+        "am": "am 14.0",
+    }
     return ds
 
 
@@ -99,6 +106,11 @@ def test_write_dataset_netcdf_roundtrip(tmp_path: Path) -> None:
         decoded = json.loads(reopened.attrs["open_meteo_query"])
         assert decoded["model"] == "gfs_hrrr"
         assert decoded["endpoint"] == "historical-forecast-api"
+        # Provenance survives the archive round trip (design.md §4).
+        assert (
+            json.loads(reopened.attrs["software_versions"])
+            == ds.attrs["software_versions"]
+        )
     finally:
         reopened.close()
 

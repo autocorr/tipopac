@@ -37,8 +37,13 @@ def _grid_freq_span(
 
 
 def _module_version(name: str) -> str:
-    """Return ``module.__version__``, or a sentinel if import/attr fails."""
+    """Return the module's version, or a sentinel if import/lookup fails.
+
+    ``__version__`` first, then the installed distribution metadata —
+    ``casatools`` and ``sdmpy`` carry no ``__version__``.
+    """
     import importlib
+    import importlib.metadata
 
     from tipopac._casa import import_casatools
 
@@ -48,18 +53,22 @@ def _module_version(name: str) -> str:
         )
     except Exception:
         return "unavailable"
-    return str(getattr(mod, "__version__", "unknown"))
+    declared = getattr(mod, "__version__", None)
+    if declared is not None:
+        return str(declared)
+    try:
+        return importlib.metadata.version(name)
+    except Exception:
+        return "unknown"
 
 
 def _software_versions() -> dict[str, str]:
     versions = {n: _module_version(n) for n in ("casatools", "sdmpy", "amwrap")}
     try:
-        import subprocess
+        import amwrap
 
-        r = subprocess.run(["am", "--version"], capture_output=True, text=True)
-        versions["am"] = (
-            (r.stdout or r.stderr).splitlines()[0] if r.returncode == 0 else "unknown"
-        )
+        # am-serial is the executable the grid workers run (atmgrid:285).
+        versions["am"] = str(amwrap.AM_SERIAL.version)
     except Exception:
         versions["am"] = "unavailable"
     try:
@@ -293,6 +302,7 @@ class TippingAnalysis:
         self._path = path
         self._mode: str | None = None
         self._versions = _software_versions()
+        ds.attrs["software_versions"] = self._versions
         self._grids: dict[int, PwvGrid] = {}
 
     @classmethod
