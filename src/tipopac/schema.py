@@ -20,6 +20,7 @@ __all__ = [
     "SchemaError",
     "antenna_weighted_tau",
     "apply_flags",
+    "inverse_variance_mean",
     "select_group",
     "validate",
 ]
@@ -241,13 +242,21 @@ def antenna_weighted_tau(ds: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]:
     Cells with non-finite τ or non-positive σ carry zero weight; a
     `(scan, spw)` with no contributing antenna yields NaN in both outputs.
     """
-    tau = ds["tau_zenith"].astype(np.float64)
-    err = ds["tau_err"].astype(np.float64)
-
-    weight = (1.0 / err**2).where(np.isfinite(tau) & (err > 0.0), 0.0)
-    weight_sum = weight.sum(dim="antenna").where(lambda w: w > 0.0)
-    tau_mean = ((tau.fillna(0.0) * weight).sum(dim="antenna") / weight_sum).transpose(
-        "scan", "spw"
+    tau_mean, err_mean = inverse_variance_mean(
+        ds["tau_zenith"], ds["tau_err"], dim="antenna"
     )
-    err_mean = ((1.0 / weight_sum) ** 0.5).transpose("scan", "spw")
-    return tau_mean, err_mean
+    return tau_mean.transpose("scan", "spw"), err_mean.transpose("scan", "spw")
+
+
+def inverse_variance_mean(
+    values: xr.DataArray, err: xr.DataArray, *, dim: str
+) -> tuple[xr.DataArray, xr.DataArray]:
+    """Return the 1/σ²-weighted `(mean, err)` of `values` over `dim`."""
+    values = values.astype(np.float64)
+    err = err.astype(np.float64)
+
+    err = err.where(np.isfinite(values) & (err > 0.0))
+    weight = (1.0 / err**2).fillna(0.0)
+    weight_sum = weight.sum(dim=dim).where(lambda w: w > 0.0)
+    mean = (values.fillna(0.0) * weight).sum(dim=dim) / weight_sum
+    return mean, (1.0 / weight_sum) ** 0.5

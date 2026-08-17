@@ -11,6 +11,7 @@ import xarray as xr
 
 from tipopac import schema
 from tipopac.plot import PlotData
+from tipopac.tables import measured_opacity_table
 from tipopac.timeutils import assign_groups
 
 
@@ -308,6 +309,41 @@ def test_tau_vs_frequency_mean_toggle_leaves_mean_unfiltered() -> None:
     mean_rows = spec["datasets"][mean_layer["data"]["name"]]
     assert "antenna" not in mean_rows[0]
     assert len(mean_rows) == 3  # n_spw, not n_ant * n_spw
+
+
+def test_tau_vs_frequency_mean_survives_a_zero_tau_err_antenna() -> None:
+    """A zero σ must be dropped from the weighting, not made an infinite weight."""
+    ds = _make_plot_ds(n_ant=3, n_spw=2, success=True)
+    ds["tau_err"].values[0, 0, 0] = 0.0
+
+    spec = PlotData(ds).tau_vs_frequency(scans=1).build().to_dict()
+    mean_rows = spec["datasets"][spec["layer"][1]["data"]["name"]]
+    assert len(mean_rows) == 2  # both spws, not just the unaffected one
+    row = next(r for r in mean_rows if r["spw"] == 0)
+    assert np.isfinite(row["mean_tau"])
+
+
+def test_tau_vs_frequency_mean_agrees_with_the_measured_opacity_table() -> None:
+    """One reduction: the overlay and measured_opacity.tsv must not diverge."""
+    ds = _make_plot_ds(n_ant=3, n_spw=2, success=True)
+    ds["tau_err"].values[0, 0, 0] = 0.0
+
+    spec = PlotData(ds).tau_vs_frequency(scans=1).build().to_dict()
+    mean_rows = spec["datasets"][spec["layer"][1]["data"]["name"]]
+    columns, rows = measured_opacity_table(ds)
+    i_spw, i_tau = columns.index("spw"), columns.index("tau_measured")
+
+    for row in rows:
+        overlay = next(r for r in mean_rows if r["spw"] == row[i_spw])
+        assert overlay["mean_tau"] == pytest.approx(row[i_tau], abs=5e-5)
+
+
+def test_summary_mean_tau_survives_a_zero_tau_err_antenna() -> None:
+    ds = _make_plot_ds(n_ant=3, n_spw=2, success=True, tau_shared=True)
+    ds["tau_err"].values[0, 0, 0] = 0.0
+
+    body = PlotData(ds).summary()._render()
+    assert "<th>Mean τ</th><td>0.0500</td>" in body
 
 
 def _frequency_charts(pd_obj: PlotData) -> dict[str, alt.LayerChart]:

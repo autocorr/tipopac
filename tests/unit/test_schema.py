@@ -11,6 +11,7 @@ from tipopac.schema import (
     SchemaError,
     antenna_weighted_tau,
     apply_flags,
+    inverse_variance_mean,
     select_group,
     validate,
 )
@@ -365,3 +366,51 @@ def test_antenna_weighted_tau_all_invalid_is_nan() -> None:
     tau, err = antenna_weighted_tau(ds)
     assert np.isnan(tau.values[0, 0])
     assert np.isnan(err.values[0, 0])
+
+
+# ---------------------------------------------------------------------------
+# inverse_variance_mean
+# ---------------------------------------------------------------------------
+
+
+def test_inverse_variance_mean_matches_closed_form() -> None:
+    values = xr.DataArray([1.0, 2.0, 4.0], dims="spw")
+    err = xr.DataArray([0.5, 1.0, 2.0], dims="spw")
+
+    mean, mean_err = inverse_variance_mean(values, err, dim="spw")
+    weight = 1.0 / err.values**2
+    np.testing.assert_allclose(
+        mean.values, (values.values * weight).sum() / weight.sum(), rtol=1e-12
+    )
+    np.testing.assert_allclose(mean_err.values, weight.sum() ** -0.5, rtol=1e-12)
+
+
+def test_inverse_variance_mean_excludes_zero_and_negative_err() -> None:
+    values = xr.DataArray([0.10, 0.99, 0.99, 0.99], dims="spw")
+    err = xr.DataArray([0.01, 0.0, -0.01, np.nan], dims="spw")
+
+    mean, mean_err = inverse_variance_mean(values, err, dim="spw")
+    np.testing.assert_allclose(mean.values, 0.10, rtol=1e-12)
+    np.testing.assert_allclose(mean_err.values, 0.01, rtol=1e-12)
+
+
+@pytest.mark.parametrize("zeroed", [False, True])
+def test_inverse_variance_mean_sequential_equals_joint(zeroed: bool) -> None:
+    """The summary row collapses (antenna, spw) one dim at a time; that is exact.
+
+    `err` of the inner mean is `(Σ w)^-1/2`, so the outer pass re-weights each
+    inner mean by exactly the weight it accumulated — excluded cells included.
+    """
+    rng = np.random.default_rng(0)
+    values = xr.DataArray(rng.uniform(0.01, 0.2, (3, 4)), dims=("antenna", "spw"))
+    err = xr.DataArray(rng.uniform(0.001, 0.01, (3, 4)), dims=("antenna", "spw"))
+    if zeroed:
+        err.values[0, 0] = 0.0
+
+    step, step_err = inverse_variance_mean(values, err, dim="antenna")
+    sequential, sequential_err = inverse_variance_mean(step, step_err, dim="spw")
+    weight = np.where(err.values > 0.0, 1.0 / err.values**2, 0.0)
+    np.testing.assert_allclose(
+        sequential.values, (values.values * weight).sum() / weight.sum(), rtol=1e-12
+    )
+    np.testing.assert_allclose(sequential_err.values, weight.sum() ** -0.5, rtol=1e-12)

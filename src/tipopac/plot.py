@@ -28,7 +28,12 @@ import pandas as pd
 import xarray as xr
 
 from tipopac.physics import predicted_tsys
-from tipopac.schema import SchemaError, select_group
+from tipopac.schema import (
+    SchemaError,
+    antenna_weighted_tau,
+    inverse_variance_mean,
+    select_group,
+)
 from tipopac.tables import am_tau_1d
 from tipopac.timeutils import mjd_s_to_unix_s
 
@@ -367,10 +372,7 @@ class TauVsFrequency(_QuantityVsFrequency):
         y_title = "Zenith optical depth [nepers]"
         per_antenna = not _antenna_degenerate(ds_sub["tau_zenith"])
 
-        # Weighted mean per spw across antennas. Keep scan in the dims so each
-        # scan*spw combination shows as one mean point.
-        weights = (1.0 / ds_sub["tau_err"] ** 2).fillna(0.0)
-        mean_da = ds_sub["tau_zenith"].weighted(weights).mean(dim="antenna")
+        mean_da, _ = antenna_weighted_tau(ds_sub)
         mean_df = _to_df(
             mean_da,
             name="mean_tau",
@@ -1167,8 +1169,8 @@ class Summary(_HtmlPage):
 
         # Row 4: weighted mean tau across (antenna, spw).
         if "tau_zenith" in ds.data_vars and "tau_err" in ds.data_vars:
-            weights = (1.0 / ds["tau_err"] ** 2).fillna(0.0)
-            mean_tau = ds["tau_zenith"].weighted(weights).mean(dim=("antenna", "spw"))
+            tau_mean, tau_err_mean = antenna_weighted_tau(ds)
+            mean_tau, _ = inverse_variance_mean(tau_mean, tau_err_mean, dim="spw")
             mean_tau_strs = [self._fmt(v, ".4f") for v in mean_tau.values]
         else:
             mean_tau_strs = [self._MISSING] * len(scans)
