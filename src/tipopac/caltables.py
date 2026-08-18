@@ -29,6 +29,13 @@ _log = logging.getLogger(__name__)
 _CAL_LOAD_NAMES = np.array([["NOISE_TUBE_LOAD"], ["SOLAR_FILTER"]])
 
 
+def _require_vars(ds: xr.Dataset, names: tuple[str, ...], caller: str) -> None:
+    """Raise before any table is created if *ds* lacks a required var."""
+    missing = [v for v in names if v not in ds.data_vars]
+    if missing:
+        raise ValueError(f"{caller} requires {missing!r} on the dataset; run fit first")
+
+
 # ---------------------------------------------------------------------------
 # Public functions
 # ---------------------------------------------------------------------------
@@ -40,6 +47,8 @@ def write_opacity(ds: xr.Dataset, path: str | Path) -> None:
     Requires: tau_zenith, tau_err, fit_success in ds.data_vars.
     Uses ds.attrs["source_path"] as the template MS for schema creation.
     """
+    _require_vars(ds, ("tau_zenith", "tau_err", "fit_success"), "write_opacity")
+
     casatools = import_casatools()
 
     msname = ds.attrs["source_path"]
@@ -70,11 +79,7 @@ def write_tcal(ds: xr.Dataset, path: str | Path) -> None:
     Requires: tcal_fit and tcal_ref in ds.data_vars.
     Uses ds.attrs["source_path"] to copy the CALDEVICE schema.
     """
-    missing = [v for v in ("tcal_fit", "tcal_ref") if v not in ds.data_vars]
-    if missing:
-        raise ValueError(
-            f"write_tcal requires {missing!r} on the dataset; run fit first"
-        )
+    _require_vars(ds, ("tcal_fit", "tcal_ref"), "write_tcal")
 
     casatools = import_casatools()
 

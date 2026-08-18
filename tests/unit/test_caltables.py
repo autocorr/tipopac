@@ -10,7 +10,7 @@ import xarray as xr
 
 from pathlib import Path
 
-from tipopac import physics, schema
+from tipopac import caltables, physics, schema
 from tipopac.caltables import (
     _build_opacity_rows,
     _build_tcal_rows,
@@ -333,6 +333,40 @@ def test_build_tcal_rows_falls_back_to_tcal_ref() -> None:
     np.testing.assert_allclose(
         row["NOISE_CAL"][0], ds["tcal_ref"].values[0, 0, :], rtol=1e-6
     )
+
+
+# ---------------------------------------------------------------------------
+# write_opacity guard
+# ---------------------------------------------------------------------------
+
+
+def test_write_opacity_requires_fit_vars(tmp_path: Path) -> None:
+    ds = _make_tip_ds(n_scan=1, n_ant=1, n_spw=1)
+    with pytest.raises(ValueError) as exc:
+        write_opacity(ds, tmp_path / "o.cal")
+    for name in ("tau_zenith", "tau_err", "fit_success"):
+        assert name in str(exc.value)
+
+
+@pytest.mark.parametrize("var", ["tau_zenith", "tau_err", "fit_success"])
+def test_write_opacity_requires_each_fit_var(tmp_path: Path, var: str) -> None:
+    ds = _make_fitted_ds(n_scan=1, n_ant=1, n_spw=1).drop_vars(var)
+    with pytest.raises(ValueError, match=var):
+        write_opacity(ds, tmp_path / "o.cal")
+
+
+def test_write_opacity_guard_precedes_casa(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard runs before createcaltable, so no partial table is left behind."""
+
+    def _boom() -> None:
+        raise AssertionError("casatools imported before the guard raised")
+
+    monkeypatch.setattr(caltables, "import_casatools", _boom)
+    ds = _make_tip_ds(n_scan=1, n_ant=1, n_spw=1)
+    with pytest.raises(ValueError, match="tau_zenith"):
+        write_opacity(ds, tmp_path / "o.cal")
 
 
 # ---------------------------------------------------------------------------
