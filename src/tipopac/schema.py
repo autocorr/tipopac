@@ -22,6 +22,7 @@ __all__ = [
     "apply_flags",
     "inverse_variance_mean",
     "select_group",
+    "surface_T_mean",
     "validate",
 ]
 
@@ -215,6 +216,19 @@ def apply_flags(
     if reduce_dims:
         flag = flag.any(dim=reduce_dims)
     return da.where(~flag)
+
+
+def surface_T_mean(ds: xr.Dataset) -> xr.DataArray:
+    """Return the per-scan mean surface temperature `(scan,)` in K.
+
+    The canonical `T_surf`: the Stage-A Twmt fallback and spillover term
+    (`fit`), the Stage-C spillover term (`tcal`), and the `predicted_tsys`
+    reconstruction must all read this, so the residual a plot shows is the
+    residual the fit minimised. Station-level weather takes no flag mask
+    (design.md §4.1); the NaN pad drops out of the mean, and a scan with no
+    finite sample yields NaN.
+    """
+    return ds["weather_T"].mean(dim="time")
 
 
 def select_group(ds: xr.Dataset, group: int) -> xr.Dataset:

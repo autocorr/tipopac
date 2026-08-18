@@ -271,6 +271,22 @@ def test_fit_twmt_fallback_nan_weather_does_not_shift_tau() -> None:
     )
 
 
+def test_fit_t_surf_is_the_whole_scan_mean_not_the_kept_samples() -> None:
+    """Stage A reads the per-scan T_surf, so flagging samples cannot shift it.
+
+    Weather ramps 270→290 K about the 280 K used to synthesise Tsys; flagging
+    the cold third leaves the kept-sample mean 3.5 K high, which biases the
+    Ulvestad Twmt and τ with it.
+    """
+    ds = _make_tip_ds(noise_K=0.0, n_time=30)
+    ds["weather_T"].values[0, :] = np.linspace(270.0, 290.0, 30).astype(np.float32)
+    ds["flag"].values[0, 0, 0, :, :10] = True
+    fit_dataset(ds, mode="tau_per_antenna", spillover_model=False)
+    assert ds["fit_reason"].values[0, 0, 0] == "ok"
+    np.testing.assert_allclose(ds["tau_zenith"].values[0, 0, 0], 0.04, rtol=1e-4)
+
+
+@pytest.mark.filterwarnings("error:Mean of empty slice")
 def test_fit_twmt_fallback_all_nan_weather_is_fit_failed() -> None:
     """No grid T_mean and no finite weather → reported, not raised."""
     ds = _make_tip_ds()
@@ -349,7 +365,7 @@ def test_screen_antenna_kept_samples_match_the_fitted_mask(
         sigma.copy(),
         flag,
         flag.copy(),
-        np.full(z.size, T_surf),
+        T_surf,
         freq_Hz,
         1.0,
     )

@@ -358,7 +358,8 @@ Attrs
   finiteness screens the helper cannot express; and station-level
   weather (`weather_T`, `weather_P`), which skips the NaN pad but takes
   no flag mask, since collapsing per-antenna flags onto a station
-  quantity would reject weather samples for unrelated reasons.
+  quantity would reject weather samples for unrelated reasons —
+  `schema.surface_T_mean` is the canonical `T_surf` reduction.
 - **Pure-Python `xr.Dataset` is the science output.** Caltable writers
   (§9.2) are optional, gated, and the only path that links
   `casatools`. `result.dataset.to_netcdf(...)` / `.to_zarr(...)` is
@@ -430,9 +431,10 @@ sparse path to pay.
 native PWV via `anchor.compute_t_mean_grid`; it is already
 Rayleigh-Jeans noise K, so no further `k2nt` is applied. NaN cells fall
 back to `k2nt(mean_radiating_T(T_surface))` — that path *does* apply
-`k2nt`, its input being kinetic. `T_surface` is the NaN-tolerant mean of
-the cell's kept weather samples; a cell reaching the fallback with no
-finite weather sample has no usable `Twmt` and is reported `fit_failed`.
+`k2nt`, its input being kinetic. `T_surface` is `schema.surface_T_mean`,
+the per-scan NaN-tolerant mean of `weather_T`, shared with the spillover
+term and `physics.predicted_tsys`; a scan with no finite weather sample
+has no usable `Twmt` and its cells are reported `fit_failed`.
 
 **Single physical bound set** (no escalation ladder):
 

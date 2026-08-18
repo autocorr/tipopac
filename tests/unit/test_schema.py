@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -13,6 +15,7 @@ from tipopac.schema import (
     apply_flags,
     inverse_variance_mean,
     select_group,
+    surface_T_mean,
     validate,
 )
 from tipopac.timeutils import assign_groups
@@ -317,6 +320,32 @@ def test_apply_flags_missing_var_raises() -> None:
     ds = make_minimal_ds()
     with pytest.raises(KeyError):
         apply_flags(ds, "no_such_var")
+
+
+# ---------------------------------------------------------------------------
+# surface_T_mean
+# ---------------------------------------------------------------------------
+
+
+def test_surface_T_mean_skips_the_nan_pad() -> None:
+    ds = make_minimal_ds()
+    ds["weather_T"].values[0, 2:] = np.nan
+    out = surface_T_mean(ds)
+    assert out.dims == ("scan",)
+    np.testing.assert_allclose(
+        out.values, np.nanmean(ds["weather_T"].values, axis=1), rtol=1e-6
+    )
+
+
+def test_surface_T_mean_all_nan_scan_is_nan_without_warning() -> None:
+    """An all-NaN row yields NaN; np.nanmean would warn 'Mean of empty slice'."""
+    ds = make_minimal_ds()
+    ds["weather_T"].values[1, :] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = surface_T_mean(ds)
+    assert np.isfinite(out.values[0])
+    assert np.isnan(out.values[1])
 
 
 # ---------------------------------------------------------------------------

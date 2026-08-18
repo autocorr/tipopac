@@ -8,6 +8,8 @@ from __future__ import annotations
 import numpy as np
 import xarray as xr
 
+from tipopac.schema import surface_T_mean
+
 # Scalar-or-array type accepted by all public functions here. DataArray is
 # included so callers can keep xarray's broadcast-by-dim-name semantics.
 _Numeric = float | np.ndarray | xr.DataArray
@@ -72,9 +74,9 @@ def predicted_tsys(
     (``ds.attrs["spillover_model"]`` set), ``tau_zenith`` is already
     spillover-free, so the same ``η(ν)·Bg·airmass`` term is *added* to the
     model here (inside ``/c`` — ground pickup precedes the Tcal gain) to match
-    the measured Tsys. ``Bg`` uses the per-scan mean surface temperature,
-    ``ds["weather_T"].mean("time")``, which broadcasts cleanly over both the
-    per-sample and dense-grid ``z_deg`` shapes.
+    the measured Tsys. ``Bg`` uses ``schema.surface_T_mean(ds)`` —
+    the same per-scan ``T_surf`` the fit used — which broadcasts cleanly over
+    both the per-sample and dense-grid ``z_deg`` shapes.
 
     ``Tcmb`` is derived from the ``frequency`` coord rather than persisted:
     it is a pure function of ν, so storing it would be redundant state.
@@ -89,7 +91,7 @@ def predicted_tsys(
     if ds.attrs.get("spillover_model"):
         from tipopac.spillover import spillover_tsys
 
-        T_surf = ds["weather_T"].mean(dim="time")
+        T_surf = surface_T_mean(ds)
         pred = pred + spillover_tsys(ds["frequency"], T_surf, z_deg)
     return pred / c
 

@@ -33,7 +33,7 @@ from tipopac.fit import (
     valid_samples,
 )
 from tipopac.physics import T_CMB, k2nt
-from tipopac.schema import SchemaError, select_group
+from tipopac.schema import SchemaError, select_group, surface_T_mean
 from tipopac.spillover import spillover_tsys
 from tipopac.tables import _model_at
 
@@ -141,7 +141,7 @@ def solve_tcal(ds: xr.Dataset, *, min_airmass_span: float = _MIN_AIRMASS_SPAN) -
     zenith = ds["zenith_angle"].values
     twmt = np.asarray(ds["Twmt"].values, dtype=np.float64)
     tcal_ref = ds["tcal_ref"].values
-    t_surf = np.nanmean(ds["weather_T"].values, axis=1)
+    t_surf = surface_T_mean(ds).values
     apply_spillover = bool(ds.attrs.get("spillover_model"))
 
     c_out = np.full((n_scan, n_ant, n_spw, 2), np.nan)

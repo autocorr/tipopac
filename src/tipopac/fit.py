@@ -25,6 +25,7 @@ import xarray as xr
 from scipy.optimize import least_squares
 
 from tipopac.physics import T_CMB, k2nt, mean_radiating_T
+from tipopac.schema import surface_T_mean
 from tipopac.spillover import ETA_MODEL_NAME, ETA_POLY_COEF, spillover_tsys
 
 __all__ = ["fit_dataset", "valid_samples"]
@@ -111,11 +112,11 @@ def fit_dataset(
 
     flag_vals = ds["flag"].values  # (scan, ant, spw, pol, time)
     zenith_vals = ds["zenith_angle"].values  # (scan, ant, time)
-    weather_T_vals = ds["weather_T"].values  # (scan, time)
+    t_surf_vals = surface_T_mean(ds).values.astype(np.float64)  # (scan,)
     tcal_ref_vals = ds["tcal_ref"].values  # (ant, spw, pol)
     freq_vals = ds.coords["frequency"].values  # (spw,) Hz
 
-    twmt_out = _compute_twmt_grid(weather_T_vals, freq_vals, t_mean)
+    twmt_out = _compute_twmt_grid(t_surf_vals, freq_vals, t_mean)
 
     if mode == "tau_per_antenna":
         tasks = list(
@@ -127,7 +128,7 @@ def fit_dataset(
                 Tsys_arr,
                 sigma_vals,
                 flag_vals,
-                weather_T_vals,
+                t_surf_vals,
                 freq_vals,
                 t_mean,
                 spillover_model,
@@ -161,7 +162,7 @@ def fit_dataset(
                 Tsys_arr,
                 sigma_vals,
                 flag_vals,
-                weather_T_vals,
+                t_surf_vals,
                 freq_vals,
                 t_mean,
                 spillover_model,
@@ -289,18 +290,18 @@ def _compute_sigma_tsys(ds: xr.Dataset) -> xr.DataArray:
 
 
 def _compute_twmt_grid(
-    weather_T_vals: np.ndarray,
+    t_surf: np.ndarray,
     freq_vals: np.ndarray,
     t_mean: np.ndarray | None,
 ) -> np.ndarray:
     """Per-(scan, spw) Twmt actually used by the fit.
 
-    Mirrors `_screen_antenna`'s resolution rule: take `t_mean[scan, spw]`
-    when finite, else fall back to `k2nt(256.9 + 0.445·<T_surf>°C, ν)`.
+    Same resolution rule as `_screen_antenna`, on the same `T_surf`: take
+    `t_mean[scan, spw]` when finite, else fall back to
+    `k2nt(256.9 + 0.445·<T_surf>°C, ν)`.
     """
-    surf_mean = np.nanmean(weather_T_vals, axis=1)  # (scan,) — weather, no flags
-    # Ulvestad fallback per (scan, spw); NaN surf_mean propagates to NaN.
-    surf_T = np.asarray(mean_radiating_T(surf_mean))[:, None]  # (scan, 1)
+    # Ulvestad fallback per (scan, spw); NaN t_surf propagates to NaN.
+    surf_T = np.asarray(mean_radiating_T(t_surf))[:, None]  # (scan, 1)
     with np.errstate(divide="ignore", invalid="ignore"):
         ulvestad = np.asarray(k2nt(surf_T, freq_vals[None, :]))  # (scan, spw)
     if t_mean is None:
@@ -493,7 +494,7 @@ def _screen_antenna(
     sigma_L_all: np.ndarray,
     flag_R: np.ndarray,
     flag_L: np.ndarray,
-    weather_T: np.ndarray,
+    T_surf: float,
     freq_Hz: float,
     tau_upper: float,
     Twmt_override: float | None = None,
@@ -524,19 +525,12 @@ def _screen_antenna(
     sigma_R_v = sigma_R_all[valid].astype(np.float64)
     sigma_L_v = sigma_L_all[valid].astype(np.float64)
 
-    # Shared by the Twmt fallback and the spillover term; NaN weather samples
-    # are reachable and valid_samples does not screen them.
-    w_valid = weather_T[valid]
-    T_surf_mean = (
-        float(np.nanmean(w_valid)) if bool(np.isfinite(w_valid).any()) else np.nan
-    )
-
     if Twmt_override is not None and np.isfinite(Twmt_override):
         Twmt = float(Twmt_override)
-    elif np.isfinite(T_surf_mean):
+    elif np.isfinite(T_surf):
         # Ulvestad fallback: surface-T proxy when no grid T_mean is available
         # for this cell.
-        Twmt = float(k2nt(mean_radiating_T(T_surf_mean), freq_Hz))
+        Twmt = float(k2nt(mean_radiating_T(T_surf), freq_Hz))
     else:
         return {"reason": "fit_failed"}
     # CMB radiation temperature at this spw; attenuated by the atmosphere
@@ -546,8 +540,8 @@ def _screen_antenna(
     # Fixed (τ-independent) spillover term η(ν)·Bg·airmass, aligned to z_v.
     # Bg uses the scan's mean surface temperature (Rayleigh-Jeans-insensitive);
     # a missing weather record → no spillover on that cell rather than a NaN fit.
-    if apply_spillover and np.isfinite(T_surf_mean):
-        spill_v = np.asarray(spillover_tsys(freq_Hz, T_surf_mean, z_v))
+    if apply_spillover and np.isfinite(T_surf):
+        spill_v = np.asarray(spillover_tsys(freq_Hz, T_surf, z_v))
     else:
         spill_v = np.zeros_like(z_v)
 
@@ -672,7 +666,7 @@ def _fit_tau_per_antenna(
     sigma_L_all: np.ndarray,
     flag_R: np.ndarray,
     flag_L: np.ndarray,
-    weather_T: np.ndarray,
+    T_surf: float,
     freq_Hz: float,
     tau_upper: float,
     Twmt_override: float | None = None,
@@ -692,7 +686,7 @@ def _fit_tau_per_antenna(
         sigma_L_all,
         flag_R,
         flag_L,
-        weather_T,
+        T_surf,
         freq_Hz,
         tau_upper,
         Twmt_override=Twmt_override,
@@ -797,7 +791,7 @@ def _build_opacity_tasks(
     Tsys_arr: np.ndarray,
     sigma_vals: np.ndarray,
     flag_vals: np.ndarray,
-    weather_T_vals: np.ndarray,
+    t_surf_vals: np.ndarray,
     freq_vals: np.ndarray,
     t_mean: np.ndarray | None,
     apply_spillover: bool,
@@ -820,7 +814,7 @@ def _build_opacity_tasks(
                     "sigma_L_all": sigma_vals[i_scan, i_ant, i_spw, 1, :],
                     "flag_R": flag_vals[i_scan, i_ant, i_spw, 0, :],
                     "flag_L": flag_vals[i_scan, i_ant, i_spw, 1, :],
-                    "weather_T": weather_T_vals[i_scan, :],
+                    "T_surf": float(t_surf_vals[i_scan]),
                     "freq_Hz": freq_Hz,
                     "tau_upper": _TAU_HI,
                     "Twmt_override": twmt,
@@ -837,7 +831,7 @@ def _build_global_tasks(
     Tsys_arr: np.ndarray,
     sigma_vals: np.ndarray,
     flag_vals: np.ndarray,
-    weather_T_vals: np.ndarray,
+    t_surf_vals: np.ndarray,
     freq_vals: np.ndarray,
     t_mean: np.ndarray | None,
     apply_spillover: bool,
@@ -871,7 +865,7 @@ def _build_global_tasks(
                 )
             kw = {
                 "per_ant": per_ant,
-                "weather_T": weather_T_vals[i_scan, :],
+                "T_surf": float(t_surf_vals[i_scan]),
                 "freq_Hz": freq_Hz,
                 "tau_upper": _TAU_HI,
                 "Twmt_override": twmt,
@@ -890,7 +884,7 @@ def _global_worker(args: tuple) -> tuple:
     """Module-level worker: per-antenna screen + global fit for one cell."""
     key, kwargs = args
     per_ant = kwargs["per_ant"]
-    weather_T = kwargs["weather_T"]
+    T_surf = kwargs["T_surf"]
     freq_Hz = kwargs["freq_Hz"]
     tau_upper = kwargs["tau_upper"]
     Twmt_override = kwargs["Twmt_override"]
@@ -901,7 +895,7 @@ def _global_worker(args: tuple) -> tuple:
     for ant_in in per_ant:
         sc = _screen_antenna(
             **ant_in,
-            weather_T=weather_T,
+            T_surf=T_surf,
             freq_Hz=freq_Hz,
             tau_upper=tau_upper,
             Twmt_override=Twmt_override,
