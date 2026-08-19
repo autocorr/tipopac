@@ -26,7 +26,11 @@ from tipopac.readers.base import (
     SkydipScanInfo,
     _apply_selection,
     _drop_empty_scans,
+    _map_ids,
     _nearest_idx,
+    _scatter_syspower,
+    _slot_indices,
+    _slot_medians,
     build_canonical_dataset,
 )
 
@@ -416,37 +420,45 @@ def _build_dataset(
         )
         sub.close()
 
+        slot_idx = _slot_indices(ts, sp_times)
+
         # exposure_time per scan-local time slot: take median across all
         # SYSPOWER rows at that timestamp (antennas+spws share the dump cycle)
         if np.isfinite(sp_interval).any():
-            for j_t, t_val in enumerate(ts):
-                mask_t = sp_times == t_val
-                if mask_t.any():
-                    exposure_time[i, j_t] = np.nanmedian(sp_interval[mask_t])
+            matched = slot_idx >= 0
+            exposure_time[i, :n_t] = _slot_medians(
+                slot_idx[matched], sp_interval[matched], n_t
+            )
         # fallback: derive from time differences if INTERVAL missing or all-NaN
         if not np.isfinite(exposure_time[i, :n_t]).any() and n_t >= 2:
             dt = np.diff(ts)
             exposure_time[i, :n_t] = float(np.median(dt))
 
-        # build a time → scan-local index map for this scan
-        t_to_idx: dict[float, int] = {float(t): j for j, t in enumerate(ts)}
+        ant_idx = sp_ant.astype(np.intp)
+        spw_idx = _map_ids(sp_spw, lambda s: spw_to_idx.get(int(s), -1))
+        in_scan = np.zeros(n_spw, dtype=bool)
+        for s in sc_spw_set & spw_to_idx.keys():
+            in_scan[spw_to_idx[s]] = True
+        keep = (
+            (ant_idx >= 0)
+            & (ant_idx < n_ant)
+            & (spw_idx >= 0)
+            & (slot_idx >= 0)
+            & in_scan[spw_idx]
+        )
+        ant_idx, spw_idx, slot_idx = ant_idx[keep], spw_idx[keep], slot_idx[keep]
 
-        for row in range(len(sp_times)):
-            a = int(sp_ant[row])
-            s = int(sp_spw[row])
-            if s not in spw_to_idx or s not in sc_spw_set:
-                continue
-            w = spw_to_idx[s]
-            t_key = float(sp_times[row])
-            j = t_to_idx.get(t_key)
-            if j is None:
-                continue
-            switched_diff[i, a, w, 0, j] = sp_diff[0, row]
-            switched_diff[i, a, w, 1, j] = sp_diff[1, row]
-            switched_sum[i, a, w, 0, j] = sp_sum[0, row]
-            switched_sum[i, a, w, 1, j] = sp_sum[1, row]
-            # unflag every cell that got real data
-            flag[i, a, w, :, j] = False
+        _scatter_syspower(
+            scan=i,
+            ant_idx=ant_idx,
+            spw_idx=spw_idx,
+            slot_idx=slot_idx,
+            diff=sp_diff.T[keep],
+            total=sp_sum.T[keep],
+            switched_diff=switched_diff,
+            switched_sum=switched_sum,
+            flag=flag,
+        )
 
     tb.close()
 

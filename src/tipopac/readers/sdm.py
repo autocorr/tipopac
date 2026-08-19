@@ -30,7 +30,11 @@ from tipopac.readers.base import (
     SkydipScanInfo,
     _apply_selection,
     _drop_empty_scans,
+    _map_ids,
     _nearest_idx,
+    _scatter_syspower,
+    _slot_indices,
+    _slot_medians,
     build_canonical_dataset,
 )
 
@@ -478,42 +482,44 @@ def _build_dataset(
         if sc_sp.shape[0] == 0:
             continue
 
-        # build time → scan-local index map
-        t_to_j: dict[float, int] = {float(t): j for j, t in enumerate(ts)}
-
         sp_times = sc_sp["timeMid"].astype(np.float64) / 1e9
-        sp_ant_ids = sc_sp["antennaId"]
-        sp_spw_ids = sc_sp["spectralWindowId"]
         sp_diff = sc_sp["switchedPowerDifference"]  # (n_rows, 2)
         sp_sum = sc_sp["switchedPowerSum"]  # (n_rows, 2)
+        slot_idx = _slot_indices(ts, sp_times)
 
         # exposure per scan-local time slot: SysPower interval is in ns
         if sp_interval_field is not None:
             sp_dur_s = sc_sp[sp_interval_field].astype(np.float64) / 1e9
-            for j_t, t_val in enumerate(ts):
-                mask_t = np.isclose(sp_times, t_val)
-                if mask_t.any():
-                    exposure_time[i, j_t] = float(np.nanmedian(sp_dur_s[mask_t]))
+            matched = slot_idx >= 0
+            exposure_time[i, :n_t] = _slot_medians(
+                slot_idx[matched], sp_dur_s[matched], n_t
+            )
         if not np.isfinite(exposure_time[i, :n_t]).any() and n_t >= 2:
             dt = np.diff(ts)
             exposure_time[i, :n_t] = float(np.median(dt))
 
-        for row in range(sc_sp.shape[0]):
-            a = ant_id_to_idx.get(str(sp_ant_ids[row]))
-            spw_int = spw_id_to_idx.get(str(sp_spw_ids[row]))
-            if a is None or spw_int is None or spw_int not in sc_spw_set:
-                continue
-            if spw_int not in spw_to_idx:
-                continue
-            w = spw_to_idx[spw_int]
-            j = t_to_j.get(float(sp_times[row]))
-            if j is None:
-                continue
-            switched_diff[i, a, w, 0, j] = sp_diff[row, 0]
-            switched_diff[i, a, w, 1, j] = sp_diff[row, 1]
-            switched_sum[i, a, w, 0, j] = sp_sum[row, 0]
-            switched_sum[i, a, w, 1, j] = sp_sum[row, 1]
-            flag[i, a, w, :, j] = False
+        ant_idx = _map_ids(sc_sp["antennaId"], lambda a: ant_id_to_idx.get(str(a), -1))
+        spw_idx = _map_ids(
+            sc_sp["spectralWindowId"],
+            lambda w: spw_to_idx.get(spw_id_to_idx.get(str(w), -1), -1),
+        )
+        in_scan = np.zeros(n_spw, dtype=bool)
+        for spw_int in sc_spw_set & spw_to_idx.keys():
+            in_scan[spw_to_idx[spw_int]] = True
+        keep = (ant_idx >= 0) & (spw_idx >= 0) & (slot_idx >= 0) & in_scan[spw_idx]
+        ant_idx, spw_idx, slot_idx = ant_idx[keep], spw_idx[keep], slot_idx[keep]
+
+        _scatter_syspower(
+            scan=i,
+            ant_idx=ant_idx,
+            spw_idx=spw_idx,
+            slot_idx=slot_idx,
+            diff=sp_diff[keep],
+            total=sp_sum[keep],
+            switched_diff=switched_diff,
+            switched_sum=switched_sum,
+            flag=flag,
+        )
 
     # pad positions must stay flagged
     for i in range(n_scan):

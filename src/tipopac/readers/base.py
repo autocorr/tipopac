@@ -9,10 +9,10 @@ here so the two readers cannot drift — the SDM↔MS parity contract.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 import xarray as xr
@@ -155,6 +155,51 @@ def _nearest_idx(ref_times: np.ndarray, query_times: np.ndarray) -> np.ndarray:
     )
     idx[use_left] = left[use_left]
     return idx
+
+
+def _map_ids(ids: np.ndarray, key: Callable[[Any], int]) -> np.ndarray:
+    """Map an id column to row indices through `key`, which returns -1 when unmapped."""
+    uniq, inv = np.unique(ids, return_inverse=True)
+    lut = np.array([key(u) for u in uniq], dtype=np.intp)
+    return lut[inv]
+
+
+def _slot_indices(ts: np.ndarray, row_times: np.ndarray) -> np.ndarray:
+    """Map row timestamps onto scan-local time slots; -1 where no slot matches exactly."""
+    j = np.clip(np.searchsorted(ts, row_times), 0, len(ts) - 1)
+    return np.where(ts[j] == row_times, j, -1)
+
+
+def _scatter_syspower(
+    *,
+    scan: int,
+    ant_idx: np.ndarray,
+    spw_idx: np.ndarray,
+    slot_idx: np.ndarray,
+    diff: np.ndarray,
+    total: np.ndarray,
+    switched_diff: np.ndarray,
+    switched_sum: np.ndarray,
+    flag: np.ndarray,
+) -> None:
+    """Scatter one scan's SYSPOWER rows into the (ant, spw, pol, time) cubes."""
+    for pol in (0, 1):
+        switched_diff[scan, ant_idx, spw_idx, pol, slot_idx] = diff[:, pol]
+        switched_sum[scan, ant_idx, spw_idx, pol, slot_idx] = total[:, pol]
+        flag[scan, ant_idx, spw_idx, pol, slot_idx] = False
+
+
+def _slot_medians(slot_idx: np.ndarray, values: np.ndarray, n_t: int) -> np.ndarray:
+    """Per-time-slot median of `values`, grouped by scan-local slot index."""
+    out = np.full(n_t, np.nan, dtype=np.float64)
+    if slot_idx.size == 0:
+        return out
+    order = np.argsort(slot_idx, kind="stable")
+    slots, values = slot_idx[order], values[order]
+    uniq, starts = np.unique(slots, return_index=True)
+    for slot, group in zip(uniq, np.split(values, starts[1:]), strict=True):
+        out[slot] = np.nanmedian(group)
+    return out
 
 
 def build_canonical_dataset(
