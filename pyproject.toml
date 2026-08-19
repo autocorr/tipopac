@@ -8,9 +8,12 @@ packages = ["src/tipopac"]
 [project]
 name = "tipopac"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fit VLA tipping scans to measure zenith atmospheric opacity and noise-diode (Tcal) temperatures."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Brian E. Svoboda", email = "brian.e.svoboda@gmail.com" }]
 dependencies = [
     "altair[all]>=6.2.1",
     "amwrap",
@@ -24,6 +27,12 @@ dependencies = [
     "sdmpy>=1.71.2",
     "xarray>=2024.10",
 ]
+
+[project.urls]
+Homepage = "https://autocorr.github.io/tipopac/"
+Documentation = "https://autocorr.github.io/tipopac/"
+Repository = "https://github.com/autocorr/tipopac"
+Issues = "https://github.com/autocorr/tipopac/issues"
 
 [tool.uv.sources]
 amwrap = { git = "https://github.com/autocorr/amwrap" }
