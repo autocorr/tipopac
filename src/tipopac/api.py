@@ -505,7 +505,7 @@ class TippingAnalysis:
         # drives both the Stage A T_mean input and the Stage B PWV anchor
         # against τ_z(ν).
         if not self._grids:
-            self.build_atm_grids()
+            self.build_atm_grids(n_workers=n_workers)
 
         freqs_Hz = self._ds.coords["frequency"].values
         # `_grids` is keyed by the scan_id *value* (matches the rest of

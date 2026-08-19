@@ -298,3 +298,23 @@ def test_write_caltables_writes_only_what_it_is_given(
 
     ta.write_caltables(tcal=tmp_path / "t.cal")
     assert written == ["tcal"]
+
+
+def test_fit_forwards_n_workers_to_the_auto_grid_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The staged auto-build path sizes the am pool from `fit`'s own argument."""
+    seen: dict[str, Any] = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _record(self: TippingAnalysis, **kwargs: Any) -> None:
+        seen.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr(TippingAnalysis, "build_atm_grids", _record)
+    ta = TippingAnalysis(_output_ds(), Path("fake.ms"))
+    with pytest.raises(_Stop):
+        ta.fit(n_workers=5)
+    assert seen == {"n_workers": 5}

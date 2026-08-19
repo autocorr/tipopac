@@ -146,8 +146,8 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
   `fetch_atm_profile` if needed.
 - `fit(mode, n_workers, group_duration_s, min_airmass_span,
   spillover_model)` — Stage A + Stage B, plus Stage C under
-  `independent_tau`. Auto-calls `build_atm_grids` if needed. After this
-  `result` is available.
+  `independent_tau`. Auto-calls `build_atm_grids` if needed, passing its
+  own `n_workers`. After this `result` is available.
 - `plot(out_dir)` — interactive plot `.html` files via
   `plot.PlotData(ds).save_all`.
 - `weblog(plot_dir)` — self-contained GUI `index.html` over the
