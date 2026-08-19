@@ -129,7 +129,7 @@ def anchor_pwv(
         # Cramér–Rao σ_PWV at the fitted PWV.
         inv_var = 0.0
         for i_sc, _tz, te, fv in per_scan:
-            _, _, dtau_dpwv, _ = grids[i_sc].lookup_with_grad(pwv_star, fv)
+            dtau_dpwv = grids[i_sc].dtau_dpwv(pwv_star, fv)
             w = (dtau_dpwv / te) ** 2
             inv_var += float(np.sum(w))
         if inv_var > 0.0:

@@ -7,8 +7,8 @@ many times in a process pool — one am call per grid point, never
 ``parallel=True``, per-worker ``cache_dir`` to avoid am-cache contention.
 
 The fitter consumes the grid via :meth:`PwvGrid.lookup` (τ_z, T_mean)
-and :meth:`PwvGrid.lookup_with_grad` (adds ∂/∂PWV via the linear
-interpolant's analytical slope). ``T_mean`` is returned in Rayleigh-Jeans
+and :meth:`PwvGrid.dtau_dpwv` (∂τ_z/∂PWV via the linear interpolant's
+analytical slope). ``T_mean`` is returned in Rayleigh-Jeans
 noise K — am's Planck ``Tb`` is converted via :attr:`PwvGrid.trj_z` before
 any sky-term arithmetic, never after.
 """
@@ -142,6 +142,17 @@ class PwvGrid:
         trj_atm = self.trj_z - k2nt(_T_CMB, self.freq_Hz[None, :]) * np.exp(-self.tau_z)
         return trj_atm / np.maximum(absorb, eps)
 
+    def _pwv_bracket(self, pwv_mm: float) -> tuple[int, int, float, float]:
+        """Bracketing indices, weight and PWV step (1.0 on a one-point grid)."""
+        pwv_c = float(np.clip(pwv_mm, self.pwv_mm[0], self.pwv_mm[-1]))
+        i_hi = int(np.searchsorted(self.pwv_mm, pwv_c, side="right"))
+        i_hi = min(i_hi, len(self.pwv_mm) - 1)
+        i_lo = max(i_hi - 1, 0)
+        if i_hi == i_lo:
+            return i_lo, i_hi, 0.0, 1.0
+        dpwv = self.pwv_mm[i_hi] - self.pwv_mm[i_lo]
+        return i_lo, i_hi, (pwv_c - self.pwv_mm[i_lo]) / dpwv, dpwv
+
     def lookup(
         self,
         pwv_mm: float,
@@ -152,14 +163,7 @@ class PwvGrid:
         Bilinear: linear in PWV (grid step 0.5 mm), linear in freq. PWV is
         clipped to the grid range.
         """
-        pwv_c = float(np.clip(pwv_mm, self.pwv_mm[0], self.pwv_mm[-1]))
-        i_hi = int(np.searchsorted(self.pwv_mm, pwv_c, side="right"))
-        i_hi = min(i_hi, len(self.pwv_mm) - 1)
-        i_lo = max(i_hi - 1, 0)
-        if i_hi == i_lo:
-            w = 0.0
-        else:
-            w = (pwv_c - self.pwv_mm[i_lo]) / (self.pwv_mm[i_hi] - self.pwv_mm[i_lo])
+        i_lo, i_hi, w, _ = self._pwv_bracket(pwv_mm)
 
         tau_lo = np.interp(freq_Hz, self.freq_Hz, self.tau_z[i_lo, :])
         tau_hi = np.interp(freq_Hz, self.freq_Hz, self.tau_z[i_hi, :])
@@ -171,43 +175,20 @@ class PwvGrid:
 
         return tau_z, tmean
 
-    def lookup_with_grad(
-        self,
-        pwv_mm: float,
-        freq_Hz: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """As :meth:`lookup`, plus ``∂τ_z/∂PWV`` and ``∂T_mean/∂PWV``.
+    def dtau_dpwv(self, pwv_mm: float, freq_Hz: np.ndarray) -> np.ndarray:
+        """``∂τ_z/∂PWV`` at scalar ``pwv_mm`` and array ``freq_Hz``.
 
-        Derivatives are the analytical slope of the bilinear interpolant —
-        exact for the linear approximation, no finite-difference noise.
+        The analytical slope of the bilinear interpolant — exact for the
+        linear approximation, no finite-difference noise. Zero outside the
+        grid range so the optimizer is not pushed past the edges.
         """
-        pwv_c = float(np.clip(pwv_mm, self.pwv_mm[0], self.pwv_mm[-1]))
-        i_hi = int(np.searchsorted(self.pwv_mm, pwv_c, side="right"))
-        i_hi = min(i_hi, len(self.pwv_mm) - 1)
-        i_lo = max(i_hi - 1, 0)
-        if i_hi == i_lo:
-            w = 0.0
-            dpwv = 1.0  # value irrelevant; gradient is zero at the boundary
-        else:
-            dpwv = self.pwv_mm[i_hi] - self.pwv_mm[i_lo]
-            w = (pwv_c - self.pwv_mm[i_lo]) / dpwv
+        if pwv_mm <= self.pwv_mm[0] or pwv_mm >= self.pwv_mm[-1]:
+            return np.zeros_like(np.asarray(freq_Hz, dtype=float))
 
+        i_lo, i_hi, _w, dpwv = self._pwv_bracket(pwv_mm)
         tau_lo = np.interp(freq_Hz, self.freq_Hz, self.tau_z[i_lo, :])
         tau_hi = np.interp(freq_Hz, self.freq_Hz, self.tau_z[i_hi, :])
-        tau_z = (1.0 - w) * tau_lo + w * tau_hi
-        dtau_dpwv = (tau_hi - tau_lo) / dpwv
-
-        tmean_lo = np.interp(freq_Hz, self.freq_Hz, self.tmean[i_lo, :])
-        tmean_hi = np.interp(freq_Hz, self.freq_Hz, self.tmean[i_hi, :])
-        tmean = (1.0 - w) * tmean_lo + w * tmean_hi
-        dtmean_dpwv = (tmean_hi - tmean_lo) / dpwv
-
-        # Zero out gradient at clipped edges so the optimizer doesn't push there.
-        if pwv_mm <= self.pwv_mm[0] or pwv_mm >= self.pwv_mm[-1]:
-            dtau_dpwv = np.zeros_like(dtau_dpwv)
-            dtmean_dpwv = np.zeros_like(dtmean_dpwv)
-
-        return tau_z, tmean, dtau_dpwv, dtmean_dpwv
+        return np.asarray((tau_hi - tau_lo) / dpwv)
 
 
 # ---------------------------------------------------------------------------

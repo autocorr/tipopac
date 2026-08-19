@@ -137,23 +137,20 @@ def test_pwvgrid_grad_matches_finite_difference() -> None:
     p_lo, p_hi = g.pwv_mm[2], g.pwv_mm[3]
     p = 0.5 * (p_lo + p_hi)
     f = np.array([15e9, 22e9])
-    _, _, dtau_dpwv, dtmean_dpwv = g.lookup_with_grad(p, f)
+    dtau_dpwv = g.dtau_dpwv(p, f)
 
     delta = 1e-3
-    tau_plus, tmean_plus = g.lookup(p + delta, f)
-    tau_minus, tmean_minus = g.lookup(p - delta, f)
+    tau_plus, _ = g.lookup(p + delta, f)
+    tau_minus, _ = g.lookup(p - delta, f)
     fd_dtau = (tau_plus - tau_minus) / (2 * delta)
-    fd_dtmean = (tmean_plus - tmean_minus) / (2 * delta)
 
     np.testing.assert_allclose(dtau_dpwv, fd_dtau, rtol=1e-9, atol=1e-15)
-    np.testing.assert_allclose(dtmean_dpwv, fd_dtmean, rtol=1e-9, atol=1e-10)
 
 
 def test_pwvgrid_grad_zero_at_clipped_edge() -> None:
     g = _toy_grid()
-    _, _, dtau, dtmean = g.lookup_with_grad(0.0, g.freq_Hz)
+    dtau = g.dtau_dpwv(0.0, g.freq_Hz)
     np.testing.assert_array_equal(dtau, np.zeros_like(dtau))
-    np.testing.assert_array_equal(dtmean, np.zeros_like(dtmean))
 
 
 def test_pwvgrid_tmean_finite_at_zero_tau() -> None:

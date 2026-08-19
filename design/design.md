@@ -529,7 +529,7 @@ range and each contributing grid's `pwv_mm` axis.
 ```
 
 `∂τ_grid/∂PWV` is the analytical slope of the bilinear interpolant
-(`PwvGrid.lookup_with_grad`). No Hessian inversion, no SVD.
+(`PwvGrid.dtau_dpwv`). No Hessian inversion, no SVD.
 
 **am curve.** One dense τ(ν) per group, sampled at that group's median
 fitted PWV; a group whose antennas are all NaN falls back to its own
@@ -701,7 +701,7 @@ Two `cached_property` fields derive from those: `trj_z` (`tb_z` in
 Rayleigh-Jeans noise K — the linear coordinate for any arithmetic
 combining sky terms) and `tmean` (the atmosphere-only radiating
 temperature, CMB-subtracted). Both are `(n_pwv, n_freq)` and back the
-`T_mean` returned by the two read methods:
+`T_mean` returned by `lookup`:
 
 - `lookup(pwv_mm, freqs_Hz) -> (τ, T_mean)` — `T_mean` is the
   atmosphere-only mean brightness in **RJ noise K**, derived from
@@ -709,10 +709,9 @@ temperature, CMB-subtracted). Both are `(n_pwv, n_freq)` and back the
   divided by the absorbed fraction `(1 − e^{−τ})`. am still emits Planck
   `tb_z`; the Planck→RJ conversion precedes the subtraction, since the
   decomposition is linear in radiance, not in Planck temperature.
-- `lookup_with_grad(pwv_mm, freqs_Hz) -> (τ, T_mean, ∂τ/∂pwv,
-  ∂T_mean/∂pwv)` — same plus the analytical slope of the linear
-  interpolant in the PWV direction; used by Stage B's Cramér–Rao
-  σ_PWV.
+- `dtau_dpwv(pwv_mm, freqs_Hz) -> ∂τ/∂pwv` — the analytical slope of
+  the linear interpolant in the PWV direction, zero outside the grid
+  range; used by Stage B's Cramér–Rao σ_PWV.
 
 The grid is parameterised by `troposphere_h2o_scaling = pwv_mm /
 pwv_unscaled_mm` in am; this means the same underlying profile drives
