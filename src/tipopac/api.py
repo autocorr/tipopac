@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,9 +16,8 @@ from tipopac.atmgrid import (
     DEFAULT_FREQ_STEP_HZ,
     DEFAULT_N_WORKERS,
     DEFAULT_PWV_STEP_MM,
-    GRID_FREQ_MAX_HZ,
-    GRID_FREQ_MIN_HZ,
     PwvGrid,
+    grid_freq_span,
 )
 from tipopac.defaults import (
     DEFAULT_GROUP_DURATION_S,
@@ -36,15 +34,6 @@ _INDEPENDENT_TO_BACKEND: dict[str, str] = {
     "independent_tau": "tau_per_antenna",
     "independent_tau_solve": "tcal_solve",
 }
-
-
-def _grid_freq_span(
-    obs_min_Hz: float, obs_max_Hz: float, step_Hz: float
-) -> tuple[float, float]:
-    """am grid span: 1–51 GHz on exact nodes, extended to keep the ±5 % margin."""
-    below = math.ceil(max(0.0, GRID_FREQ_MIN_HZ - obs_min_Hz * 0.95) / step_Hz)
-    above = math.ceil(max(0.0, obs_max_Hz * 1.05 - GRID_FREQ_MAX_HZ) / step_Hz)
-    return GRID_FREQ_MIN_HZ - below * step_Hz, GRID_FREQ_MAX_HZ + above * step_Hz
 
 
 def _module_version(name: str) -> str:
@@ -393,7 +382,7 @@ class TippingAnalysis:
             self.fetch_atm_profile()
 
         freqs = self._ds.coords["frequency"].values
-        freq_min_Hz, freq_max_Hz = _grid_freq_span(
+        freq_min_Hz, freq_max_Hz = grid_freq_span(
             float(freqs.min()), float(freqs.max()), freq_step_Hz
         )
 
@@ -501,12 +490,7 @@ class TippingAnalysis:
             )
 
         from tipopac import fit
-        from tipopac.anchor import (
-            anchor_pwv_grouped,
-            compute_t_mean_grid,
-            write_am_curve,
-        )
-        from tipopac.timeutils import assign_groups
+        from tipopac.anchor import attach_stage_b, compute_t_mean_grid
 
         # Stage A + Stage B. Build grids if not done already; the grid
         # drives both the Stage A T_mean input and the Stage B PWV anchor
@@ -534,36 +518,12 @@ class TippingAnalysis:
             spillover_model=spillover_model,
         )
 
-        # Stage B is fit per time group: pooling a whole execution block into
-        # one PWV ignores the atmosphere's real time variation.
-        t_start = self._ds.coords["scan_time_start"].values
-        t_end = self._ds.coords["scan_time_end"].values
-        groups = assign_groups(t_start, group_duration_s)
-        n_group = int(groups.max()) + 1
-
-        # tau_zenith is fit spillover-free (the η·Bg·airmass term lives inside
-        # the Stage-A model), so PWV anchors on it directly — no de-bias step.
-        pwv, pwv_err = anchor_pwv_grouped(
-            self._ds["tau_zenith"].values,
-            self._ds["tau_err"].values,
+        attach_stage_b(
+            self._ds,
             grids_by_pos,
             freqs_Hz,
-            groups,
+            group_duration_s=group_duration_s,
         )
-        # A real `group` index coord, so select_group's .sel is label-based.
-        self._ds.coords["group"] = np.arange(n_group, dtype=np.int32)
-        self._ds.coords["scan_group"] = (("scan",), groups)
-        self._ds.coords["group_time_start"] = (
-            ("group",),
-            np.array([t_start[groups == k].min() for k in range(n_group)]),
-        )
-        self._ds.coords["group_time_end"] = (
-            ("group",),
-            np.array([t_end[groups == k].max() for k in range(n_group)]),
-        )
-        self._ds["pwv"] = (("group", "antenna"), pwv.astype(np.float32))
-        self._ds["pwv_err"] = (("group", "antenna"), pwv_err.astype(np.float32))
-        write_am_curve(self._ds, grids_by_pos, pwv, groups)
 
         # Stage C. Skipped under independent_tau_solve, whose tau_zenith the
         # anchor is fit to — pinning c to it would fold that mode's own

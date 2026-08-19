@@ -12,6 +12,7 @@ import xarray as xr
 from tipopac.anchor import (
     anchor_pwv,
     anchor_pwv_grouped,
+    attach_stage_b,
     compute_t_mean_grid,
     write_am_curve,
 )
@@ -362,3 +363,54 @@ def test_grouped_group_with_no_grid_is_nan() -> None:
     assert np.isfinite(pwv[0, 0])
     assert np.isnan(pwv[1, 0])
     assert np.isnan(pwv_err[1, 0])
+
+
+# ---------------------------------------------------------------------------
+# attach_stage_b
+# ---------------------------------------------------------------------------
+
+
+def _stage_b_dataset(grid: PwvGrid, pwv_per_scan: list[float]) -> xr.Dataset:
+    """``(n_scan, 1, n_spw)`` τ_z dataset with a one-hour gap between scans."""
+    tau_z = _tau_stack(grid, _GROUPED_FREQS, pwv_per_scan)
+    t_start = np.arange(len(pwv_per_scan), dtype=np.float64) * 3600.0
+    return xr.Dataset(
+        {
+            "tau_zenith": (("scan", "antenna", "spw"), tau_z),
+            "tau_err": (("scan", "antenna", "spw"), np.full_like(tau_z, 1e-4)),
+        },
+        coords={
+            "scan_time_start": (("scan",), t_start),
+            "scan_time_end": (("scan",), t_start + 600.0),
+        },
+    )
+
+
+def test_attach_stage_b_writes_all_outputs() -> None:
+    """One group: pwv/pwv_err, the group coords, and the am curve all land."""
+    grid = _toy_grid()
+    ds = _stage_b_dataset(grid, [5.0, 5.0])
+    attach_stage_b(ds, {0: grid, 1: grid}, _GROUPED_FREQS, group_duration_s=None)
+
+    assert ds["pwv"].dims == ("group", "antenna")
+    assert ds["pwv"].dtype == np.float32
+    assert ds["pwv_err"].dtype == np.float32
+    assert ds["pwv"].shape == (1, 1)
+    np.testing.assert_allclose(ds["pwv"].values[0, 0], 5.0, atol=0.05)
+
+    np.testing.assert_array_equal(ds.coords["group"].values, [0])
+    np.testing.assert_array_equal(ds.coords["scan_group"].values, [0, 0])
+    assert float(ds.coords["group_time_start"][0]) == 0.0
+    assert float(ds.coords["group_time_end"][0]) == 4200.0
+    assert ds["am_tau"].shape == (1, grid.freq_Hz.size)
+
+
+def test_attach_stage_b_splits_on_group_duration() -> None:
+    """Scans an hour apart with a 30-min window fit one PWV each."""
+    grid = _toy_grid()
+    ds = _stage_b_dataset(grid, [4.0, 8.0])
+    attach_stage_b(ds, {0: grid, 1: grid}, _GROUPED_FREQS, group_duration_s=1800.0)
+
+    np.testing.assert_array_equal(ds.coords["scan_group"].values, [0, 1])
+    assert ds["pwv"].shape == (2, 1)
+    np.testing.assert_allclose(ds["pwv"].values[:, 0], [4.0, 8.0], atol=0.05)

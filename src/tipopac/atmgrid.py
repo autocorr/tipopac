@@ -16,6 +16,7 @@ any sky-term arithmetic, never after.
 from __future__ import annotations
 
 import logging
+import math
 import multiprocessing as mp
 import os
 import tempfile
@@ -29,7 +30,7 @@ import numpy as np
 from tipopac.physics import T_CMB as _T_CMB
 from tipopac.physics import k2nt
 
-__all__ = ["PwvGrid", "build_pwv_grid", "pwv_mm_from_profile"]
+__all__ = ["PwvGrid", "build_pwv_grid", "grid_freq_span", "pwv_mm_from_profile"]
 
 _log = logging.getLogger(__name__)
 
@@ -42,6 +43,16 @@ DEFAULT_FREQ_STEP_HZ: float = 100e6  # 100 MHz, matches warm-am ≈ 25 ms
 DEFAULT_N_WORKERS: int = 8
 GRID_FREQ_MIN_HZ: float = 1e9
 GRID_FREQ_MAX_HZ: float = 51e9
+
+
+def grid_freq_span(
+    obs_min_Hz: float, obs_max_Hz: float, step_Hz: float
+) -> tuple[float, float]:
+    """am grid span: 1–51 GHz on exact nodes, extended to keep the ±5 % margin."""
+    below = math.ceil(max(0.0, GRID_FREQ_MIN_HZ - obs_min_Hz * 0.95) / step_Hz)
+    above = math.ceil(max(0.0, obs_max_Hz * 1.05 - GRID_FREQ_MAX_HZ) / step_Hz)
+    return GRID_FREQ_MIN_HZ - below * step_Hz, GRID_FREQ_MAX_HZ + above * step_Hz
+
 
 # Per-worker cache dir parent. tmpfs avoids HDD-backed /tmp on hosts where
 # TMPDIR isn't pointed at RAM; falls back to tempfile's default if /dev/shm

@@ -309,7 +309,7 @@ Data variables — atmospheric profile (filled by atmosphere.attach_profile)
   pwv_profile_source   (scan,)                             str       per-scan grid provenance (set by build_atm_grids)
   pwv_model            (scan,)                             float32   mm   PWV of the un-scaled profile (set by build_atm_grids)
 
-Data variables — atmospheric anchor (filled by anchor.anchor_pwv_grouped / write_am_curve)
+Data variables — atmospheric anchor (filled by anchor.attach_stage_b)
   pwv              (group, antenna)                        float32   mm   per-antenna fitted PWV, per time group
   pwv_err          (group, antenna)                        float32   mm   1σ from Cramér–Rao
   am_freq_grid     (frequency_dense,)                      float64   Hz   dense am output axis (1–51 GHz), shared by all groups

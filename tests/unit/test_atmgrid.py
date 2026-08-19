@@ -14,6 +14,7 @@ import pytest
 from tipopac.atmgrid import (
     PwvGrid,
     build_pwv_grid,
+    grid_freq_span,
     pwv_mm_from_profile,
 )
 from tipopac.physics import _H, _K, k2nt
@@ -280,3 +281,27 @@ def test_build_pwv_grid_uses_a_pool_when_asked(monkeypatch) -> None:
     _stub_dispatch(monkeypatch)
     with pytest.raises(AssertionError, match="fork pool"):
         _build_stubbed(n_workers=2)
+
+
+# ---------------------------------------------------------------------------
+# Grid frequency span
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("obs_min_Hz", "obs_max_Hz", "expect"),
+    [
+        # K/Ka spws sit well inside 1–51 GHz — no extension either side.
+        (19.2e9, 43.9e9, (1e9, 51e9)),
+        # Q band: 50 GHz × 1.05 = 52.5 → 15 steps of 100 MHz above 51 GHz.
+        (40e9, 50e9, (1e9, 52.5e9)),
+        # L band: 1 GHz × 0.95 = 0.95 → one step below 1 GHz.
+        (1e9, 2e9, (0.9e9, 51e9)),
+    ],
+)
+def test_grid_freq_span(
+    obs_min_Hz: float, obs_max_Hz: float, expect: tuple[float, float]
+) -> None:
+    """1–51 GHz on exact nodes, extended outward to keep the ±5 % margin."""
+    got = grid_freq_span(obs_min_Hz, obs_max_Hz, 100e6)
+    np.testing.assert_allclose(got, expect, rtol=0, atol=1e-3)

@@ -20,10 +20,12 @@ import xarray as xr
 from scipy.optimize import minimize_scalar
 
 from tipopac.atmgrid import PwvGrid
+from tipopac.timeutils import assign_groups
 
 __all__ = [
     "anchor_pwv",
     "anchor_pwv_grouped",
+    "attach_stage_b",
     "compute_t_mean_grid",
     "write_am_curve",
 ]
@@ -177,6 +179,51 @@ def anchor_pwv_grouped(
             pwv_max_mm=pwv_max_mm,
         )
     return pwv, pwv_err
+
+
+def attach_stage_b(
+    ds: xr.Dataset,
+    grids: dict[int, PwvGrid],
+    freqs_Hz: np.ndarray,
+    *,
+    group_duration_s: float | None,
+) -> None:
+    """Fit the per-group PWV anchor and attach every Stage-B output to ``ds``.
+
+    Writes the ``group`` coords, ``pwv``/``pwv_err``, and the dense am
+    curve. *grids* is keyed by positional scan index, as
+    :func:`anchor_pwv` expects.
+    """
+    # Stage B is fit per time group: pooling a whole execution block into
+    # one PWV ignores the atmosphere's real time variation.
+    t_start = ds.coords["scan_time_start"].values
+    t_end = ds.coords["scan_time_end"].values
+    groups = assign_groups(t_start, group_duration_s)
+    n_group = int(groups.max()) + 1
+
+    # tau_zenith is fit spillover-free (the η·Bg·airmass term lives inside
+    # the Stage-A model), so PWV anchors on it directly — no de-bias step.
+    pwv, pwv_err = anchor_pwv_grouped(
+        ds["tau_zenith"].values,
+        ds["tau_err"].values,
+        grids,
+        freqs_Hz,
+        groups,
+    )
+    # A real `group` index coord, so select_group's .sel is label-based.
+    ds.coords["group"] = np.arange(n_group, dtype=np.int32)
+    ds.coords["scan_group"] = (("scan",), groups)
+    ds.coords["group_time_start"] = (
+        ("group",),
+        np.array([t_start[groups == k].min() for k in range(n_group)]),
+    )
+    ds.coords["group_time_end"] = (
+        ("group",),
+        np.array([t_end[groups == k].max() for k in range(n_group)]),
+    )
+    ds["pwv"] = (("group", "antenna"), pwv.astype(np.float32))
+    ds["pwv_err"] = (("group", "antenna"), pwv_err.astype(np.float32))
+    write_am_curve(ds, grids, pwv, groups)
 
 
 def write_am_curve(
