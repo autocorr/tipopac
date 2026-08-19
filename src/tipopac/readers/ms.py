@@ -350,17 +350,35 @@ def _build_dataset(
     tb.open(str(path / "SYSPOWER"))
 
     scan_times: list[np.ndarray] = []
+    scan_rows: dict[int, dict[str, np.ndarray]] = {}
     for sc in scan_ids:
         t_start, t_end = scan_t_start[sc], scan_t_end[sc]
         sub = tb.query(f"TIME>={t_start} && TIME<={t_end}")
-        ts = (
-            sub.getcol("TIME").copy()
-            if sub.nrows() > 0
+        if sub.nrows() > 0:
+            rows = {
+                col: sub.getcol(col).copy()
+                for col in (
+                    "TIME",
+                    "ANTENNA_ID",
+                    "SPECTRAL_WINDOW_ID",
+                    "SWITCHED_DIFF",
+                    "SWITCHED_SUM",
+                )
+            }
+            rows["INTERVAL"] = (
+                sub.getcol("INTERVAL").copy()
+                if "INTERVAL" in sub.colnames()
+                else np.full(sub.nrows(), np.nan, dtype=np.float64)
+            )
+            scan_rows[sc] = rows
+        sub.close()
+        scan_times.append(
+            np.unique(scan_rows[sc]["TIME"])
+            if sc in scan_rows
             else np.array([], dtype=np.float64)
         )
-        sub.close()
-        scan_times.append(np.unique(ts))
 
+    tb.close()
     scan_ids, scan_times = _drop_empty_scans(scan_ids, scan_times, scans_requested)
     n_scan = len(scan_ids)
     n_time = max(len(t) for t in scan_times)
@@ -387,7 +405,6 @@ def _build_dataset(
         scan_time_end_arr[i] = ts[-1]
         time_utc[i, :n_t] = ts
 
-        t_start, t_end = scan_t_start[sc], scan_t_end[sc]
         sc_spw_set = set(scan_spws[sc])
 
         # --- weather (interpolated to SYSPOWER timestamps) ---
@@ -402,23 +419,14 @@ def _build_dataset(
             idx = _nearest_idx(point_t[a], ts)
             zenith_angle[i, a, :n_t] = point_za[a][idx].astype(np.float32)
 
-        # --- SYSPOWER per scan (one query covers all antennas and spws) ---
-        sub = tb.query(f"TIME>={t_start} && TIME<={t_end}")
-        if sub.nrows() == 0:
-            sub.close()
-            continue
-
-        sp_times = sub.getcol("TIME")
-        sp_ant = sub.getcol("ANTENNA_ID")
-        sp_spw = sub.getcol("SPECTRAL_WINDOW_ID")
-        sp_diff = sub.getcol("SWITCHED_DIFF")  # (2, n_rows)
-        sp_sum = sub.getcol("SWITCHED_SUM")  # (2, n_rows)
-        sp_interval = (
-            sub.getcol("INTERVAL")
-            if "INTERVAL" in sub.colnames()
-            else np.full(len(sp_times), np.nan, dtype=np.float64)
-        )
-        sub.close()
+        # --- SYSPOWER per scan (read once above, all antennas and spws) ---
+        rows = scan_rows[sc]
+        sp_times = rows["TIME"]
+        sp_ant = rows["ANTENNA_ID"]
+        sp_spw = rows["SPECTRAL_WINDOW_ID"]
+        sp_diff = rows["SWITCHED_DIFF"]  # (2, n_rows)
+        sp_sum = rows["SWITCHED_SUM"]  # (2, n_rows)
+        sp_interval = rows["INTERVAL"]
 
         slot_idx = _slot_indices(ts, sp_times)
 
@@ -459,8 +467,6 @@ def _build_dataset(
             switched_sum=switched_sum,
             flag=flag,
         )
-
-    tb.close()
 
     # pad positions must stay flagged regardless of data presence
     for i in range(n_scan):
