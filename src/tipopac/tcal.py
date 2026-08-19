@@ -26,6 +26,7 @@ from __future__ import annotations
 import numpy as np
 import xarray as xr
 
+from tipopac.defaults import DEFAULT_MIN_AIRMASS_SPAN
 from tipopac.fit import (
     _MIN_SAMPLES,
     _RES_REJECT_CHI2,
@@ -38,9 +39,6 @@ from tipopac.spillover import spillover_tsys
 from tipopac.tables import _model_at
 
 __all__ = ["solve_tcal"]
-
-
-_MIN_AIRMASS_SPAN: float = 0.3
 
 
 def _wls(x: np.ndarray, y: np.ndarray, ivar: np.ndarray) -> tuple[float, float, float]:
@@ -108,7 +106,9 @@ def _anchor_tau(ds: xr.Dataset, freq_Hz: np.ndarray, n_group: int) -> np.ndarray
     return tau_am
 
 
-def solve_tcal(ds: xr.Dataset, *, min_airmass_span: float = _MIN_AIRMASS_SPAN) -> None:
+def solve_tcal(
+    ds: xr.Dataset, *, min_airmass_span: float = DEFAULT_MIN_AIRMASS_SPAN
+) -> None:
     """Estimate the Tcal scale against the Stage-B anchor; mutates *ds*.
 
     Overwrites ``tcal_fit`` with ``c·tcal_ref`` and adds ``sigma_tcal``. Cells

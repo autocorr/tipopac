@@ -24,6 +24,7 @@ import scipy.sparse as _sp
 import xarray as xr
 from scipy.optimize import least_squares
 
+from tipopac.defaults import DEFAULT_SPILLOVER_MODEL
 from tipopac.physics import T_CMB, k2nt, mean_radiating_T
 from tipopac.schema import surface_T_mean
 from tipopac.spillover import ETA_MODEL_NAME, ETA_POLY_COEF, spillover_tsys
@@ -46,7 +47,7 @@ def fit_dataset(
     *,
     t_mean: np.ndarray | None = None,
     n_workers: int | None = None,
-    spillover_model: bool = True,
+    spillover_model: bool = DEFAULT_SPILLOVER_MODEL,
 ) -> None:
     """Fit tipping curves and write result variables into *ds* in-place.
 

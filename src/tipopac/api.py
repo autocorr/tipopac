@@ -14,10 +14,17 @@ import numpy as np
 import xarray as xr
 
 from tipopac.atmgrid import (
+    DEFAULT_FREQ_STEP_HZ,
     DEFAULT_N_WORKERS,
+    DEFAULT_PWV_STEP_MM,
     GRID_FREQ_MAX_HZ,
     GRID_FREQ_MIN_HZ,
     PwvGrid,
+)
+from tipopac.defaults import (
+    DEFAULT_GROUP_DURATION_S,
+    DEFAULT_MIN_AIRMASS_SPAN,
+    DEFAULT_SPILLOVER_MODEL,
 )
 from tipopac.readers import detect_reader as _detect_reader
 
@@ -180,9 +187,9 @@ def tipopac(
     flags_file: str | Path | None = None,
     atm_profile_source: str = "open-meteo",
     afgl_climatology: str = "auto",
-    spillover_model: bool = True,
-    group_duration_s: float | None = 7200.0,
-    min_airmass_span: float = 0.3,
+    spillover_model: bool = DEFAULT_SPILLOVER_MODEL,
+    group_duration_s: float | None = DEFAULT_GROUP_DURATION_S,
+    min_airmass_span: float = DEFAULT_MIN_AIRMASS_SPAN,
     n_workers: int | None = None,
     output_dir: str | Path | None = Path("."),
     caltable_opacity: bool = False,
@@ -364,8 +371,8 @@ class TippingAnalysis:
     def build_atm_grids(
         self,
         *,
-        pwv_step_mm: float = 0.5,
-        freq_step_Hz: float = 100e6,
+        pwv_step_mm: float = DEFAULT_PWV_STEP_MM,
+        freq_step_Hz: float = DEFAULT_FREQ_STEP_HZ,
         n_workers: int | None = DEFAULT_N_WORKERS,
     ) -> None:
         """Build per-scan :class:`PwvGrid` objects.
@@ -484,9 +491,9 @@ class TippingAnalysis:
         mode: str = "independent_tau",
         *,
         n_workers: int | None = None,
-        spillover_model: bool = True,
-        group_duration_s: float | None = 7200.0,
-        min_airmass_span: float = 0.3,
+        spillover_model: bool = DEFAULT_SPILLOVER_MODEL,
+        group_duration_s: float | None = DEFAULT_GROUP_DURATION_S,
+        min_airmass_span: float = DEFAULT_MIN_AIRMASS_SPAN,
     ) -> None:
         if mode not in _INDEPENDENT_TO_BACKEND:
             raise ValueError(

@@ -255,3 +255,44 @@ def test_both_public_modes_are_accepted() -> None:
         "independent_tau": "tau_per_antenna",
         "independent_tau_solve": "tcal_solve",
     }
+
+
+@pytest.mark.parametrize(
+    ("param", "constant"),
+    [
+        ("spillover_model", "DEFAULT_SPILLOVER_MODEL"),
+        ("group_duration_s", "DEFAULT_GROUP_DURATION_S"),
+        ("min_airmass_span", "DEFAULT_MIN_AIRMASS_SPAN"),
+    ],
+)
+def test_shared_defaults_come_from_one_object(param: str, constant: str) -> None:
+    """Every signature declaring a shared default resolves to the same object.
+
+    Re-inlining the literal at any one site puts a second object in the set
+    and fails here, including at a backend the public API always forwards to
+    explicitly (review L4).
+    """
+    import inspect
+
+    from tipopac import defaults, fit, tcal
+    from tipopac.api import TippingAnalysis, tipopac
+
+    candidates = (tipopac, TippingAnalysis.fit, fit.fit_dataset, tcal.solve_tcal)
+    found = {
+        id(inspect.signature(f).parameters[param].default)
+        for f in candidates
+        if param in inspect.signature(f).parameters
+    }
+    assert len(found) == 1, f"{param} is declared from more than one object"
+    assert found == {id(getattr(defaults, constant))}
+
+
+def test_grid_step_defaults_come_from_atmgrid() -> None:
+    """build_atm_grids must not restate the am-grid geometry literals."""
+    import inspect
+
+    from tipopac import atmgrid
+
+    params = inspect.signature(TippingAnalysis.build_atm_grids).parameters
+    assert params["pwv_step_mm"].default is atmgrid.DEFAULT_PWV_STEP_MM
+    assert params["freq_step_Hz"].default is atmgrid.DEFAULT_FREQ_STEP_HZ
