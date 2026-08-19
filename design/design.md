@@ -68,7 +68,7 @@ result: Result = tipopac(
     group_duration_s=7200.0,                         # Stage-B time grouping; None = one group
     min_airmass_span=0.3,                            # Stage-C leverage floor; below it c is NaN
     spillover_model=True,                            # in-fit η(ν) ground-pickup term (§6)
-    n_workers=None,                                  # int → multiprocessing.Pool
+    n_workers=None,                                  # pool size for the am grid and Stage A; None = serial
     output_dir=Path("."),                            # dir for all outputs; None = compute-only
     caltable_opacity=False,                          # opt-in CASA TOpac table → output_dir/tipopac.opacity
     caltable_tcal=False,                             # opt-in CALDEVICE-style table → output_dir/tipopac.tcal
@@ -482,7 +482,8 @@ is gone. The behaviours it guarded are captured by the χ² gate and
 the identifiability ratio.
 
 **Parallelism.** When `n_workers > 1`, Stage A units are dispatched
-through `multiprocessing.Pool` with the `spawn` start method. Each
+through `multiprocessing.Pool` with the `spawn` start method; `None`
+or `≤ 1` runs serially in the calling process. Each
 worker exports `OPENBLAS_NUM_THREADS=MKL_NUM_THREADS=OMP_NUM_THREADS=1`.
 Package import sets these env vars by default (BLAS multithreading on
 the per-fit matrix sizes here is pure overhead and 20× slower at
@@ -665,6 +666,8 @@ Precomputes one `PwvGrid` per scan from the attached profile and
 stores them on `TippingAnalysis._grids[scan_id]`. Auto-calls
 `fetch_atm_profile` if `atm_pressure` is not yet on the dataset.
 Writes the `pwv_profile_source(scan,)` data var for provenance.
+`n_workers` sizes the am process pool (default 8); `None` or `≤ 1`
+builds the grids serially, the same convention Stage A uses.
 
 Scans whose am inputs match — identical profile above the surface level
 and surface pressures within 0.2 hPa — share one grid object, so a short

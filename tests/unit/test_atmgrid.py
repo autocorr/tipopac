@@ -225,3 +225,58 @@ def test_build_pwv_grid_with_afgl_profile() -> None:
     # Profile source is preserved.
     assert grid.profile_source == "afgl_midlatitude_winter"
     assert grid.pwv_unscaled_mm > 0
+
+
+# ---------------------------------------------------------------------------
+# Worker-pool dispatch (fast: am is stubbed out)
+# ---------------------------------------------------------------------------
+
+
+def _stub_dispatch(monkeypatch) -> dict[str, int]:
+    """Replace both am dispatch paths with counters; return the counters."""
+    import tipopac.atmgrid as ag
+
+    calls = {"serial": 0, "pool": 0}
+    freq = np.array([2.0e10, 2.1e10])
+
+    def fake_serial(scalings, init_kwargs):
+        calls["serial"] += 1
+        return [(freq, np.full(2, 0.05 * s), np.full(2, 10.0)) for s in scalings]
+
+    def fake_get_context(method):
+        calls["pool"] += 1
+        raise AssertionError(f"a {method} pool was built where none was expected")
+
+    monkeypatch.setattr(ag, "_run_serial", fake_serial)
+    monkeypatch.setattr(ag.mp, "get_context", fake_get_context)
+    return calls
+
+
+def _build_stubbed(**kwargs) -> PwvGrid:
+    return build_pwv_grid(
+        np.array([1e5, 5e4]) * u.Pa,
+        np.array([280.0, 250.0]) * u.K,
+        np.array([1e-2, 1e-3]) * u.dimensionless_unscaled,
+        freq_min_Hz=20e9,
+        freq_max_Hz=21e9,
+        pwv_min_mm=1.0,
+        pwv_max_mm=3.0,
+        pwv_step_mm=1.0,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("n_workers", [None, 1, 0, -4])
+def test_build_pwv_grid_runs_serially_without_a_pool(monkeypatch, n_workers) -> None:
+    """`None` means serial, the same as `≤ 1` — never a pool (review L3)."""
+    calls = _stub_dispatch(monkeypatch)
+    grid = _build_stubbed(n_workers=n_workers)
+    assert calls == {"serial": 1, "pool": 0}
+    assert grid.pwv_mm.size == 3
+
+
+def test_build_pwv_grid_uses_a_pool_when_asked(monkeypatch) -> None:
+    """`n_workers > 1` still dispatches to the pool, so the guard is not blanket."""
+    _stub_dispatch(monkeypatch)
+    with pytest.raises(AssertionError, match="fork pool"):
+        _build_stubbed(n_workers=2)

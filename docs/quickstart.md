@@ -44,7 +44,7 @@ from tipopac import tipopac
 
 result = tipopac(
     "data/tip_test.ms",
-    n_workers=8,                    # Stage-A process-pool parallelism (None = serial)
+    n_workers=8,                    # am-grid and Stage-A pool size (None = serial)
     output_dir="run",               # write outputs here; None = compute-only
 )
 
@@ -66,7 +66,7 @@ print(ds["tau_zenith"], ds["pwv"], ds["tcal_fit"])
 | `spillover_model` | Model instrumental ground pickup inside the Stage-A fit. Default `True`. |
 | `group_duration_s` | Stage-B time-grouping window in seconds. Default `7200.0`; `None` fits one PWV over all scans. |
 | `min_airmass_span` | Minimum airmass leverage a cell needs before Stage C reports a Tcal. Default `0.3`. |
-| `n_workers` | Stage-A fit parallelism. `None` runs serially. |
+| `n_workers` | Process-pool size for the am grid build and the Stage-A fit. `None` runs both serially. |
 | `output_dir` | Where artifacts are written; `None` for compute-only. |
 | `caltable_opacity` / `caltable_tcal` | Opt-in CASA caltables. |
 

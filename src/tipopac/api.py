@@ -13,7 +13,12 @@ from typing import Any, Literal
 import numpy as np
 import xarray as xr
 
-from tipopac.atmgrid import GRID_FREQ_MAX_HZ, GRID_FREQ_MIN_HZ, PwvGrid
+from tipopac.atmgrid import (
+    DEFAULT_N_WORKERS,
+    GRID_FREQ_MAX_HZ,
+    GRID_FREQ_MIN_HZ,
+    PwvGrid,
+)
 from tipopac.readers import detect_reader as _detect_reader
 
 _log = logging.getLogger(__name__)
@@ -240,8 +245,8 @@ def tipopac(
         Stage-C leverage floor on ``max(airmass) − min(airmass)``; default 0.3.
         Cells below it get NaN ``tcal_fit``/``sigma_tcal``.
     n_workers:
-        Stage-A fit parallelism. ``None`` runs serially. Higher values
-        dispatch via a process pool with single-threaded BLAS per worker.
+        Process-pool size for both the am grid build and the Stage-A fit.
+        ``None`` or ``≤ 1`` runs both serially.
     output_dir:
         Directory for all on-disk outputs (created if missing). Default
         ``Path(".")`` writes into the current working directory. ``None``
@@ -270,7 +275,7 @@ def tipopac(
         source=atm_profile_source,
         afgl_climatology=afgl_climatology,
     )
-    ta.build_atm_grids()
+    ta.build_atm_grids(n_workers=n_workers)
     ta.fit(
         mode=mode,
         n_workers=n_workers,
@@ -361,7 +366,7 @@ class TippingAnalysis:
         *,
         pwv_step_mm: float = 0.5,
         freq_step_Hz: float = 100e6,
-        n_workers: int | None = None,
+        n_workers: int | None = DEFAULT_N_WORKERS,
     ) -> None:
         """Build per-scan :class:`PwvGrid` objects.
 
@@ -370,6 +375,8 @@ class TippingAnalysis:
         PwvGrid`` for every scan and writes the ``pwv_profile_source(scan,)``
         and ``pwv_model(scan,)`` data vars for provenance. The grids feed
         Stage A's ``T_mean`` and the Stage-B anchor (design.md §6).
+        ``n_workers`` sizes the am process pool; ``None`` or ``≤ 1``
+        builds the grids serially.
         """
         import astropy.units as u
 

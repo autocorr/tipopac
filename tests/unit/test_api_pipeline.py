@@ -131,6 +131,7 @@ def test_tipopac_forwards_every_argument_to_its_stage(
         "source": "afgl",
         "afgl_climatology": "midlatitude_winter",
     }
+    assert by_name["build_atm_grids"] == {"n_workers": 4}
     assert by_name["fit"] == {
         "mode": "independent_tau_solve",
         "n_workers": 4,

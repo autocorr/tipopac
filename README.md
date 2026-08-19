@@ -40,7 +40,7 @@ from tipopac import tipopac
 
 result = tipopac(
     "data/tip_test.ms",
-    n_workers=8,                           # process-pool parallelism
+    n_workers=8,                           # am-grid and Stage-A pool size (None = serial)
     output_dir="run",                      # optional
 )
 

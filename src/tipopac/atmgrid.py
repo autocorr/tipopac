@@ -39,6 +39,7 @@ DEFAULT_PWV_MIN_MM: float = 1.0
 DEFAULT_PWV_MAX_MM: float = 50.0
 DEFAULT_PWV_STEP_MM: float = 0.5
 DEFAULT_FREQ_STEP_HZ: float = 100e6  # 100 MHz, matches warm-am ≈ 25 ms
+DEFAULT_N_WORKERS: int = 8
 GRID_FREQ_MIN_HZ: float = 1e9
 GRID_FREQ_MAX_HZ: float = 51e9
 
@@ -306,7 +307,7 @@ def build_pwv_grid(
     pwv_max_mm: float = DEFAULT_PWV_MAX_MM,
     pwv_step_mm: float = DEFAULT_PWV_STEP_MM,
     freq_step_Hz: float = DEFAULT_FREQ_STEP_HZ,
-    n_workers: int | None = 8,
+    n_workers: int | None = DEFAULT_N_WORKERS,
 ) -> PwvGrid:
     """Run am over a PWV grid and return a populated :class:`PwvGrid`.
 
@@ -324,7 +325,8 @@ def build_pwv_grid(
     freq_step_Hz:
         am output frequency step. 100 MHz keeps each run ~25 ms warm.
     n_workers:
-        Process-pool size. If `None` then ``min(grid, cpu_count)``.
+        Process-pool size, capped at ``cpu_count``. ``None`` or ``≤ 1``
+        runs serially in the calling process.
 
     Notes
     -----
@@ -369,7 +371,7 @@ def build_pwv_grid(
 
     n_grid = pwv_axis.size
     cpu = os.cpu_count() or 1
-    n_eff = min(n_workers, cpu) if n_workers is not None else min(n_grid, cpu)
+    n_eff = 1 if n_workers is None else min(n_workers, cpu)
     n_eff = max(1, min(n_eff, n_grid))
 
     if n_eff == 1:
