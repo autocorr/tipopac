@@ -282,6 +282,31 @@ def test_sdm_ms_parity_syspower(ds_ms, ds_sdm) -> None:
 
 
 @pytest.mark.slow
+def test_sdm_ms_parity_exposure_time(ds_ms, ds_sdm) -> None:
+    """exposure_time must agree between readers at matched timestamps.
+
+    Both readers take the per-slot median of the SYSPOWER interval column, so
+    the values agree to well inside a microsecond.
+    """
+    utc_ms = ds_ms["time_utc"].values
+    utc_sdm = ds_sdm["time_utc"].values
+    ms_exp = ds_ms["exposure_time"].values
+    sdm_exp = ds_sdm["exposure_time"].values
+
+    for i in range(ds_ms.sizes["scan"]):
+        jj_ms, jj_sdm = _common_time_indices(utc_ms[i], utc_sdm[i])
+        if len(jj_ms) == 0:
+            continue
+        np.testing.assert_allclose(
+            ms_exp[i, jj_ms],
+            sdm_exp[i, jj_sdm],
+            rtol=0,
+            atol=1e-7,
+            err_msg=f"exposure_time diverges at scan index {i}",
+        )
+
+
+@pytest.mark.slow
 def test_sdm_ms_parity_tcal_ref(ds_ms, ds_sdm) -> None:
     """tcal_ref must agree between MS and SDM readers to within 1%."""
     ms_tcal = ds_ms["tcal_ref"].values
