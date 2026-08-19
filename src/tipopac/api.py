@@ -110,22 +110,13 @@ def _coerce_attr_for_netcdf(value: Any) -> Any:
 
 
 def _write_dataset_netcdf(ds: xr.Dataset, path: Path) -> None:
-    """Write ``ds`` to NetCDF, sanitizing attrs/vars NetCDF cannot encode.
+    """Write ``ds`` to NetCDF, sanitizing attrs NetCDF cannot encode.
 
     Works on a shallow copy so the caller's in-memory Dataset is not
-    mutated. Coerces ``pwv_profile_source`` from object dtype to a
-    fixed-width unicode array and runs every Dataset attr through
-    :func:`_coerce_attr_for_netcdf`.
+    mutated. Object-dtype string vars (``fit_reason``,
+    ``pwv_profile_source``) need no help — xarray encodes them itself.
     """
     to_write = ds.copy()
-    if "pwv_profile_source" in to_write.data_vars and to_write[
-        "pwv_profile_source"
-    ].dtype == np.dtype("O"):
-        vals = to_write["pwv_profile_source"].values
-        to_write["pwv_profile_source"] = (
-            to_write["pwv_profile_source"].dims,
-            np.asarray([str(v) for v in vals], dtype="U"),
-        )
     to_write.attrs = {k: _coerce_attr_for_netcdf(v) for k, v in to_write.attrs.items()}
     to_write.to_netcdf(path)
 

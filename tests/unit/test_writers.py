@@ -1,8 +1,7 @@
 """Unit tests for the on-disk writers on ``tipopac.api``.
 
 Exercises ``_write_dataset_netcdf`` (with the gnarly attr coercion that
-matters in production — list/dict/Path/None attrs and the object-dtype
-``pwv_profile_source`` data var) and ``_write_tsv``.
+matters in production — list/dict/Path/None attrs) and ``_write_tsv``.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from tests.factories import make_fitted_dataset
 from tipopac.api import _write_dataset_netcdf, _write_tsv
 from tipopac.tables import model_opacity_table
 
@@ -27,7 +27,9 @@ def _messy_dataset() -> xr.Dataset:
       - ``bands_requested``: ``"default_high_freq"`` (string sentinel)
       - ``source_path``: ``Path`` (not str)
       - ``open_meteo_query``: ``dict`` (the hardest case)
-      - ``pwv_profile_source``: object-dtype string per-scan
+
+    ``pwv_profile_source`` rides along as an object-dtype string var;
+    xarray encodes those without help.
     """
     freq = np.linspace(2e10, 4e10, 8)
     ds = xr.Dataset(
@@ -111,6 +113,25 @@ def test_write_dataset_netcdf_roundtrip(tmp_path: Path) -> None:
             json.loads(reopened.attrs["software_versions"])
             == ds.attrs["software_versions"]
         )
+    finally:
+        reopened.close()
+
+
+def test_write_dataset_netcdf_keeps_object_dtype_string_vars(tmp_path: Path) -> None:
+    """``fit_reason`` and ``pwv_profile_source`` round-trip without coercion."""
+    ds = make_fitted_dataset(n_scan=2, n_ant=2, n_spw=2, with_pwv=True)
+    path = tmp_path / "tipopac.nc"
+
+    _write_dataset_netcdf(ds, path)
+
+    assert ds["fit_reason"].dtype == np.dtype("O")
+    assert ds["pwv_profile_source"].dtype == np.dtype("O")
+    reopened = xr.open_dataset(path)
+    try:
+        assert [str(v) for v in reopened["fit_reason"].values.ravel()] == ["ok"] * 8
+        assert [str(v) for v in reopened["pwv_profile_source"].values] == [
+            "open_meteo"
+        ] * 2
     finally:
         reopened.close()
 
