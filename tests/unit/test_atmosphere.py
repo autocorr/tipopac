@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -314,6 +315,8 @@ def test_attach_profile_open_meteo_called_once(
     assert call_count["n"] == 1
     assert ds.attrs["atm_profile_source"] == "open_meteo"
     assert "atm_pressure" in ds.data_vars
+    # attr is JSON, not a dict: NetCDF attrs take no dicts (design.md §4)
+    assert json.loads(ds.attrs["open_meteo_query"]) == {"endpoint": "fake"}
 
 
 # ---------------------------------------------------------------------------
