@@ -447,13 +447,7 @@ def _build_dataset(
         in_scan = np.zeros(n_spw, dtype=bool)
         for s in sc_spw_set & spw_to_idx.keys():
             in_scan[spw_to_idx[s]] = True
-        keep = (
-            (ant_idx >= 0)
-            & (ant_idx < n_ant)
-            & (spw_idx >= 0)
-            & (slot_idx >= 0)
-            & in_scan[spw_idx]
-        )
+        keep = (spw_idx >= 0) & (slot_idx >= 0) & in_scan[spw_idx]
         ant_idx, spw_idx, slot_idx = ant_idx[keep], spw_idx[keep], slot_idx[keep]
 
         _scatter_syspower(
