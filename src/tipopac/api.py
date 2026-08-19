@@ -151,10 +151,19 @@ class Result:
     """Return value of `tipopac()` and `TippingAnalysis.result`."""
 
     dataset: xr.Dataset
+    """The fitted dataset: inputs, fit outputs, and provenance attrs."""
+
     mode: str
+    """Fit mode the analysis ran under."""
+
     input_path: Path
+    """Path of the MS or SDM that was read."""
+
     input_format: Literal["ms", "sdm"]
+    """Which of the two reader formats `input_path` was."""
+
     software_versions: dict[str, str]
+    """Versions of tipopac and its numerical dependencies at run time."""
 
 
 def tipopac(
@@ -175,7 +184,7 @@ def tipopac(
     caltable_opacity: bool = False,
     caltable_tcal: bool = False,
 ) -> Result:
-    """Run the full tipping-curve pipeline and return a :class:`Result`.
+    """Run the full tipping-curve pipeline and return a [`Result`][tipopac.Result].
 
     Parameters
     ----------
@@ -207,7 +216,8 @@ def tipopac(
         Path to a user flag file (one ``antenna/spw/timerange`` line per row).
     atm_profile_source:
         ``"open-meteo"`` (default) or ``"afgl"``. Drives the single
-        :meth:`TippingAnalysis.fetch_atm_profile` call; downstream
+        [`TippingAnalysis.fetch_atm_profile`][tipopac.TippingAnalysis.fetch_atm_profile]
+        call; downstream
         consumers read the profile off the dataset.
     afgl_climatology:
         AFGL climatology name used on open-meteo fallback or when
@@ -237,7 +247,7 @@ def tipopac(
     output_dir:
         Directory for all on-disk outputs (created if missing). Default
         ``Path(".")`` writes into the current working directory. ``None``
-        is compute-only mode — return the :class:`Result` without writing
+        is compute-only mode — return the [`Result`][tipopac.Result] without writing
         anything. When set, every run produces ``tipopac.nc`` (full
         Dataset), ``model_opacity.tsv`` (Stage-B τ(ν) at the
         representative PWV), the interactive ``.html`` plots, and the
@@ -303,6 +313,11 @@ class TippingAnalysis:
         scans: Sequence[int] | None = None,
         bands: Sequence[str] | None = None,
     ) -> "TippingAnalysis":
+        """Read an MS or SDM (auto-detected) and start an analysis on it.
+
+        `scans` and `bands` select as the like-named parameters of
+        [`tipopac`][tipopac.tipopac] do.
+        """
         p = Path(path)
         R = _detect_reader(p)
         ds = R.from_path(p, scans=scans, bands=bands).read()
@@ -314,6 +329,11 @@ class TippingAnalysis:
         online: bool = True,
         file: Path | None = None,
     ) -> None:
+        """Flag samples in place, before any profile fetch or fit.
+
+        `online` and `file` select as the like-named `flags_online` and
+        `flags_file` parameters of [`tipopac`][tipopac.tipopac] do.
+        """
         from tipopac import flags
 
         self._ds = flags.apply(self._ds, online=online, file=file)
@@ -355,9 +375,11 @@ class TippingAnalysis:
         freq_step_Hz: float = DEFAULT_FREQ_STEP_HZ,
         n_workers: int | None = DEFAULT_N_WORKERS,
     ) -> None:
-        """Build per-scan :class:`PwvGrid` objects.
+        """Build per-scan `PwvGrid` objects.
 
-        Auto-calls :meth:`fetch_atm_profile` with defaults if the profile
+        Auto-calls
+        [`fetch_atm_profile`][tipopac.TippingAnalysis.fetch_atm_profile]
+        with defaults if the profile
         is not yet on the dataset. Populates ``self._grids[scan_id] =
         PwvGrid`` for every scan and writes the ``pwv_profile_source(scan,)``
         and ``pwv_model(scan,)`` data vars for provenance. The grids feed
@@ -475,6 +497,13 @@ class TippingAnalysis:
         group_duration_s: float | None = DEFAULT_GROUP_DURATION_S,
         min_airmass_span: float = DEFAULT_MIN_AIRMASS_SPAN,
     ) -> None:
+        """Run Stage A and Stage B, and Stage C in the default mode.
+
+        Calls [`build_atm_grids`][tipopac.TippingAnalysis.build_atm_grids]
+        first if no grids exist yet, forwarding `n_workers`. Arguments
+        match the like-named parameters of [`tipopac`][tipopac.tipopac].
+        Raises `ValueError` on an unknown `mode`.
+        """
         if mode not in _INDEPENDENT_TO_BACKEND:
             raise ValueError(
                 f"mode must be one of {tuple(_INDEPENDENT_TO_BACKEND)!r}, got {mode!r}"
@@ -531,11 +560,13 @@ class TippingAnalysis:
         self._mode = mode
 
     def plot(self, out_dir: str | Path) -> None:
+        """Write every diagnostic plot as interactive HTML into `out_dir`."""
         from tipopac.plot import PlotData
 
         PlotData(self._ds).save_all(out_dir=Path(out_dir))
 
     def weblog(self, plot_dir: str | Path) -> None:
+        """Write `index.html`, an index of the plots already in `plot_dir`."""
         from tipopac.weblog import build_weblog
 
         build_weblog(Path(plot_dir))
@@ -546,6 +577,10 @@ class TippingAnalysis:
         opacity: Path | None = None,
         tcal: Path | None = None,
     ) -> None:
+        """Write CASA caltables to the given paths; `None` skips one.
+
+        `opacity` gets a TOpac table, `tcal` a Tcal table.
+        """
         from tipopac import caltables
 
         if opacity is not None:
@@ -586,6 +621,10 @@ class TippingAnalysis:
 
     @property
     def result(self) -> Result:
+        """A [`Result`][tipopac.Result] for this analysis.
+
+        Raises `RuntimeError` if `fit` has not been called.
+        """
         if self._mode is None:
             raise RuntimeError("call fit() before accessing result")
         fmt: Literal["ms", "sdm"] = self._ds.attrs.get("source_format", "ms")
@@ -599,4 +638,5 @@ class TippingAnalysis:
 
     @property
     def dataset(self) -> xr.Dataset:
+        """The live dataset, which every stage mutates in place."""
         return self._ds

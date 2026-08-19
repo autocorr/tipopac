@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -254,3 +255,56 @@ def test_grid_step_defaults_come_from_atmgrid() -> None:
     params = inspect.signature(TippingAnalysis.build_atm_grids).parameters
     assert params["pwv_step_mm"].default is atmgrid.DEFAULT_PWV_STEP_MM
     assert params["freq_step_Hz"].default is atmgrid.DEFAULT_FREQ_STEP_HZ
+
+
+# ---------------------------------------------------------------------------
+# API-reference coverage
+# ---------------------------------------------------------------------------
+
+# mkdocstrings omits members with no docstring, so an undocumented public
+# member silently vanishes from docs/api.md rather than failing the build.
+
+
+def _public_members(obj: type) -> list[str]:
+    return [
+        n
+        for n in vars(obj)
+        if not n.startswith("_")
+        and (callable(getattr(obj, n)) or isinstance(vars(obj)[n], property))
+    ]
+
+
+@pytest.mark.parametrize("name", _public_members(TippingAnalysis))
+def test_tipping_analysis_members_are_documented(name: str) -> None:
+    assert getattr(TippingAnalysis, name).__doc__, f"{name} would be omitted"
+
+
+def test_result_fields_are_documented() -> None:
+    import dataclasses
+
+    from tipopac.api import Result
+
+    lines = inspect.getsource(Result).splitlines()
+    for f in dataclasses.fields(Result):
+        i = next(
+            i for i, ln in enumerate(lines) if ln.strip().startswith(f"{f.name}: ")
+        )
+        assert lines[i + 1].strip().startswith('"""'), f"{f.name} would be omitted"
+
+
+@pytest.mark.parametrize(
+    "method", ["from_path", "apply_flags", "fit", "build_atm_grids"]
+)
+def test_staged_methods_share_tipopac_parameter_names(method: str) -> None:
+    """The docstrings cross-reference tipopac() rather than restate it."""
+    from tipopac.api import tipopac
+
+    documented = set(inspect.signature(tipopac).parameters) | {
+        "online",
+        "file",
+        "pwv_step_mm",
+        "freq_step_Hz",
+    }
+    params = set(inspect.signature(getattr(TippingAnalysis, method)).parameters)
+    undocumented = params - documented - {"self", "cls"}
+    assert not undocumented, f"{method}: {sorted(undocumented)} not in tipopac()"
