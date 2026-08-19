@@ -810,7 +810,7 @@ class _Heatmap(Plot):
     def _metric_array(self) -> xr.DataArray:
         raise NotImplementedError
 
-    def _color_encoding(self) -> alt.Color:
+    def _color_encoding(self, metric: xr.DataArray) -> alt.Color:
         raise NotImplementedError
 
     def _metric_tooltip(self) -> alt.Tooltip:
@@ -840,11 +840,13 @@ class _Heatmap(Plot):
 
     def build(self) -> alt.Chart | alt.FacetChart:
         metric_name = self._metric_name()
+        metric = self._metric_array()
+        extras = self._extra_data_arrays()
         plot_ds = xr.Dataset(
             {
                 "flag_fraction": self._flag_fraction(),
-                metric_name: self._metric_array(),
-                **self._extra_data_arrays(),
+                metric_name: metric,
+                **extras,
             }
         )
         df = plot_ds.to_dataframe().reset_index()
@@ -852,7 +854,7 @@ class _Heatmap(Plot):
         # Drop non-dim coords (frequency_GHz, band, scan_time_*, …) xarray
         # carries through from ds_sub — they bloat the embedded JSON.
         base_cols = ["antenna", "spw", "scan", "flag_fraction", metric_name]
-        extra_cols = list(self._extra_data_arrays().keys())
+        extra_cols = list(extras)
         df = df[base_cols + extra_cols]
         _round(df, flag_fraction=3)
 
@@ -878,7 +880,7 @@ class _Heatmap(Plot):
             .encode(
                 x=alt.X("spw:O", title="Spectral window"),
                 y=alt.Y("antenna:N", title="Antenna"),
-                color=self._color_encoding(),
+                color=self._color_encoding(metric),
                 tooltip=tooltip,
             )
             .properties(width=facet_w, height=chart_h)
@@ -926,7 +928,7 @@ class FitQualityHeatmap(_Heatmap):
     def _metric_array(self) -> xr.DataArray:
         return self.ds_sub["fit_reason"]
 
-    def _color_encoding(self) -> alt.Color:
+    def _color_encoding(self, metric: xr.DataArray) -> alt.Color:
         return alt.Color(
             "fit_reason:N",
             scale=alt.Scale(
@@ -960,8 +962,8 @@ class ResidualRmsHeatmap(_Heatmap):
         rms = (resid**2).mean(dim=("polarization", "time")) ** 0.5
         return rms.astype(np.float64).round(2)
 
-    def _color_encoding(self) -> alt.Color:
-        vmax = min(float(self._metric_array().max()), _RESIDUAL_RMS_COLOR_MAX_K)
+    def _color_encoding(self, metric: xr.DataArray) -> alt.Color:
+        vmax = min(float(metric.max()), _RESIDUAL_RMS_COLOR_MAX_K)
         return alt.Color(
             "residual_rms_K:Q",
             scale=alt.Scale(type="log", scheme="viridis", domainMax=vmax, clamp=True),
