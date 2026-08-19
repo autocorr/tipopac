@@ -321,13 +321,13 @@ Attrs
   observatory         : "VLA"
   mode                : str  (the public mode used)
   group_duration_s    : float | "none"  (Stage-B grouping window)
-  software_versions   : dict[str, str]
+  software_versions   : str  (JSON of dict[str, str]; NetCDF attrs take no dicts)
   scans_requested     : "all" | list[int]   (user-supplied scans argument, or "all")
   bands_requested     : "default_high_freq" | list[str]  (user-supplied bands argument)
   selected_scans      : list[int]           (resolved DO_SKYDIP scans kept after filtering)
   selected_bands      : list[str]           (sorted unique band labels present after filtering)
   atm_profile_source  : "open_meteo" | "afgl_<climatology>"
-  open_meteo_query    : dict | None      (provenance: lat, lon, time, endpoint, model)
+  open_meteo_query    : str  (JSON; provenance: lat, lon, time, endpoint, model; absent when unused)
   spillover_model     : str              (η(ν) model label; absent when the term is off)
   spillover_eta_coef  : list[float]      (η(ν) polynomial coefficients; same)
 ```

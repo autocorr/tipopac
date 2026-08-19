@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -80,8 +81,7 @@ def test_software_versions_attr_written_at_construction() -> None:
 
     TippingAnalysis(ds, Path("fake.ms"))
 
-    versions = ds.attrs["software_versions"]
-    assert isinstance(versions, dict)
+    versions = json.loads(ds.attrs["software_versions"])
     assert set(versions) == {"tipopac", "casatools", "sdmpy", "amwrap", "am"}
     assert all(isinstance(v, str) and v for v in versions.values())
 

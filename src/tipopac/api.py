@@ -292,7 +292,7 @@ class TippingAnalysis:
         self._path = path
         self._mode: str | None = None
         self._versions = _software_versions()
-        ds.attrs["software_versions"] = self._versions
+        ds.attrs["software_versions"] = json.dumps(self._versions)
         self._grids: dict[int, PwvGrid] = {}
 
     @classmethod

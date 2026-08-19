@@ -8,6 +8,7 @@ dataset; only the caltable writers (which need CASA) are stubbed.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ import xarray as xr
 from tests.factories import make_fitted_dataset
 from tipopac import caltables
 from tipopac.api import Result, TippingAnalysis, tipopac
+from tipopac.bands import attach_selection_attrs
 
 
 def _output_ds() -> xr.Dataset:
@@ -186,7 +188,7 @@ def test_result_carries_the_dataset_and_provenance() -> None:
 
     assert result.dataset is ds
     assert result.input_format == "sdm"
-    assert result.software_versions == ds.attrs["software_versions"]
+    assert result.software_versions == json.loads(ds.attrs["software_versions"])
 
 
 def test_result_input_format_defaults_to_ms() -> None:
@@ -246,6 +248,33 @@ def test_write_outputs_writes_the_netcdf_and_both_tsvs(tmp_path: Path) -> None:
     ]
     # One row per (scan, spw) with a successful fit.
     assert len(measured) == 1 + ds.sizes["scan"] * ds.sizes["spw"]
+
+
+def test_result_dataset_writes_netcdf_without_the_writer(tmp_path: Path) -> None:
+    """design.md §9.1 offers ``result.dataset.to_netcdf(...)``; it must not raise.
+
+    Every attr the pipeline sets has to be NetCDF-encodable on its own, so
+    the documented archive call works without going through
+    ``write_outputs``. The attrs here come from the real writers.
+    """
+    ds = _output_ds()
+    ta = TippingAnalysis(ds, Path("fake.ms"))
+    ta._mode = "independent_tau"
+    attach_selection_attrs(ds, None, None)
+    ds.attrs["source_path"] = "fake.ms"
+
+    path = tmp_path / "direct.nc"
+    ta.result.dataset.to_netcdf(path)
+
+    reopened = xr.open_dataset(path)
+    try:
+        assert json.loads(reopened.attrs["software_versions"])["tipopac"]
+        assert sorted(str(b) for b in reopened.attrs["selected_bands"]) == sorted(
+            {str(b) for b in ds.coords["band"].values}
+        )
+        assert str(reopened["fit_reason"].values.ravel()[0]) == "ok"
+    finally:
+        reopened.close()
 
 
 def test_write_outputs_skips_caltables_by_default(

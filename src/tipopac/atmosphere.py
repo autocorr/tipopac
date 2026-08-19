@@ -13,6 +13,7 @@ Public entry point
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import warnings
@@ -248,7 +249,7 @@ def attach_profile(
     )
     ds.attrs["atm_profile_source"] = used_source
     if open_meteo_query is not None:
-        ds.attrs["open_meteo_query"] = open_meteo_query
+        ds.attrs["open_meteo_query"] = json.dumps(open_meteo_query, default=str)
     if np.any(np.isfinite(surface_pressures_hPa)):
         ds["surface_pressure_hPa"] = (("scan",), surface_pressures_hPa)
 
