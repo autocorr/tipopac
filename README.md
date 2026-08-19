@@ -5,7 +5,8 @@ temperatures. This library reads either CASA Measurement Sets or SDM files (no
 BDF required). It then fits a per-(scan, antenna, spw) atmospheric model using
 predictions from the atmospheric radiative transfer code AM using vertical
 atmospheric profiles from NCEP's High-Resolution Rapid Refresh forecast
-analysis. This rewrite is based off prior work written by Chris Hales (see
+analysis, falling back to AFGL climatologies when those are unavailable.
+This rewrite is based off prior work written by Chris Hales (see
 `vendor/tipopac_v1.0`) with contributions from Pedro Beaklini
 (`vendor/tipopac_v2.6`).
 
@@ -26,14 +27,16 @@ dependencies, including the AM wrapper
 [`amwrap`](https://github.com/autocorr/amwrap) from the pinned source on
 GitHub.
 
-To run the integration tests link the test measurement set
-(THIG0007.sb39095133.eb39266164.59246.04231435186/) in `data/`.
+To run the slow tests link the shared tipping dataset into `data/`: the
+Measurement Set as `tip_test.ms` and the matching SDM as `tip_test.sdm`.
+With only one of the two present, `pytest -m slow` aborts; narrow the
+selection to the tests that read the form you have.
 
 ## Quickstart
 
 ### Library usage
 
-The example below runes the pipeline and produces optional caltables and plots:
+The example below runs the pipeline and produces optional caltables and plots:
 
 ```python
 from tipopac import tipopac
@@ -75,7 +78,7 @@ uv sync                                    # install + lock deps
 
 uv run pytest                              # unit tests (fast)
 uv run pytest tests/unit                   # explicit
-uv run pytest -m slow                      # integration; needs data/tip_test.ms
+uv run pytest -m slow                      # needs data/tip_test.ms + tip_test.sdm
 uv run pytest -m network                   # hits live open-meteo
 uv run pytest tests/unit/test_fit.py::test_fit_tau_per_antenna_recovers_params
 
@@ -85,8 +88,8 @@ uv run ruff format .                       # format
 uv run ty check src/tipopac                # type-check
 ```
 
-By default `pytest` skips both `slow` (needs the ~7 GB MS) and `network`
-markers, see `[tool.pytest.ini_options]` in `pyproject.toml`.
+By default `pytest` skips both `slow` (needs the shared test data) and
+`network` markers, see `[tool.pytest.ini_options]` in `pyproject.toml`.
 
 The package layout is `src/tipopac/`; readers live under
 `src/tipopac/readers/`. The legacy task at

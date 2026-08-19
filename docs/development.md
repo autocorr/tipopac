@@ -35,9 +35,12 @@ uv run pytest tests/unit/test_fit.py::test_fit_tau_per_antenna_recovers_params
     *overrides* it rather than adding to it, so `-m "not slow"` silently
     re-enables the live-network test. Spell out both markers.
 
-- **`slow`** — the full-pipeline integration test against the ~7 GB
-  `data/tip_test.ms` (see [Installation](installation.md#optional-the-test-dataset)).
-  It uses the AFGL profile source for determinism. Worker count defaults to
+- **`slow`** — tests that read the shared `data/tip_test.ms` /
+  `data/tip_test.sdm` (see
+  [Installation](installation.md#optional-the-test-dataset)). Most are
+  per-module reader and writer checks under `tests/unit/`; the
+  full-pipeline runs live in `tests/integration/`. They use the AFGL
+  profile source for determinism. Worker count defaults to
   `min(16, cpu_count())`; set `TIPOPAC_TEST_WORKERS` to override (`1` for
   serial). Shared MS/SDM reads live in `tests/conftest.py`, so the test data
   is read once per session rather than once per test. Selecting a slow test

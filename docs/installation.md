@@ -61,14 +61,19 @@ uv run python -c "import tipopac; print(tipopac.__name__)"
 
 ## Optional: the test dataset
 
-The integration test (`pytest -m slow`) needs the shared ~7 GB tipping
-Measurement Set. `data/` is a symlink to a shared location; link the test
-MS into it:
+The slow tests (`pytest -m slow`) read the shared tipping dataset in both
+of its forms: the ~7 GB Measurement Set and the matching SDM. `data/` is a
+symlink to a shared location; link both into it:
 
 ```text
-data/tip_test.ms -> .../THIG0007.sb39095133.eb39266164.59246.04231435186/
+data/tip_test.ms  -> .../THIG0007.sb39095133.eb39266164.59246.04231435186.ms/
+data/tip_test.sdm -> .../THIG0007.sb39095133.eb39266164.59246.04231435186/
 ```
 
-Without it, the fast unit tests still run (`uv run pytest`, which skips the
-`slow` and `network` markers by default). See
+Each slow test declares which of the two it needs, and selecting one whose
+data is absent aborts the run rather than skipping it — so a green run is
+never a silent no-op. An MS-only checkout can still *select* the MS-only
+tests by path, but a bare `pytest -m slow` selects the SDM tests too and
+aborts. Without either form, the fast unit tests still run (`uv run
+pytest`, which skips the `slow` and `network` markers by default). See
 [Development](development.md) for the full test matrix.
