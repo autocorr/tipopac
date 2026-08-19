@@ -374,6 +374,8 @@ def test_sdm_ms_parity_weather(ds_ms, ds_sdm) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.needs_ms
+@pytest.mark.needs_sdm
 def test_sdm_ms_parity_online_flag_commands() -> None:
     """Flag.xml and FLAG_CMD must yield the same (antenna, t_start, t_end) set.
 

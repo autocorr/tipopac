@@ -46,15 +46,27 @@ def n_workers() -> int:
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Fail the run outright if slow tests are selected without their data."""
-    if not any(item.get_closest_marker("slow") for item in items):
-        return
-    missing = [p for p in (MS_PATH, SDM_PATH) if not p.exists()]
+    """Fail the run outright if slow tests are selected without their data.
+
+    A test declares its fixture by requesting ``ds_ms``/``ds_sdm`` or by
+    carrying ``needs_ms``/``needs_sdm``, so an MS-only checkout can still
+    run the MS-only slow tests.
+    """
+    required: set[Path] = set()
+    for item in items:
+        if item.get_closest_marker("slow") is None:
+            continue
+        names = getattr(item, "fixturenames", ())
+        if "ds_ms" in names or item.get_closest_marker("needs_ms"):
+            required.add(MS_PATH)
+        if "ds_sdm" in names or item.get_closest_marker("needs_sdm"):
+            required.add(SDM_PATH)
+    missing = sorted(str(p) for p in required if not p.exists())
     if missing:
         raise pytest.UsageError(
             "slow tests selected but the validation data is missing: "
-            + ", ".join(str(p) for p in missing)
-            + " (set TIPOPAC_TEST_DATA_DIR to point elsewhere)"
+            + ", ".join(missing)
+            + " — see docs/installation.md"
         )
 
 

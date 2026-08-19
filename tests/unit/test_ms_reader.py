@@ -14,6 +14,8 @@ import pytest
 
 from tests.conftest import MS_PATH
 
+pytestmark = pytest.mark.needs_ms
+
 
 # ---------------------------------------------------------------------------
 # Fast tests — no MS required

@@ -24,7 +24,7 @@ never bare `python`.
 ```bash
 uv run pytest                              # fast unit + synth tests
 uv run pytest -m "not slow and not network"   # explicit form of the default
-uv run pytest -m slow                      # integration; needs data/tip_test.ms
+uv run pytest -m slow                      # integration; needs data/tip_test.ms + .sdm
 uv run pytest -m network                   # hits the live Open-Meteo endpoint
 uv run pytest tests/unit/test_fit.py::test_fit_tau_per_antenna_recovers_params
 ```
@@ -40,7 +40,10 @@ uv run pytest tests/unit/test_fit.py::test_fit_tau_per_antenna_recovers_params
   It uses the AFGL profile source for determinism. Worker count defaults to
   `min(16, cpu_count())`; set `TIPOPAC_TEST_WORKERS` to override (`1` for
   serial). Shared MS/SDM reads live in `tests/conftest.py`, so the test data
-  is read once per session rather than once per test.
+  is read once per session rather than once per test. Selecting a slow test
+  whose fixture is absent aborts the run rather than skipping it, so a green
+  run is never a silent no-op; MS-only checkouts can still select the MS-only
+  slow tests.
 - **`network`** — tests that exercise the live Open-Meteo API.
 
 Tests are organized under `tests/unit/` (one module per source module),

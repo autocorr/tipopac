@@ -51,6 +51,8 @@ addopts = "-m 'not slow and not network'"
 markers = [
     "slow: integration tests requiring data/tip_test.ms",
     "network: tests exercising the live open-meteo endpoint",
+    "needs_ms: slow tests reading data/tip_test.ms outside the ds_ms fixture",
+    "needs_sdm: slow tests reading data/tip_test.sdm outside the ds_sdm fixture",
 ]
 filterwarnings = [
     # netcdf4's abi3 wheel is Cython-built against an older numpy than the

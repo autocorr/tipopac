@@ -16,6 +16,8 @@ import pytest
 
 from tests.conftest import MS_PATH
 
+pytestmark = pytest.mark.needs_ms
+
 
 # ---------------------------------------------------------------------------
 # Tests — independent_tau_solve (Stage A + B, design/independent_tau_fit.md)

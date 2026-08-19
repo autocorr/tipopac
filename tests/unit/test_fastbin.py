@@ -14,6 +14,8 @@ import pytest
 
 from tests.conftest import SDM_PATH
 
+pytestmark = pytest.mark.needs_sdm
+
 
 # ---------------------------------------------------------------------------
 # Fast tests — no SDM required

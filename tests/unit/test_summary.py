@@ -16,6 +16,8 @@ from tipopac.summary import _format_skydip_table, summarize_skydip_scans
 
 from tests.conftest import MS_PATH
 
+pytestmark = pytest.mark.needs_ms
+
 
 # ---------------------------------------------------------------------------
 # Fast tests — no MS required
