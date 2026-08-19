@@ -11,156 +11,10 @@ from tipopac import schema
 from tipopac import physics
 from tipopac.fit import fit_dataset
 
-
-def _band_label(freq_Hz: float) -> str:
-    """Stand-in band label for synthetic datasets — fit logic ignores it."""
-    return "K"
+from tests.factories import make_tipping_dataset
 
 
-# ---------------------------------------------------------------------------
-# Synthetic dataset helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_tip_ds(
-    T0_R: float = 50.0,
-    T0_L: float = 48.0,
-    tau0: float = 0.04,  # realistic for VLA L/C/X-band; 0.08 at 10 GHz exceeds stdTsys=5 K gate
-    freq_Hz: float = 10e9,
-    n_time: int = 30,
-    noise_K: float = 0.3,
-    *,
-    rng: np.random.Generator | None = None,
-    flat_za: bool = False,
-    za_range: tuple[float, float] = (35.0, 65.0),
-    n_scan: int = 1,
-    n_ant: int = 1,
-    n_spw: int = 1,
-) -> xr.Dataset:
-    """Build a minimal dataset with synthetic tipping data.
-
-    switched_diff = 1.0, tcal_ref = 5.0 K, so
-    Tsys = switched_sum / 2.0 * tcal_ref = switched_sum * 2.5.
-    """
-    if rng is None:
-        rng = np.random.default_rng(42)
-
-    T_surf = 280.0  # K
-    Twmt = float(physics.k2nt(physics.mean_radiating_T(T_surf), freq_Hz))
-    # Generate with the attenuated CMB the fitter now models, so the round-trip
-    # tests parameter recovery rather than a model mismatch. Omitting it makes
-    # the recovered T0 low by ~Tcmb.
-    Tcmb = float(physics.k2nt(physics.T_CMB, freq_Hz))
-
-    z = np.linspace(*za_range, n_time) if not flat_za else np.full(n_time, za_range[0])
-
-    tsys_R_clean = physics.tsys_model(z, T0_R, tau0, Twmt, Tcmb)
-    tsys_L_clean = physics.tsys_model(z, T0_L, tau0, Twmt, Tcmb)
-    tsys_R = tsys_R_clean + rng.normal(0.0, noise_K, n_time)
-    tsys_L = tsys_L_clean + rng.normal(0.0, noise_K, n_time)
-
-    tcal = 5.0
-    # Pick exposure_time so radiometer σ_Tsys ≈ max(noise_K, 0.01 K) at the
-    # scan-mean Tsys. This keeps synthetic test data consistent with the
-    # reader-derived σ that the fit consumes:
-    #   σ = 2 · Tsys² / (Tcal · √(Δν·τ_int))  →  τ_int = 4·Tsys⁴ / (Tcal²·σ²·Δν)
-    bandwidth_Hz = 2e9
-    Tsys_typ = float(np.mean((tsys_R_clean + tsys_L_clean) / 2.0))
-    sigma_eff = max(float(noise_K), 0.01)
-    expo_s = float(4.0 * Tsys_typ**4 / (tcal**2 * sigma_eff**2 * bandwidth_Hz))
-    # Tsys = (switched_sum/2) / switched_diff * tcal_ref
-    # With switched_diff=1, switched_sum = 2 * tsys / tcal
-    switched_diff = np.ones((n_scan, n_ant, n_spw, 2, n_time), dtype=np.float32)
-    switched_sum = np.zeros((n_scan, n_ant, n_spw, 2, n_time), dtype=np.float32)
-    for i_sc in range(n_scan):
-        for i_a in range(n_ant):
-            for i_w in range(n_spw):
-                switched_sum[i_sc, i_a, i_w, 0, :] = (2.0 * tsys_R / tcal).astype(
-                    np.float32
-                )
-                switched_sum[i_sc, i_a, i_w, 1, :] = (2.0 * tsys_L / tcal).astype(
-                    np.float32
-                )
-
-    zenith_arr = np.zeros((n_scan, n_ant, n_time), dtype=np.float32)
-    for i_sc in range(n_scan):
-        for i_a in range(n_ant):
-            zenith_arr[i_sc, i_a, :] = z.astype(np.float32)
-
-    ant_names = [f"ea{i + 1:02d}" for i in range(n_ant)]
-    spw_ids = list(range(n_spw))
-
-    ds = xr.Dataset(
-        data_vars={
-            "switched_diff": (
-                ("scan", "antenna", "spw", "polarization", "time"),
-                switched_diff,
-            ),
-            "switched_sum": (
-                ("scan", "antenna", "spw", "polarization", "time"),
-                switched_sum,
-            ),
-            "zenith_angle": (("scan", "antenna", "time"), zenith_arr),
-            "tcal_ref": (
-                ("antenna", "spw", "polarization"),
-                np.full((n_ant, n_spw, 2), tcal, dtype=np.float32),
-            ),
-            "weather_T": (
-                ("scan", "time"),
-                np.full((n_scan, n_time), T_surf, dtype=np.float32),
-            ),
-            "weather_P": (
-                ("scan", "time"),
-                np.full((n_scan, n_time), 85000.0, dtype=np.float32),
-            ),
-            "weather_RH": (
-                ("scan", "time"),
-                np.full((n_scan, n_time), 0.3, dtype=np.float32),
-            ),
-            "exposure_time": (
-                ("scan", "time"),
-                np.full((n_scan, n_time), expo_s, dtype=np.float32),
-            ),
-            "flag": (
-                ("scan", "antenna", "spw", "polarization", "time"),
-                np.zeros((n_scan, n_ant, n_spw, 2, n_time), dtype=bool),
-            ),
-        },
-        coords={
-            "scan": np.arange(1, n_scan + 1, dtype=np.intp),
-            "antenna": ant_names,
-            "spw": np.array(spw_ids, dtype=np.intp),
-            "polarization": list(schema.POL_VALUES),
-            "xyz": ["X", "Y", "Z"],
-            "frequency": (("spw",), np.full(n_spw, freq_Hz, dtype=np.float64)),
-            "bandwidth": (("spw",), np.full(n_spw, 2e9, dtype=np.float64)),
-            "band": (
-                ("spw",),
-                np.array(
-                    [_band_label(freq_Hz)] * n_spw,
-                    dtype="U4",
-                ),
-            ),
-            "antenna_position": (
-                ("antenna", "xyz"),
-                np.zeros((n_ant, 3), dtype=np.float64),
-            ),
-            "scan_time_start": (
-                ("scan",),
-                np.arange(n_scan, dtype=np.float64) * 120.0,
-            ),
-            "scan_time_end": (
-                ("scan",),
-                np.arange(n_scan, dtype=np.float64) * 120.0 + 90.0,
-            ),
-            "time_utc": (
-                ("scan", "time"),
-                np.tile(np.arange(n_time, dtype=np.float64), (n_scan, 1))
-                + np.arange(n_scan, dtype=np.float64)[:, None] * 120.0,
-            ),
-        },
-    )
-    return ds
+_make_tip_ds = make_tipping_dataset
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +343,7 @@ def _make_tcal_ds(
             "xyz": ["X", "Y", "Z"],
             "frequency": (("spw",), np.array([freq_Hz])),
             "bandwidth": (("spw",), np.array([2e9])),
-            "band": (("spw",), np.array([_band_label(freq_Hz)], dtype="U4")),
+            "band": (("spw",), np.array(["K"], dtype="U4")),
             "antenna_position": (
                 ("antenna", "xyz"),
                 np.zeros((n_ant, 3), dtype=np.float64),

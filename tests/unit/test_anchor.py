@@ -19,29 +19,7 @@ from tipopac.anchor import (
 from tipopac.atmgrid import PwvGrid
 from tipopac.physics import k2nt
 
-
-# ---------------------------------------------------------------------------
-# Toy grid: analytic τ(PWV, ν), Tb(PWV, ν) for stable test fixtures
-# ---------------------------------------------------------------------------
-
-
-def _toy_grid(pwv_unscaled_mm: float = 5.0) -> PwvGrid:
-    """Analytic grid: τ ∝ PWV · (1 + 0.01·ν), Tb = 270·(1 − exp(−τ)).
-
-    Linear-in-PWV so the bilinear interpolant is exact, which lets the
-    Cramér–Rao σ_PWV self-consistency check pass tightly.
-    """
-    pwv = np.linspace(1.0, 10.0, 19)  # 0.5 mm step matches default
-    freq = np.linspace(10e9, 30e9, 41)  # 0.5 GHz step
-    tau = pwv[:, None] * (1.0 + 0.01 * freq[None, :] / 1e9) * 0.01
-    tb = 270.0 * (1.0 - np.exp(-tau))
-    return PwvGrid(
-        pwv_mm=pwv,
-        freq_Hz=freq,
-        tau_z=tau,
-        tb_z=tb,
-        pwv_unscaled_mm=pwv_unscaled_mm,
-    )
+from tests.factories import make_pwv_grid
 
 
 def _tau_stack(
@@ -59,7 +37,7 @@ def _tau_stack(
 
 def test_anchor_recovers_known_pwv_noiseless() -> None:
     """With τ_z synthesised at a known PWV, anchor recovers it tightly."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     pwv_true = 4.3
     freqs = np.linspace(12e9, 28e9, 16)
     tau_true, _ = grid.lookup(pwv_true, freqs)
@@ -84,7 +62,7 @@ def test_anchor_sigma_pwv_matches_residual_scatter() -> None:
     Standard test for proper error propagation: an unbiased σ_PWV satisfies
     σ_empirical / σ_predicted ∈ 1 ± √(2/(n-1)) at the 1σ level.
     """
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     pwv_true = 5.7
     freqs = np.linspace(12e9, 28e9, 16)
     tau_true, _ = grid.lookup(pwv_true, freqs)
@@ -105,8 +83,7 @@ def test_anchor_sigma_pwv_matches_residual_scatter() -> None:
 
     empirical = float(np.std(pwv_recovered, ddof=1))
     predicted = float(np.mean(pwv_err_reported))
-    # 3× tolerance on the √(2/(n−1)) sampling bound (≈0.16) to keep CI green
-    assert abs(empirical / predicted - 1.0) < 0.5, (
+    assert abs(empirical / predicted - 1.0) < np.sqrt(2.0 / (n_realisations - 1)), (
         f"empirical σ_PWV={empirical:.4f}, predicted σ_PWV={predicted:.4f}"
     )
     # And the recovered mean should not be biased away from the truth
@@ -117,7 +94,7 @@ def test_anchor_sigma_pwv_matches_residual_scatter() -> None:
 
 def test_anchor_nan_cells_skipped() -> None:
     """Non-finite τ_z cells contribute nothing; valid cells still drive the fit."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     pwv_true = 3.1
     freqs = np.linspace(12e9, 28e9, 8)
     tau_true, _ = grid.lookup(pwv_true, freqs)
@@ -134,7 +111,7 @@ def test_anchor_nan_cells_skipped() -> None:
 
 def test_anchor_zero_valid_cells_returns_nan() -> None:
     """Antenna with no finite (scan, spw) cells gets NaN PWV and σ_PWV."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     freqs = np.linspace(12e9, 28e9, 8)
     tau_z = np.full((1, 1, len(freqs)), np.nan)
     tau_err = np.full_like(tau_z, np.nan)
@@ -145,7 +122,7 @@ def test_anchor_zero_valid_cells_returns_nan() -> None:
 
 def test_anchor_missing_scan_grid_silently_skipped() -> None:
     """Scans absent from `grids` contribute nothing — the others still drive the fit."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     pwv_true = 6.2
     freqs = np.linspace(12e9, 28e9, 12)
     tau_true, _ = grid.lookup(pwv_true, freqs)
@@ -162,7 +139,7 @@ def test_anchor_missing_scan_grid_silently_skipped() -> None:
 
 def test_anchor_shape_validation() -> None:
     """Shape mismatch between tau_z, tau_err, and freqs raises ValueError."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     freqs = np.linspace(12e9, 28e9, 4)
     tau_z = np.zeros((1, 1, 4))
     tau_err = np.zeros((1, 1, 5))  # wrong shape
@@ -187,7 +164,7 @@ def test_compute_t_mean_grid_matches_lookup() -> None:
     conversion happens inside the grid, before the CMB subtraction), so
     ``compute_t_mean_grid`` must pass it through untouched.
     """
-    grid = _toy_grid(pwv_unscaled_mm=6.0)
+    grid = make_pwv_grid(pwv_unscaled_mm=6.0)
     grids = {0: grid, 2: grid}
     freqs = np.linspace(12e9, 28e9, 5)
     t_mean = compute_t_mean_grid(grids, freqs, n_scan=3)
@@ -217,7 +194,7 @@ def test_compute_t_mean_grid_empty_raises() -> None:
 
 def test_compute_t_mean_grid_infers_n_scan() -> None:
     """Without n_scan, infer max(keys)+1 — leaves trailing missing scans absent."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     freqs = np.array([15e9])
     t_mean = compute_t_mean_grid({0: grid, 2: grid}, freqs)
     assert t_mean.shape == (3, 1)
@@ -230,7 +207,7 @@ def test_compute_t_mean_grid_infers_n_scan() -> None:
 
 def test_write_am_curve_writes_expected_dims_and_values() -> None:
     """am_freq_grid/am_tau land on the dataset with the right dims, dtype, and values."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     ds = xr.Dataset()
     pwv = np.array([[4.0, 6.0, np.nan, 8.0]])  # median of finite = 6.0
     write_am_curve(ds, {0: grid, 1: grid}, pwv, np.zeros(2, dtype=np.int32))
@@ -250,7 +227,7 @@ def test_write_am_curve_writes_expected_dims_and_values() -> None:
 
 def test_write_am_curve_writes_one_curve_per_group() -> None:
     """Two groups with different PWV get different τ(ν) curves."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     ds = xr.Dataset()
     pwv = np.array([[3.0, 3.0], [9.0, 9.0]])
     write_am_curve(ds, {0: grid, 1: grid}, pwv, np.array([0, 1], dtype=np.int32))
@@ -263,8 +240,8 @@ def test_write_am_curve_writes_one_curve_per_group() -> None:
 
 def test_write_am_curve_falls_back_to_own_group_grid_when_all_nan() -> None:
     """An all-NaN group samples at *its own* grid's pwv_unscaled_mm."""
-    g0 = _toy_grid(pwv_unscaled_mm=5.5)
-    g1 = _toy_grid(pwv_unscaled_mm=2.5)
+    g0 = make_pwv_grid(pwv_unscaled_mm=5.5)
+    g1 = make_pwv_grid(pwv_unscaled_mm=2.5)
     ds = xr.Dataset()
     pwv = np.array([[np.nan, np.nan], [np.nan, np.nan]])
     write_am_curve(ds, {0: g0, 1: g1}, pwv, np.array([0, 1], dtype=np.int32))
@@ -281,7 +258,7 @@ def test_write_am_curve_rejects_empty_grids() -> None:
 
 def test_write_am_curve_rejects_mismatched_freq_axes() -> None:
     """If two scans' grids disagree on freq_Hz, fail loudly rather than silently mix."""
-    g1 = _toy_grid()
+    g1 = make_pwv_grid()
     # Build a second grid with a shifted freq axis but otherwise valid.
     freq2 = g1.freq_Hz + 1e6
     g2 = PwvGrid(
@@ -307,7 +284,7 @@ _GROUPED_FREQS = np.array([20e9, 25e9, 28e9])
 
 def test_grouped_single_group_matches_ungrouped() -> None:
     """One group must reproduce the pre-grouping anchor bit-for-bit."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     grids = {0: grid, 1: grid}
     tau_z = _tau_stack(grid, _GROUPED_FREQS, [5.0, 5.0])
     tau_err = np.full_like(tau_z, 1e-3)
@@ -324,7 +301,7 @@ def test_grouped_single_group_matches_ungrouped() -> None:
 
 def test_grouped_recovers_distinct_pwv_per_group() -> None:
     """Two scans at different PWV, split into two groups, recover both."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     tau_z = _tau_stack(grid, _GROUPED_FREQS, [4.0, 8.0])
     tau_err = np.full_like(tau_z, 1e-4)
 
@@ -342,7 +319,7 @@ def test_grouped_recovers_distinct_pwv_per_group() -> None:
 
 def test_grouped_pooling_biases_toward_the_mean() -> None:
     """The bug being fixed: one group over both scans lands between them."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     tau_z = _tau_stack(grid, _GROUPED_FREQS, [4.0, 8.0])
     tau_err = np.full_like(tau_z, 1e-4)
 
@@ -353,7 +330,7 @@ def test_grouped_pooling_biases_toward_the_mean() -> None:
 
 
 def test_grouped_group_with_no_grid_is_nan() -> None:
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     tau_z = _tau_stack(grid, _GROUPED_FREQS, [5.0, 5.0])
     tau_err = np.full_like(tau_z, 1e-3)
 
@@ -388,7 +365,7 @@ def _stage_b_dataset(grid: PwvGrid, pwv_per_scan: list[float]) -> xr.Dataset:
 
 def test_attach_stage_b_writes_all_outputs() -> None:
     """One group: pwv/pwv_err, the group coords, and the am curve all land."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     ds = _stage_b_dataset(grid, [5.0, 5.0])
     attach_stage_b(ds, {0: grid, 1: grid}, _GROUPED_FREQS, group_duration_s=None)
 
@@ -407,7 +384,7 @@ def test_attach_stage_b_writes_all_outputs() -> None:
 
 def test_attach_stage_b_splits_on_group_duration() -> None:
     """Scans an hour apart with a 30-min window fit one PWV each."""
-    grid = _toy_grid()
+    grid = make_pwv_grid()
     ds = _stage_b_dataset(grid, [4.0, 8.0])
     attach_stage_b(ds, {0: grid, 1: grid}, _GROUPED_FREQS, group_duration_s=1800.0)
 

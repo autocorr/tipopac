@@ -14,8 +14,7 @@ import numpy as np
 import pytest
 
 
-SDM_PATH = Path(__file__).parents[2] / "data" / "tip_test.sdm"
-MS_PATH = Path(__file__).parents[2] / "data" / "tip_test.ms"
+from tests.conftest import MS_PATH, SDM_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -387,11 +386,6 @@ def test_sdm_ms_parity_online_flag_commands() -> None:
     import sdmpy
 
     from tipopac.flags import _REASON_EXCLUDE, _parse_antenna_ids, _parse_command
-
-    if not (MS_PATH / "FLAG_CMD").exists():
-        pytest.skip(f"tip_test.ms not found at {MS_PATH}")
-    if not (SDM_PATH / "Flag.xml").exists():
-        pytest.skip(f"tip_test.sdm not found at {SDM_PATH}")
 
     tb = _table()
     try:

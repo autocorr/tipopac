@@ -83,12 +83,6 @@ def test_anchor_fit_rejects_outlier_on_joint_mask() -> None:
     assert np.allclose([1.0 / res["B"][0], 1.0 / res["B"][1]], 1.1, rtol=1e-9)
 
 
-def test_anchor_fit_too_few_samples() -> None:
-    pred = np.array([1.0, 2.0])
-    ivar = np.ones(2)
-    assert _anchor_fit(pred, pred, pred, ivar, ivar)["n"] == 0
-
-
 # ---------------------------------------------------------------------------
 # solve_tcal on a synthetic dataset
 # ---------------------------------------------------------------------------

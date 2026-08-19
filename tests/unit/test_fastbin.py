@@ -8,12 +8,11 @@ The fast guard test needs no fixture.
 from __future__ import annotations
 
 import struct
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-SDM_PATH = Path(__file__).parents[2] / "data" / "tip_test.sdm"
+from tests.conftest import SDM_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +115,6 @@ def test_layout_guard_rejects_drifted_columns() -> None:
 @pytest.fixture(scope="module")
 def sdm():
     sdmpy = pytest.importorskip("sdmpy")
-    if not (SDM_PATH / "SysPower.bin").exists():
-        pytest.skip(f"tip_test.sdm not found at {SDM_PATH}")
     return sdmpy.SDM(str(SDM_PATH), use_xsd=False)
 
 

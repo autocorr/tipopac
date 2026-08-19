@@ -10,12 +10,11 @@ live open-meteo call are covered in tests/unit/test_atmosphere.py.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-MS_PATH = Path(__file__).parents[2] / "data" / "tip_test.ms"
+from tests.conftest import MS_PATH
 
 
 # ---------------------------------------------------------------------------

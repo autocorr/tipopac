@@ -14,7 +14,7 @@ import pytest
 from tipopac.readers.base import SkydipScanInfo
 from tipopac.summary import _format_skydip_table, summarize_skydip_scans
 
-MS_PATH = Path(__file__).parents[2] / "data" / "tip_test.ms"
+from tests.conftest import MS_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +97,6 @@ def test_format_skydip_table_columns_aligned() -> None:
 
 @pytest.mark.slow
 def test_summarize_skydip_scans_ms_stdout(capsys: pytest.CaptureFixture) -> None:
-    if not MS_PATH.exists():
-        pytest.skip(f"tip_test.ms not found at {MS_PATH}")
     summarize_skydip_scans(MS_PATH)
     out = capsys.readouterr().out
     assert f"Skydip scans in {MS_PATH}" in out
@@ -110,8 +108,6 @@ def test_summarize_skydip_scans_ms_stdout(capsys: pytest.CaptureFixture) -> None
 def test_summarize_skydip_scans_ms_file(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
-    if not MS_PATH.exists():
-        pytest.skip(f"tip_test.ms not found at {MS_PATH}")
     out_path = tmp_path / "summary.txt"
     summarize_skydip_scans(MS_PATH, output=out_path)
     # Nothing went to stdout.

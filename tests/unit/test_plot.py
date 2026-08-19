@@ -7,6 +7,7 @@ from pathlib import Path
 import altair as alt
 import numpy as np
 import pytest
+import vl_convert
 import xarray as xr
 
 from tests.factories import make_fitted_dataset as _make_plot_ds
@@ -223,7 +224,6 @@ def test_frequency_charts_compile_to_vega(kind: str) -> None:
     a pointer at the wrong unit compiles cleanly while producing a legend
     with no click handler and a zoom bound to the wrong fields.
     """
-    vl_convert = pytest.importorskip("vl_convert")
     ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True, tau_shared=False)
     vega = vl_convert.vegalite_to_vega(_frequency_charts(PlotData(ds))[kind].to_dict())
 
@@ -262,7 +262,6 @@ def test_tau_vs_frequency_keeps_scatter_when_one_antenna_survives() -> None:
 
 def test_tau_vs_frequency_degenerate_chart_renders() -> None:
     """The mean survives without the scatter: no dangling show_mean signal."""
-    vl_convert = pytest.importorskip("vl_convert")
     ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True, tau_shared=True)
     spec = PlotData(ds).tau_vs_frequency().build().to_dict()
 

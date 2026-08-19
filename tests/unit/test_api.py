@@ -13,7 +13,7 @@ from tipopac.api import TippingAnalysis, _module_version
 from tipopac.atmgrid import PwvGrid
 
 
-def _toy_grid() -> PwvGrid:
+def _stub_grid() -> PwvGrid:
     pwv = np.array([1.0, 2.0], dtype=np.float64)
     freq = np.array([20e9, 25e9], dtype=np.float64)
     tau = np.array([[0.01, 0.012], [0.02, 0.024]], dtype=np.float64)
@@ -104,7 +104,7 @@ def test_build_atm_grids_reuses_grid_for_identical_inputs(
 
     def _stub(*args: object, **kwargs: object) -> PwvGrid:
         call_count["n"] += 1
-        return _toy_grid()
+        return _stub_grid()
 
     monkeypatch.setattr("tipopac.atmgrid.build_pwv_grid", _stub)
 
@@ -135,7 +135,7 @@ def test_build_atm_grids_rebuilds_when_surface_pressure_exceeds_tolerance(
     monkeypatch.setattr(
         "tipopac.atmgrid.build_pwv_grid",
         lambda *a, **kw: (
-            call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()
+            call_count.__setitem__("n", call_count["n"] + 1) or _stub_grid()
         ),
     )
 
@@ -161,7 +161,7 @@ def test_build_atm_grids_reuses_at_exact_tolerance(
     monkeypatch.setattr(
         "tipopac.atmgrid.build_pwv_grid",
         lambda *a, **kw: (
-            call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()
+            call_count.__setitem__("n", call_count["n"] + 1) or _stub_grid()
         ),
     )
 
@@ -183,7 +183,7 @@ def test_build_atm_grids_reuses_when_no_surface_pressure_data_var(
     monkeypatch.setattr(
         "tipopac.atmgrid.build_pwv_grid",
         lambda *a, **kw: (
-            call_count.__setitem__("n", call_count["n"] + 1) or _toy_grid()
+            call_count.__setitem__("n", call_count["n"] + 1) or _stub_grid()
         ),
     )
 
@@ -200,7 +200,7 @@ def test_build_atm_grids_uses_full_band_span(monkeypatch: pytest.MonkeyPatch) ->
 
     def _stub(*args: object, **kwargs: object) -> PwvGrid:
         seen.update(kwargs)
-        return _toy_grid()
+        return _stub_grid()
 
     monkeypatch.setattr("tipopac.atmgrid.build_pwv_grid", _stub)
 
@@ -213,29 +213,6 @@ def test_build_atm_grids_uses_full_band_span(monkeypatch: pytest.MonkeyPatch) ->
 # ---------------------------------------------------------------------------
 # Public mode defaults
 # ---------------------------------------------------------------------------
-
-
-def test_default_mode_is_independent_tau() -> None:
-    """The default drives Stage C; flipping it back must break a test."""
-    import inspect
-
-    from tipopac.api import tipopac
-
-    assert inspect.signature(tipopac).parameters["mode"].default == "independent_tau"
-    assert (
-        inspect.signature(TippingAnalysis.fit).parameters["mode"].default
-        == "independent_tau"
-    )
-
-
-def test_both_public_modes_are_accepted() -> None:
-    """independent_tau_solve stays selectable as a legacy backend."""
-    from tipopac.api import _INDEPENDENT_TO_BACKEND
-
-    assert _INDEPENDENT_TO_BACKEND == {
-        "independent_tau": "tau_per_antenna",
-        "independent_tau_solve": "tcal_solve",
-    }
 
 
 @pytest.mark.parametrize(

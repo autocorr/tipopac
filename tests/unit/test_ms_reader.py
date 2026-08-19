@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests.conftest import MS_PATH
+
 
 # ---------------------------------------------------------------------------
 # Fast tests — no MS required
@@ -153,8 +155,6 @@ def test_apply_selection_explicit_scan_dropped_by_band_filter_raises() -> None:
 # ---------------------------------------------------------------------------
 # Slow test — requires data/tip_test.ms
 # ---------------------------------------------------------------------------
-
-MS_PATH = Path(__file__).parents[2] / "data" / "tip_test.ms"
 
 
 @pytest.mark.slow
