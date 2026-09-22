@@ -1010,6 +1010,18 @@ def test_run_summary_lists_each_group_and_its_scans() -> None:
     assert "7.00 ± 0.20" in body
 
 
+def test_run_summary_renders_array_valued_attrs() -> None:
+    """``_write_dataset_netcdf`` stores list attrs as arrays; reading one back
+    used to abort ``_attr`` on ``value == ""``."""
+    ds = _make_plot_ds()
+    ds.attrs["selected_scans"] = np.array([1, 2, 3], dtype=np.int64)
+    ds.attrs["selected_bands"] = np.array([], dtype="U")
+
+    body = PlotData(ds).run_summary()._render()
+    assert "<dt>Selected scans</dt><dd>1, 2, 3</dd>" in body
+    assert "<dt>Selected bands</dt><dd>—</dd>" in body
+
+
 def test_run_summary_pwv_missing_renders_dash() -> None:
     body = PlotData(_make_plot_ds()).run_summary()._render()
     assert "Time groups" in body

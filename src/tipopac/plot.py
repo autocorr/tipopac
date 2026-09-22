@@ -1076,10 +1076,10 @@ class Summary(_HtmlPage):
     # ------------------------------------------------------------------
     def _attr(self, key: str) -> str:
         value = self.ds.attrs.get(key)
+        if isinstance(value, (list, tuple, np.ndarray)):
+            return ", ".join(str(v) for v in value) if len(value) else self._MISSING
         if value is None or value == "":
             return self._MISSING
-        if isinstance(value, (list, tuple)):
-            return ", ".join(str(v) for v in value) if value else self._MISSING
         return str(value)
 
     def _format_mjd(self, mjd_s: float) -> str:
