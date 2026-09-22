@@ -3,7 +3,8 @@
 Each plot is a standalone vega-altair ``LayerChart`` that serialises to
 one self-contained ``.html`` with hover tooltips disclosing the
 ``(scan, antenna, spw, polarization)`` identity of every point. Colour
-encodes status (passed/flagged/weighted-mean), not identity.
+encodes status (passed/flagged/weighted-mean) on the ``tau`` scatter, and
+the feed on the ``T_cal`` / ``c`` scatters, whose quantities are per-feed.
 
 Public surface:
   ``PlotData(ds)`` — wrapper around the canonical xarray.Dataset.
@@ -77,6 +78,14 @@ _C_Y_DOMAIN: tuple[float, float] = (0.0, 2.0)
 # Name of the checkbox param gating the mean overlay on the frequency plots.
 _SHOW_MEAN_PARAM = "show_mean"
 
+_FEED_FIELD = "antenna_feed"
+_FEED_ORDER: tuple[str, ...] = ("L", "R")
+_FEED_SHAPES: tuple[str, ...] = ("circle", "triangle")
+_FEED_CALCULATE = "datum.antenna + ' ' + datum.polarization"
+_FEED_LABEL_EXPR = "split(datum.label, ' ')[1] === 'R' ? 'R' : datum.label"
+_FEED_TOOLTIP = alt.Tooltip("polarization:N", title="Feed")
+_FEED_LEGEND_ROW_PADDING = 7
+
 
 def _save_one(build: Callable[[], Plot | _HtmlPage], path: Path) -> None:
     """Write one page, logging and skipping it if building or saving raises.
@@ -100,13 +109,13 @@ def _scan_title(scans: list[int]) -> str:
 class Plot:
     """Base class. Subclasses implement :meth:`build`; :meth:`save` is shared."""
 
-    # Colour palette — status, not identity (see module docstring).
+    # Colour palette — see module docstring.
     COLOR_GOOD = "gray"
     COLOR_FLAGGED = "orangered"
     COLOR_MEAN = "firebrick"
     COLOR_REF = "gray"
-    COLOR_R_POL = "firebrick"
-    COLOR_L_POL = "dodgerblue"
+    COLOR_R_POL = "#CC8050"  # orange
+    COLOR_L_POL = "#509CCC"  # blue
     COLOR_AM_MODEL = "black"
 
     WIDTH = 800
@@ -114,6 +123,7 @@ class Plot:
     WIDTH_WIDE = 1200
     POINT_SIZE = 25
     MEAN_POINT_SIZE = 80
+    MEAN_STROKE = 1.2
     LINE_STROKE = 2.0
     OPACITY_POINT = 0.7
     OPACITY_DIMMED = 0.08
@@ -216,7 +226,14 @@ def _mean_frame(mean_da: xr.DataArray, *, name: str, digits: int) -> pd.DataFram
 
 
 class _QuantityVsFrequency(Plot):
-    """Shared scaffolding for multi-scan plots."""
+    """Shared scaffolding for multi-scan plots.
+
+    ``HAS_FEEDS`` selects the identity the legend resolves and the sample
+    marks encode: the bare antenna, or the ``(antenna, feed)`` pair for the
+    quantities that carry a ``polarization`` dim.
+    """
+
+    HAS_FEEDS = False
 
     def __init__(self, ds: xr.Dataset, scans: int | list[int] | None = None) -> None:
         super().__init__(ds)
@@ -230,14 +247,20 @@ class _QuantityVsFrequency(Plot):
         f_max = self.ds_sub["frequency_GHz"].max() + 2
         return float(f_min), float(f_max)
 
-    def _controls(self) -> tuple[alt.Parameter, alt.Parameter]:
-        """Legend-bound antenna selection + a checkbox toggling the mean overlay.
+    @property
+    def legend_field(self) -> str:
+        """Field the legend entries — and so the selection — resolve to."""
+        return _FEED_FIELD if self.HAS_FEEDS else "antenna"
 
-        An empty selection matches every antenna, so the default view is
-        unchanged: click a legend entry to isolate one antenna, shift-click
-        for several, click off to go back to all.
+    def _controls(self) -> tuple[alt.Parameter, alt.Parameter]:
+        """Legend-bound identity selection + a checkbox toggling the mean overlay.
+
+        An empty selection matches everything, so the default view is
+        unchanged: click a legend entry to isolate it, shift-click for
+        several, click off to go back to all. Where the legend is per-feed,
+        an antenna is both of its entries.
         """
-        selection = alt.selection_point(fields=["antenna"], bind="legend")
+        selection = alt.selection_point(fields=[self.legend_field], bind="legend")
         show_mean = alt.param(
             name=_SHOW_MEAN_PARAM,
             bind=alt.binding_checkbox(name="Mean "),
@@ -245,29 +268,99 @@ class _QuantityVsFrequency(Plot):
         )
         return selection, show_mean
 
-    def _antenna_encoding(self, selection: alt.Parameter) -> dict[str, Any]:
-        """Flat-valued shape legend over ``antenna``, plus the selection dim."""
-        n_ant = int(self.ds_sub.sizes["antenna"])
-        return {
-            "shape": alt.Shape(
-                "antenna:N",
-                scale=alt.Scale(range=["circle"] * n_ant),
-                legend=alt.Legend(title="Antenna", symbolLimit=n_ant),
-            ),
+    def _x_encoding(self) -> alt.X:
+        """Frequency axis, shared so every chart in the set spans the same range."""
+        return alt.X(
+            "frequency_GHz:Q",
+            title="Frequency [GHz]",
+            scale=alt.Scale(domain=self.freq_domain, nice=False),
+        )
+
+    def _identity_encoding(
+        self, selection: alt.Parameter, df: pd.DataFrame | None = None
+    ) -> dict[str, Any]:
+        """Legend-bearing identity encoding, plus the selection dimming.
+
+        Without feeds the legend is a flat-valued shape scale over ``antenna``
+        — a click surface, every entry identical. With feeds, ``shape`` and
+        ``color`` share the composite field so vega-lite merges them into one
+        two-column legend whose symbols carry both the feed shape and its
+        colour.
+        """
+        encoding: dict[str, Any] = {
             "opacity": alt.condition(
                 selection,
                 alt.value(self.OPACITY_POINT),
                 alt.value(self.OPACITY_DIMMED),
             ),
         }
+        if not self.HAS_FEEDS:
+            n_ant = int(self.ds_sub.sizes["antenna"])
+            encoding["shape"] = alt.Shape(
+                "antenna:N",
+                scale=alt.Scale(range=["circle"] * n_ant),
+                legend=alt.Legend(title="Antenna", symbolLimit=n_ant),
+            )
+            return encoding
+
+        if df is None:
+            raise ValueError("a feed-carrying legend needs the sample frame")
+        antennas = sorted({str(a) for a in df["antenna"]})
+        domain = [f"{a} {feed}" for a in antennas for feed in _FEED_ORDER]
+        legend = alt.Legend(
+            title="Antenna",
+            direction="horizontal",
+            columns=2,
+            symbolLimit=len(domain),
+            labelExpr=_FEED_LABEL_EXPR,
+            rowPadding=_FEED_LEGEND_ROW_PADDING,
+        )
+        feed_colors = [self.COLOR_L_POL, self.COLOR_R_POL]
+        encoding["shape"] = alt.Shape(
+            f"{_FEED_FIELD}:N",
+            scale=alt.Scale(domain=domain, range=list(_FEED_SHAPES) * len(antennas)),
+            legend=legend,
+        )
+        encoding["color"] = alt.Color(
+            f"{_FEED_FIELD}:N",
+            scale=alt.Scale(domain=domain, range=feed_colors * len(antennas)),
+            legend=legend,
+        )
+        return encoding
+
+    def _scatter_layer(
+        self,
+        df: pd.DataFrame,
+        *,
+        selection: alt.Parameter,
+        value_col: str,
+        y_title: str,
+        y_scale: alt.Scale,
+        tooltip: list[Any],
+        **encodings: Any,
+    ) -> alt.Chart:
+        """Per-sample scatter carrying the legend-bound identity encoding."""
+        return (
+            alt.Chart(df)
+            .mark_point(filled=True, size=self.POINT_SIZE)
+            .encode(
+                x=self._x_encoding(),
+                y=alt.Y(f"{value_col}:Q", title=y_title, scale=y_scale),
+                tooltip=tooltip,
+                **encodings,
+                **self._identity_encoding(selection, df),
+            )
+        )
 
     def _selectable(self, chart: alt.Chart, selection: alt.Parameter) -> alt.Chart:
-        """Bind the antenna selection and the scale zoom to the scatter unit.
+        """Bind the identity selection and the scale zoom to the scatter unit.
 
         Both carry a ``views`` pointer, and adding them to the enclosing
         layer aims it at whichever unit comes first — on the ``c`` chart the
         reference rule, which has neither the legend nor an x encoding.
         """
+        if self.HAS_FEEDS:
+            chart = chart.transform_calculate(**{_FEED_FIELD: _FEED_CALCULATE})
         return chart.add_params(selection).interactive()
 
     def _mean_layer(
@@ -282,7 +375,13 @@ class _QuantityVsFrequency(Plot):
     ) -> alt.Chart:
         return (
             alt.Chart(df)
-            .mark_point(filled=True, size=self.MEAN_POINT_SIZE, color=self.COLOR_MEAN)
+            .mark_point(
+                filled=True,
+                size=self.MEAN_POINT_SIZE,
+                color=self.COLOR_MEAN,
+                stroke="black",
+                strokeWidth=self.MEAN_STROKE,
+            )
             .transform_filter(_SHOW_MEAN_PARAM)
             .encode(
                 x=x
@@ -409,11 +508,7 @@ class TauVsFrequency(_QuantityVsFrequency):
         mean_da, _ = antenna_weighted_tau(ds_sub)
         mean_df = _mean_frame(mean_da, name="mean_tau", digits=4)
 
-        x_enc = alt.X(
-            "frequency_GHz:Q",
-            title="Frequency [GHz]",
-            scale=alt.Scale(domain=self.freq_domain, nice=False),
-        )
+        x_enc = self._x_encoding()
         y_scale = alt.Scale(type="log", domain=list(_TAU_Y_DOMAIN), nice=False)
 
         selection, show_mean = self._controls()
@@ -436,24 +531,22 @@ class TauVsFrequency(_QuantityVsFrequency):
             status_scale = alt.Scale(
                 domain=[True, False], range=[self.COLOR_GOOD, self.COLOR_FLAGGED]
             )
-            samples = (
-                alt.Chart(df)
-                .mark_point(filled=True, size=self.POINT_SIZE)
-                .encode(
-                    x=x_enc,
-                    y=alt.Y("tau_zenith:Q", title=y_title, scale=y_scale),
-                    color=alt.Color("fit_success:N", scale=status_scale, legend=None),
-                    **self._antenna_encoding(selection),
-                    tooltip=[
-                        "scan:N",
-                        "antenna:N",
-                        "spw:N",
-                        alt.Tooltip("frequency_GHz:Q", format=".3f"),
-                        alt.Tooltip("tau_zenith:Q", format=".4f"),
-                        alt.Tooltip("tau_err:Q", format=".4f"),
-                        "fit_success:N",
-                    ],
-                )
+            samples = self._scatter_layer(
+                df,
+                selection=selection,
+                value_col="tau_zenith",
+                y_title=y_title,
+                y_scale=y_scale,
+                tooltip=[
+                    "scan:N",
+                    "antenna:N",
+                    "spw:N",
+                    alt.Tooltip("frequency_GHz:Q", format=".3f"),
+                    alt.Tooltip("tau_zenith:Q", format=".4f"),
+                    alt.Tooltip("tau_err:Q", format=".4f"),
+                    "fit_success:N",
+                ],
+                color=alt.Color("fit_success:N", scale=status_scale, legend=None),
             )
             layers.append(self._selectable(samples, selection))
 
@@ -499,10 +592,14 @@ class TauVsFrequency(_QuantityVsFrequency):
 
 
 class TcalVsFrequency(_QuantityVsFrequency):
-    """Fitted Tcal vs frequency, with per-pol/antenna scatter + summary mean.
+    """Fitted Tcal vs frequency, with per-feed/antenna scatter + summary mean.
 
-    Carries the antenna legend selector and the "Mean" checkbox.
+    Feeds are drawn apart — circles for L, triangles for R, coloured to
+    match — behind a two-column per-(antenna, feed) legend selector and the
+    "Mean" checkbox.
     """
+
+    HAS_FEEDS = True
 
     def __init__(
         self,
@@ -537,7 +634,7 @@ class TcalVsFrequency(_QuantityVsFrequency):
             tooltip = [
                 "antenna:N",
                 "spw:N",
-                "polarization:N",
+                _FEED_TOOLTIP,
                 alt.Tooltip("frequency_GHz:Q", format=".3f"),
                 alt.Tooltip("tcal_ref:Q", format=".3f"),
             ]
@@ -560,7 +657,7 @@ class TcalVsFrequency(_QuantityVsFrequency):
                 "scan:N",
                 "antenna:N",
                 "spw:N",
-                "polarization:N",
+                _FEED_TOOLTIP,
                 alt.Tooltip("frequency_GHz:Q", format=".3f"),
                 alt.Tooltip("tcal_fit:Q", format=".3f"),
                 alt.Tooltip("tcal_ref:Q", format=".3f"),
@@ -570,19 +667,13 @@ class TcalVsFrequency(_QuantityVsFrequency):
 
         y_scale = alt.Scale(domain=list(_TCAL_Y_DOMAIN_K), nice=False)
         selection, show_mean = self._controls()
-        samples = (
-            alt.Chart(df)
-            .mark_point(filled=True, size=self.POINT_SIZE, color=self.COLOR_GOOD)
-            .encode(
-                x=alt.X(
-                    "frequency_GHz:Q",
-                    title="Frequency [GHz]",
-                    scale=alt.Scale(domain=self.freq_domain, nice=False),
-                ),
-                y=alt.Y(f"{col}:Q", title=y_title, scale=y_scale),
-                **self._antenna_encoding(selection),
-                tooltip=tooltip,
-            )
+        samples = self._scatter_layer(
+            df,
+            selection=selection,
+            value_col=col,
+            y_title=y_title,
+            y_scale=y_scale,
+            tooltip=tooltip,
         )
         mean = self._mean_layer(
             mean_df,
@@ -603,10 +694,13 @@ class TcalVsFrequency(_QuantityVsFrequency):
 class CVsFrequency(_QuantityVsFrequency):
     """Tcal correction multiplier c = tcal_fit / tcal_ref vs frequency.
 
-    Dashed reference line at c=1 + per-(antenna, spw, pol) gray scatter +
-    polarisation/antenna-averaged firebrick scatter. Carries the antenna
-    legend selector and the "Mean" checkbox.
+    Dashed reference line at c=1 + per-(antenna, spw, feed) scatter, circles
+    for L and triangles for R + polarisation/antenna-averaged firebrick
+    scatter. Carries the two-column per-(antenna, feed) legend selector and
+    the "Mean" checkbox.
     """
+
+    HAS_FEEDS = True
 
     def build(self) -> alt.LayerChart | alt.FacetChart:
         ds_sub = self.ds_sub
@@ -639,26 +733,20 @@ class CVsFrequency(_QuantityVsFrequency):
             .encode(y=alt.Y("c:Q", title=y_title, scale=y_scale))
         )
         selection, show_mean = self._controls()
-        samples = (
-            alt.Chart(df)
-            .mark_point(filled=True, size=self.POINT_SIZE, color=self.COLOR_GOOD)
-            .encode(
-                x=alt.X(
-                    "frequency_GHz:Q",
-                    title="Frequency [GHz]",
-                    scale=alt.Scale(domain=self.freq_domain, nice=False),
-                ),
-                y=alt.Y("c_ratio:Q", title=y_title, scale=y_scale),
-                **self._antenna_encoding(selection),
-                tooltip=[
-                    "scan:N",
-                    "antenna:N",
-                    "spw:N",
-                    "polarization:N",
-                    alt.Tooltip("frequency_GHz:Q", format=".3f"),
-                    alt.Tooltip("c_ratio:Q", format=".4f"),
-                ],
-            )
+        samples = self._scatter_layer(
+            df,
+            selection=selection,
+            value_col="c_ratio",
+            y_title=y_title,
+            y_scale=y_scale,
+            tooltip=[
+                "scan:N",
+                "antenna:N",
+                "spw:N",
+                _FEED_TOOLTIP,
+                alt.Tooltip("frequency_GHz:Q", format=".3f"),
+                alt.Tooltip("c_ratio:Q", format=".4f"),
+            ],
         )
         mean = self._mean_layer(
             mean_df, value_col="mean_c", y_title=y_title, y_scale=y_scale

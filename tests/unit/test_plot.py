@@ -12,8 +12,8 @@ import vl_convert
 import xarray as xr
 
 from tests.factories import make_fitted_dataset as _make_plot_ds
-from tipopac import schema
-from tipopac.plot import PlotData
+from tipopac import plot, schema
+from tipopac.plot import Plot, PlotData
 from tipopac.tables import measured_opacity_table
 
 # ---------------------------------------------------------------------------
@@ -29,6 +29,35 @@ def _g(root: Path, group: int = 0) -> Path:
 def _tooltip_fields(layer_spec: dict) -> list[str]:
     tt = layer_spec.get("encoding", {}).get("tooltip", [])
     return [item.get("field") for item in tt]
+
+
+# The charts whose quantity carries a polarization dim, and so a per-feed legend.
+_FEED_CHARTS = ("tcal_fit", "tcal_ref", "c")
+
+
+def _identity_field(kind: str) -> str:
+    """Field a *-vs-frequency chart resolves its legend entries to."""
+    return "antenna_feed" if kind in _FEED_CHARTS else "antenna"
+
+
+def _samples_layer(spec: dict, kind: str) -> dict:
+    """The per-sample scatter layer — the one carrying the identity legend."""
+    return next(
+        layer
+        for layer in spec["layer"]
+        if layer.get("encoding", {}).get("shape", {}).get("field")
+        == _identity_field(kind)
+    )
+
+
+def _mean_rows(spec: dict) -> list[dict]:
+    """Rows behind the firebrick mean overlay, found by its show_mean filter."""
+    layer = next(
+        lyr
+        for lyr in spec["layer"]
+        if lyr.get("transform") == [{"filter": "show_mean"}]
+    )
+    return spec["datasets"][layer["data"]["name"]]
 
 
 # ---------------------------------------------------------------------------
@@ -205,15 +234,14 @@ def test_frequency_charts_carry_antenna_controls(kind: str) -> None:
 
     legend_params = [p for p in spec["params"] if p.get("bind") == "legend"]
     assert len(legend_params) == 1
-    assert legend_params[0]["select"]["fields"] == ["antenna"]
+    assert legend_params[0]["select"]["fields"] == [_identity_field(kind)]
     assert any(p["name"] == "show_mean" for p in spec["params"])
 
-    samples = next(
-        layer["encoding"]
-        for layer in spec["layer"]
-        if layer.get("encoding", {}).get("shape", {}).get("field") == "antenna"
+    samples = _samples_layer(spec, kind)["encoding"]
+    expected_shapes = (
+        ["circle", "triangle"] * 4 if kind in _FEED_CHARTS else ["circle"] * 4
     )
-    assert samples["shape"]["scale"]["range"] == ["circle"] * 4
+    assert samples["shape"]["scale"]["range"] == expected_shapes
     assert samples["opacity"]["value"] == 0.08
 
 
@@ -229,7 +257,8 @@ def test_frequency_charts_compile_to_vega(kind: str) -> None:
     vega = vl_convert.vegalite_to_vega(_frequency_charts(PlotData(ds))[kind].to_dict())
 
     signals = [s["name"] for s in vega["signals"]]
-    assert any(name.endswith("_antenna_legend") for name in signals)
+    suffix = f"_{_identity_field(kind)}_legend"
+    assert any(name.endswith(suffix) for name in signals)
     zoomed = {
         s["name"]: s.get("domainRaw") for s in vega["scales"] if s["name"] in ("x", "y")
     }
@@ -332,6 +361,119 @@ def test_c_vs_frequency_tooltip_carries_c_ratio() -> None:
     fields = _tooltip_fields(samples)
     assert "c_ratio" in fields
     assert "polarization" in fields
+
+
+@pytest.mark.parametrize("kind", _FEED_CHARTS)
+def test_feed_charts_mark_l_as_circles_and_r_as_triangles(kind: str) -> None:
+    """Shape and colour both key on (antenna, feed), L first in every pair."""
+    n_ant = 4
+    ds = _make_plot_ds(n_ant=n_ant, n_spw=3, success=True)
+    ds["tcal_fit"].values *= 1.1
+    spec = _frequency_charts(PlotData(ds))[kind].to_dict()
+    encoding = _samples_layer(spec, kind)["encoding"]
+
+    shape, color = encoding["shape"], encoding["color"]
+    assert color["field"] == shape["field"] == "antenna_feed"
+    assert shape["scale"]["domain"] == color["scale"]["domain"]
+    assert shape["scale"]["domain"][:2] == ["ea01 L", "ea01 R"]
+    assert shape["scale"]["range"] == ["circle", "triangle"] * n_ant
+    assert color["scale"]["range"] == [Plot.COLOR_L_POL, Plot.COLOR_R_POL] * n_ant
+
+
+@pytest.mark.parametrize("kind", _FEED_CHARTS)
+def test_feed_charts_sort_the_legend_by_antenna(kind: str) -> None:
+    """Readers scan the legend by antenna number, not by MS row order.
+
+    The feed legend pins an explicit scale domain, so unlike the τ legend it
+    does not inherit vega-lite's implicit ascending sort and would otherwise
+    follow whatever order the reader put on the ``antenna`` coord.
+    """
+    ds = _make_plot_ds(n_ant=5, n_spw=3, success=True)
+    ds = ds.isel(antenna=[3, 0, 4, 1, 2])
+    assert list(ds["antenna"].values) != sorted(ds["antenna"].values)
+
+    spec = _frequency_charts(PlotData(ds))[kind].to_dict()
+    domain = _samples_layer(spec, kind)["encoding"]["shape"]["scale"]["domain"]
+
+    assert domain == [f"ea{i:02d} {feed}" for i in range(1, 6) for feed in ("L", "R")]
+
+
+@pytest.mark.parametrize("kind", _FEED_CHARTS)
+def test_feed_charts_carry_one_merged_two_column_legend(kind: str) -> None:
+    """Sharing the field merges shape and colour into a single legend."""
+    n_ant = 4
+    ds = _make_plot_ds(n_ant=n_ant, n_spw=3, success=True)
+    spec = _frequency_charts(PlotData(ds))[kind].to_dict()
+    encoding = _samples_layer(spec, kind)["encoding"]
+
+    legend = encoding["shape"]["legend"]
+    assert legend == encoding["color"]["legend"]
+    assert legend["columns"] == 2
+    assert legend["direction"] == "horizontal"
+    assert legend["symbolLimit"] == 2 * n_ant
+
+    vega = vl_convert.vegalite_to_vega(spec)
+    assert len(vega["legends"]) == 1
+    assert {"fill", "shape"} <= set(vega["legends"][0])
+
+
+@pytest.mark.parametrize("kind", _FEED_CHARTS)
+def test_feed_charts_label_the_feed_in_the_tooltip(kind: str) -> None:
+    ds = _make_plot_ds(n_spw=3, success=True)
+    spec = _frequency_charts(PlotData(ds))[kind].to_dict()
+    tooltip = _samples_layer(spec, kind)["encoding"]["tooltip"]
+
+    feed = next(item for item in tooltip if item["field"] == "polarization")
+    assert feed["title"] == "Feed"
+
+
+@pytest.mark.parametrize("kind", _FEED_CHARTS)
+def test_feed_charts_leave_the_mean_overlay_feed_collapsed(kind: str) -> None:
+    """The scatter splits the feeds; the summary overlay still averages them."""
+    n_spw = 3
+    ds = _make_plot_ds(n_ant=4, n_spw=n_spw, success=True)
+    spec = _frequency_charts(PlotData(ds))[kind].to_dict()
+
+    rows = _mean_rows(spec)
+    assert len(rows) == n_spw
+    assert "polarization" not in rows[0]
+    assert "antenna" not in rows[0]
+
+
+def test_frequency_charts_share_one_plotting_area() -> None:
+    """Switching plot types must not move the x-axis: same data rectangle.
+
+    ``width`` has to keep meaning the data rectangle, so the legend grows the
+    SVG to the right rather than eating the plot. An ``autosize`` of ``fit``
+    would invert that silently, hence the range assertion.
+    """
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True, with_am=True)
+    charts = _frequency_charts(PlotData(ds))
+
+    geometry = set()
+    for chart in charts.values():
+        spec = chart.to_dict()
+        vega = vl_convert.vegalite_to_vega(spec)
+        x_scale = next(s for s in vega["scales"] if s["name"] == "x")
+        assert x_scale["range"] == [0, {"signal": "width"}]
+        geometry.add((spec["width"], spec["height"]))
+    assert len(geometry) == 1
+
+
+@pytest.mark.parametrize("kind", _FEED_CHARTS)
+def test_feed_charts_pad_the_grid_legend_rows(kind: str) -> None:
+    """Vega packs two-column legend rows tighter than single-column ones.
+
+    Without the padding the feed legends read visibly tighter than the τ
+    legend when switching plot types in the weblog. The value is tuned
+    against the browser, not measured here: vl_convert lays out entry
+    heights with its own bundled fonts and does not reproduce the rendered
+    geometry, so only the presence of the compensation is asserted.
+    """
+    ds = _make_plot_ds(n_ant=4, n_spw=3, success=True)
+    spec = _frequency_charts(PlotData(ds))[kind].to_dict()
+    legend = _samples_layer(spec, kind)["encoding"]["shape"]["legend"]
+    assert legend["rowPadding"] == plot._FEED_LEGEND_ROW_PADDING
 
 
 def test_tau_vs_frequency_accepts_scan_list() -> None:

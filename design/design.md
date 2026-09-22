@@ -806,12 +806,15 @@ a τ vs frequency log-scatter with optional am τ(ν) overlay from
 `am_freq_grid` / `am_tau`, and — when a Tcal scale was fitted
 (`sigma_tcal` present, or the legacy joint fit) — a `T_cal` vs frequency and a
 `c = T_cal,fit / T_cal,ref` plot. Each frequency scatter carries a
-legend-bound antenna selector and a checkbox over the mean overlay; the
-τ plot drops the per-antenna layer and that legend when τ carries no
-antenna variation, as under `independent_tau_solve`. Per dataset (when
-the optional
-`atm_*` vars are present): a vertical T / H₂O mixing-ratio profile
-chart with pressure on a log y-axis (850 → 10 hPa) and T (linear) /
+legend-bound identity selector and a checkbox over the mean overlay. On
+the `T_cal` and `c` scatters that identity is the `(antenna, feed)` pair —
+L circles, R triangles, coloured to match, behind a two-column legend, so
+a single-feed fault cannot hide — while the τ scatter, whose τ is fit
+jointly over both feeds, keeps a per-antenna selector and drops the
+per-antenna layer and that legend when τ carries no antenna variation, as
+under `independent_tau_solve`. The mean overlay stays feed-collapsed.
+Per dataset (when the optional `atm_*` vars are present): a vertical
+T / H₂O mixing-ratio profile chart with pressure on a log y-axis (850 → 10 hPa) and T (linear) /
 mixing ratio (log) on independent x-axes.
 
 Everything above is written **per time group** into
