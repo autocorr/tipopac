@@ -68,6 +68,10 @@ _Z_GRID: np.ndarray = np.linspace(30.0, 75.0, 60)
 # out at min(data max, this) so a few outliers don't wash out the range.
 _RESIDUAL_RMS_COLOR_MAX_K: float = 100.0
 
+_TAU_Y_DOMAIN: tuple[float, float] = (3e-3, 1.0)
+_TCAL_Y_DOMAIN_K: tuple[float, float] = (0.0, 12.0)
+_C_Y_DOMAIN: tuple[float, float] = (0.0, 2.0)
+
 # Name of the checkbox param gating the mean overlay on the frequency plots.
 _SHOW_MEAN_PARAM = "show_mean"
 
@@ -181,6 +185,22 @@ def _round(df: pd.DataFrame, **digits: int) -> pd.DataFrame:
     return df
 
 
+def _collapse(value: xr.DataArray, err: xr.DataArray | None) -> xr.DataArray:
+    """Collapse antenna and polarization, 1/σ²-weighted when ``err`` is given."""
+    dim = [d for d in ("antenna", "polarization") if d in value.dims]
+    if err is None:
+        return value.mean(dim=dim)
+    mean, _ = inverse_variance_mean(value, err, dim=dim)
+    return mean
+
+
+def _mean_frame(mean_da: xr.DataArray, *, name: str, digits: int) -> pd.DataFrame:
+    """Tidy a collapsed mean into the frame :meth:`_mean_layer` plots."""
+    keep = [d for d in ("scan", "spw") if d in mean_da.dims]
+    df = _to_df(mean_da, name=name, keep=[*keep, "frequency_GHz", name])
+    return _round(df, frequency_GHz=3, **{name: digits})
+
+
 class _QuantityVsFrequency(Plot):
     """Shared scaffolding for multi-scan plots."""
 
@@ -242,9 +262,9 @@ class _QuantityVsFrequency(Plot):
         *,
         value_col: str,
         y_title: str,
+        y_scale: alt.Scale,
         value_fmt: str = ".4f",
         x: alt.X | None = None,
-        y: alt.Y | None = None,
     ) -> alt.Chart:
         return (
             alt.Chart(df)
@@ -254,7 +274,7 @@ class _QuantityVsFrequency(Plot):
                 x=x
                 if x is not None
                 else alt.X("frequency_GHz:Q", title="Frequency [GHz]"),
-                y=y if y is not None else alt.Y(f"{value_col}:Q", title=y_title),
+                y=alt.Y(f"{value_col}:Q", title=y_title, scale=y_scale),
                 tooltip=[
                     "scan:N",
                     "spw:N",
@@ -373,26 +393,14 @@ class TauVsFrequency(_QuantityVsFrequency):
         per_antenna = not _antenna_degenerate(ds_sub["tau_zenith"])
 
         mean_da, _ = antenna_weighted_tau(ds_sub)
-        mean_df = _to_df(
-            mean_da,
-            name="mean_tau",
-            keep=["scan", "spw", "frequency_GHz", "mean_tau"],
-        )
-        _round(mean_df, frequency_GHz=3, mean_tau=4)
-
-        # Domain from the full tau spread (NaN-safe via xarray).
-        tau_min = float(ds_sub["tau_zenith"].min(skipna=True))
-        tau_max = float(ds_sub["tau_zenith"].max(skipna=True))
-        # Guard against non-positive values that would break the log axis.
-        tau_min = max(tau_min, 1e-4)
-        y_domain = [tau_min / 1.2, tau_max * 1.2]
+        mean_df = _mean_frame(mean_da, name="mean_tau", digits=4)
 
         x_enc = alt.X(
             "frequency_GHz:Q",
             title="Frequency [GHz]",
             scale=alt.Scale(domain=self.freq_domain, nice=False),
         )
-        y_scale = alt.Scale(type="log", domain=y_domain, nice=False)
+        y_scale = alt.Scale(type="log", domain=list(_TAU_Y_DOMAIN), nice=False)
 
         selection, show_mean = self._controls()
         layers: list[alt.Chart] = []
@@ -443,7 +451,7 @@ class TauVsFrequency(_QuantityVsFrequency):
                 value_col="mean_tau",
                 y_title=y_title,
                 x=x_enc,
-                y=alt.Y("mean_tau:Q", title=y_title, scale=y_scale),
+                y_scale=y_scale,
             )
         )
         if "am_freq_grid" in ds_sub.data_vars and "am_tau" in ds_sub.data_vars:
@@ -459,7 +467,7 @@ class TauVsFrequency(_QuantityVsFrequency):
                 .mark_line(color=self.COLOR_AM_MODEL, strokeWidth=self.LINE_STROKE)
                 .encode(
                     x=x_enc,
-                    y=alt.Y("am_tau:Q", title=y_title),
+                    y=alt.Y("am_tau:Q", title=y_title, scale=y_scale),
                     tooltip=[
                         alt.Tooltip("frequency_GHz:Q", format=".3f"),
                         alt.Tooltip("am_tau:Q", format=".4f"),
@@ -543,13 +551,10 @@ class TcalVsFrequency(_QuantityVsFrequency):
                 alt.Tooltip("tcal_fit:Q", format=".3f"),
                 alt.Tooltip("tcal_ref:Q", format=".3f"),
             ]
-        mean_da = ds_sub[col].mean(dim=["polarization", "antenna"])
-        mean_keep = ["spw", "frequency_GHz", "mean_tcal"]
-        if "scan" in mean_da.dims:
-            mean_keep = ["scan", *mean_keep]
-        mean_df = _to_df(mean_da, name="mean_tcal", keep=mean_keep)
-        _round(mean_df, frequency_GHz=3, mean_tcal=3)
+        sigma = ds_sub.get("sigma_tcal") if self.kind == "fit" else None
+        mean_df = _mean_frame(_collapse(ds_sub[col], sigma), name="mean_tcal", digits=3)
 
+        y_scale = alt.Scale(domain=list(_TCAL_Y_DOMAIN_K), nice=False)
         selection, show_mean = self._controls()
         samples = (
             alt.Chart(df)
@@ -560,13 +565,17 @@ class TcalVsFrequency(_QuantityVsFrequency):
                     title="Frequency [GHz]",
                     scale=alt.Scale(domain=self.freq_domain, nice=False),
                 ),
-                y=alt.Y(f"{col}:Q", title=y_title),
+                y=alt.Y(f"{col}:Q", title=y_title, scale=y_scale),
                 **self._antenna_encoding(selection),
                 tooltip=tooltip,
             )
         )
         mean = self._mean_layer(
-            mean_df, value_col="mean_tcal", y_title=y_title, value_fmt=".3f"
+            mean_df,
+            value_col="mean_tcal",
+            y_title=y_title,
+            value_fmt=".3f",
+            y_scale=y_scale,
         )
 
         return self._finalize(
@@ -603,18 +612,17 @@ class CVsFrequency(_QuantityVsFrequency):
             ],
         )
         _round(df, frequency_GHz=3, c_ratio=4)
-        mean_da = c_da.mean(dim=["polarization", "antenna"])
-        mean_df = _to_df(
-            mean_da,
-            name="mean_c",
-            keep=["scan", "spw", "frequency_GHz", "mean_c"],
-        )
-        _round(mean_df, frequency_GHz=3, mean_c=4)
 
+        sigma = ds_sub.get("sigma_tcal")
+        if sigma is not None:
+            sigma = sigma / ds_sub["tcal_ref"]
+        mean_df = _mean_frame(_collapse(c_da, sigma), name="mean_c", digits=4)
+
+        y_scale = alt.Scale(domain=list(_C_Y_DOMAIN), nice=False)
         ref = (
             alt.Chart(pd.DataFrame({"c": [1.0]}))
             .mark_rule(color=self.COLOR_REF, strokeDash=[4, 2], strokeWidth=0.8)
-            .encode(y=alt.Y("c:Q", title=y_title))
+            .encode(y=alt.Y("c:Q", title=y_title, scale=y_scale))
         )
         selection, show_mean = self._controls()
         samples = (
@@ -626,7 +634,7 @@ class CVsFrequency(_QuantityVsFrequency):
                     title="Frequency [GHz]",
                     scale=alt.Scale(domain=self.freq_domain, nice=False),
                 ),
-                y=alt.Y("c_ratio:Q", title=y_title),
+                y=alt.Y("c_ratio:Q", title=y_title, scale=y_scale),
                 **self._antenna_encoding(selection),
                 tooltip=[
                     "scan:N",
@@ -638,7 +646,9 @@ class CVsFrequency(_QuantityVsFrequency):
                 ],
             )
         )
-        mean = self._mean_layer(mean_df, value_col="mean_c", y_title=y_title)
+        mean = self._mean_layer(
+            mean_df, value_col="mean_c", y_title=y_title, y_scale=y_scale
+        )
 
         return self._finalize(
             alt.layer(ref, self._selectable(samples, selection), mean).add_params(

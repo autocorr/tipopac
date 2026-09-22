@@ -267,7 +267,7 @@ def antenna_weighted_tau(ds: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]:
 
 
 def inverse_variance_mean(
-    values: xr.DataArray, err: xr.DataArray, *, dim: str
+    values: xr.DataArray, err: xr.DataArray, *, dim: str | list[str]
 ) -> tuple[xr.DataArray, xr.DataArray]:
     """Return the 1/σ²-weighted `(mean, err)` of `values` over `dim`."""
     values = values.astype(np.float64)
