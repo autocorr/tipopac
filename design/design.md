@@ -434,7 +434,7 @@ back to `k2nt(mean_radiating_T(T_surface))` — that path *does* apply
 `k2nt`, its input being kinetic. `T_surface` is `schema.surface_T_mean`,
 the per-scan NaN-tolerant mean of `weather_T`, shared with the spillover
 term and `physics.predicted_tsys`; a scan with no finite weather sample
-has no usable `Twmt` and its cells are reported `fit_failed`.
+falls back to `schema.VLA_CLIMATOLOGICAL_SURFACE_T_K`, logged at WARNING.
 
 **Single physical bound set** (no escalation ladder):
 
@@ -830,6 +830,9 @@ column. The `*_table.html` page in `group_{k}/` shows **only** group
 `k`'s rows and carries no `group` column; the TSV is the whole-run
 artifact and the page is the per-group view. Sharing the builder keeps
 the values identical, but the two are not row-for-row mirrors.
+
+A page that raises while building or saving is logged and skipped, never
+aborting the rest of the set; the weblog reports it as a missing file.
 
 `weblog.build_weblog(plot_dir)` is an independent pipeline step that
 scans `plot_dir`'s `group_{k}/` subdirectories and emits a

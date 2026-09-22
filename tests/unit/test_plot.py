@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import altair as alt
@@ -969,6 +970,28 @@ def test_save_all_writes_run_summary_at_top_level(tmp_path: Path) -> None:
     assert (tmp_path / "run_summary.html").exists()
     assert not (tmp_path / "summary.html").exists()
     assert (_g(tmp_path) / "summary.html").exists()
+
+
+def test_save_all_skips_a_failing_page_and_keeps_going(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One dead diagnostic must not cost the reader every page after it.
+
+    The residual-RMS heatmap is written mid-set, so raising there used to
+    take tcal_fit_vs_frequency, c_vs_frequency and the weblog index with it.
+    """
+    monkeypatch.setattr(
+        PlotData,
+        "residual_rms_heatmap",
+        lambda self, *a, **kw: (_ for _ in ()).throw(ValueError("boom")),
+    )
+    with caplog.at_level(logging.ERROR, logger="tipopac.plot"):
+        PlotData(_make_plot_ds(success=True)).save_all(tmp_path)
+
+    assert not (_g(tmp_path) / "residual_rms_heatmap.html").exists()
+    assert "plot failed, skipping: residual_rms_heatmap" in caplog.text
+    for stem in ("tau_vs_frequency", "tcal_fit_vs_frequency", "c_vs_frequency"):
+        assert (_g(tmp_path) / f"{stem}.html").exists()
 
 
 def test_save_all_writes_one_subdir_per_group(tmp_path: Path) -> None:

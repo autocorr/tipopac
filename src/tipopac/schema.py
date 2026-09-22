@@ -8,6 +8,8 @@ a validator (`validate`), and the flag-respecting projection helper
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import xarray as xr
 
@@ -17,6 +19,7 @@ __all__ = [
     "OPTIONAL_DATA_VARS",
     "POL_VALUES",
     "REQUIRED_COORDS",
+    "VLA_CLIMATOLOGICAL_SURFACE_T_K",
     "SchemaError",
     "antenna_weighted_tau",
     "apply_flags",
@@ -25,6 +28,10 @@ __all__ = [
     "surface_T_mean",
     "validate",
 ]
+
+_log = logging.getLogger(__name__)
+
+VLA_CLIMATOLOGICAL_SURFACE_T_K: float = 284.7
 
 
 class SchemaError(ValueError):
@@ -226,9 +233,18 @@ def surface_T_mean(ds: xr.Dataset) -> xr.DataArray:
     reconstruction must all read this, so the residual a plot shows is the
     residual the fit minimised. Station-level weather takes no flag mask
     (design.md §4.1); the NaN pad drops out of the mean, and a scan with no
-    finite sample yields NaN.
+    finite sample falls back to `VLA_CLIMATOLOGICAL_SURFACE_T_K`.
     """
-    return ds["weather_T"].mean(dim="time")
+    mean = ds["weather_T"].mean(dim="time")
+    missing = ~np.isfinite(mean)
+    if bool(missing.any()):
+        _log.warning(
+            "no station weather on %d of %d scans; T_surf falls back to %.1f K",
+            int(missing.sum()),
+            mean.sizes["scan"],
+            VLA_CLIMATOLOGICAL_SURFACE_T_K,
+        )
+    return mean.where(~missing, VLA_CLIMATOLOGICAL_SURFACE_T_K)
 
 
 def select_group(ds: xr.Dataset, group: int) -> xr.Dataset:

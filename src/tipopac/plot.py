@@ -17,7 +17,9 @@ Public surface:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
+from functools import partial
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -74,6 +76,18 @@ _C_Y_DOMAIN: tuple[float, float] = (0.0, 2.0)
 
 # Name of the checkbox param gating the mean overlay on the frequency plots.
 _SHOW_MEAN_PARAM = "show_mean"
+
+
+def _save_one(build: Callable[[], Plot | _HtmlPage], path: Path) -> None:
+    """Write one page, logging and skipping it if building or saving raises.
+
+    A diagnostic that cannot be drawn — an all-NaN metric, a degenerate
+    axis — must not cost the reader every page after it in the set.
+    """
+    try:
+        build().save(path)
+    except Exception:
+        _log.exception("plot failed, skipping: %s", path.name)
 
 
 def _scan_title(scans: list[int]) -> str:
@@ -1467,7 +1481,7 @@ class PlotData:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
 
-        self.run_summary().save(out / "run_summary")
+        _save_one(self.run_summary, out / "run_summary")
 
         if "scan_group" not in self.ds.coords:
             raise SchemaError(
@@ -1491,13 +1505,13 @@ class PlotData:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
 
-        self.summary().save(out / "summary")
+        _save_one(self.summary, out / "summary")
 
         # Table pages — the HTML twins of model_opacity.tsv / measured_opacity.tsv.
         if "am_freq_grid" in self.ds.data_vars:
-            self.model_opacity_table().save(out / "model_opacity_table")
+            _save_one(self.model_opacity_table, out / "model_opacity_table")
         if "tau_zenith" in self.ds.data_vars:
-            self.measured_opacity_table().save(out / "measured_opacity_table")
+            _save_one(self.measured_opacity_table, out / "measured_opacity_table")
 
         success = self.ds["fit_success"]
         if not bool(success.any()):
@@ -1509,26 +1523,30 @@ class PlotData:
             for scan_raw, ant_raw, spw_raw in cells.cell.values[cells.values]:
                 scan_id, ant, spw_id = int(scan_raw), str(ant_raw), int(spw_raw)
                 stem = f"tippingcurve_spw_{spw_id}_{ant}_scan_{scan_id}"
-                self.elevation_curve(scan_id, ant, spw_id).save(out / stem)
+                _save_one(
+                    partial(self.elevation_curve, scan_id, ant, spw_id), out / stem
+                )
 
         # Parameter versus frequency plots.
-        self.tau_vs_frequency().save(out / "tau_vs_frequency")
-        self.tcal_vs_frequency(kind="ref").save(out / "tcal_ref_vs_frequency")
+        _save_one(self.tau_vs_frequency, out / "tau_vs_frequency")
+        _save_one(
+            partial(self.tcal_vs_frequency, kind="ref"), out / "tcal_ref_vs_frequency"
+        )
 
         # Fit-quality heatmap over every scan.
         if "fit_reason" in self.ds.data_vars:
-            self.fit_quality_heatmap().save(out / "fit_quality_heatmap")
+            _save_one(self.fit_quality_heatmap, out / "fit_quality_heatmap")
 
         # Residual-RMS heatmap. Requires the fitted parameter vars that
         # ``predicted_tsys`` reconstructs the model from.
         residual_rms_deps = ("T0", "tau_zenith", "Twmt", "tcal_fit", "tcal_ref", "Tsys")
         if all(v in self.ds.data_vars for v in residual_rms_deps):
-            self.residual_rms_heatmap().save(out / "residual_rms_heatmap")
+            _save_one(self.residual_rms_heatmap, out / "residual_rms_heatmap")
 
         # Atmospheric profile (mean across scans); skip when the optional
         # atm vars are not on the dataset.
         if "atm_pressure" in self.ds.data_vars:
-            self.atmospheric_profile().save(out / "atmospheric_profile")
+            _save_one(self.atmospheric_profile, out / "atmospheric_profile")
 
         # Fitted Tcal and "c" plots are only meaningful when a per-cell tcal
         # was solved — Stage C, or the legacy joint fit.
@@ -1536,5 +1554,8 @@ class PlotData:
             "sigma_tcal" in self.ds.data_vars
             or self.ds.attrs["mode"] != "independent_tau"
         ):
-            self.tcal_vs_frequency(kind="fit").save(out / "tcal_fit_vs_frequency")
-            self.c_vs_frequency().save(out / "c_vs_frequency")
+            _save_one(
+                partial(self.tcal_vs_frequency, kind="fit"),
+                out / "tcal_fit_vs_frequency",
+            )
+            _save_one(self.c_vs_frequency, out / "c_vs_frequency")

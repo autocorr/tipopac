@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 
 import numpy as np
@@ -10,6 +11,7 @@ import xarray as xr
 
 from tipopac.schema import (
     POL_VALUES,
+    VLA_CLIMATOLOGICAL_SURFACE_T_K,
     SchemaError,
     antenna_weighted_tau,
     apply_flags,
@@ -337,15 +339,28 @@ def test_surface_T_mean_skips_the_nan_pad() -> None:
     )
 
 
-def test_surface_T_mean_all_nan_scan_is_nan_without_warning() -> None:
-    """An all-NaN row yields NaN; np.nanmean would warn 'Mean of empty slice'."""
+def test_surface_T_mean_all_nan_scan_falls_back_without_warning() -> None:
+    """A weatherless scan takes the climatological value, not NaN.
+
+    NaN there propagated through the spillover term and NaN'd every element
+    of `physics.predicted_tsys`, not just the scan that lost its weather.
+    `np.nanmean` would also warn 'Mean of empty slice'.
+    """
     ds = make_minimal_ds()
     ds["weather_T"].values[1, :] = np.nan
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         out = surface_T_mean(ds)
     assert np.isfinite(out.values[0])
-    assert np.isnan(out.values[1])
+    assert out.values[1] == pytest.approx(VLA_CLIMATOLOGICAL_SURFACE_T_K)
+
+
+def test_surface_T_mean_logs_the_fallback(caplog: pytest.LogCaptureFixture) -> None:
+    ds = make_minimal_ds()
+    ds["weather_T"].values[1, :] = np.nan
+    with caplog.at_level(logging.WARNING, logger="tipopac.schema"):
+        surface_T_mean(ds)
+    assert "no station weather on 1 of 2 scans" in caplog.text
 
 
 # ---------------------------------------------------------------------------

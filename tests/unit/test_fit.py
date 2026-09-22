@@ -141,13 +141,23 @@ def test_fit_t_surf_is_the_whole_scan_mean_not_the_kept_samples() -> None:
 
 
 @pytest.mark.filterwarnings("error:Mean of empty slice")
-def test_fit_twmt_fallback_all_nan_weather_is_fit_failed() -> None:
-    """No grid T_mean and no finite weather → reported, not raised."""
+def test_fit_twmt_fallback_all_nan_weather_uses_the_climatological_t_surf() -> None:
+    """No grid T_mean and no finite weather → Ulvestad on the archive mean.
+
+    These cells used to be `fit_failed`; a weatherless scan is rare enough
+    that a climatological `T_surf` beats discarding the tip (design.md §5).
+    """
     ds = _make_tip_ds()
     ds["weather_T"].values[:] = np.nan
     fit_dataset(ds, mode="tau_per_antenna")
-    assert ds["fit_reason"].values[0, 0, 0] == "fit_failed"
-    assert not bool(ds["fit_success"].values[0, 0, 0])
+
+    assert ds["fit_reason"].values[0, 0, 0] == "ok"
+    assert bool(ds["fit_success"].values[0, 0, 0])
+    expected = physics.k2nt(
+        physics.mean_radiating_T(schema.VLA_CLIMATOLOGICAL_SURFACE_T_K),
+        ds.coords["frequency"].values[0],
+    )
+    assert ds["Twmt"].values[0, 0] == pytest.approx(expected, rel=1e-6)
 
 
 def test_valid_samples_applies_tr_upper_to_both_pols() -> None:
