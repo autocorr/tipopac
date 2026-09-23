@@ -40,7 +40,7 @@ precipitable water vapor (PWV), and Tcal corrections.
   opacity grid; Stage C solves the Tcal scale in closed form at that
   pinned opacity. See [Theory &amp; method](theory.md).
 - **Self-contained outputs** — a NetCDF dataset, interactive HTML plots, a
-  browsable weblog, and opt-in CASA caltables. See [Quickstart](quickstart.md).
+  browsable weblog, and CASA caltables. See [Quickstart](quickstart.md).
 - **Modern tooling** — `uv` + `pyproject.toml`, type hints checked with
   `ty`, `ruff`, and `pytest`. `casatools` is an ordinary library import;
   "no CASA at runtime" means no `casa` process and no `buildmytasks`.

@@ -10,7 +10,8 @@ import xarray as xr
 
 from pathlib import Path
 
-from tipopac import caltables
+from tipopac import caltable_meta, caltables
+from tipopac._caltable_schema import table_desc
 from tipopac.caltables import (
     _build_opacity_rows,
     _build_tcal_rows,
@@ -19,6 +20,7 @@ from tipopac.caltables import (
 )
 from tipopac.fit import fit_dataset
 
+from tests.conftest import SDM_PATH
 from tests.factories import make_tipping_dataset
 
 
@@ -281,6 +283,110 @@ def test_write_opacity_guard_precedes_casa(
 
 
 # ---------------------------------------------------------------------------
+# Frozen table descriptions and synthesized subtables
+# ---------------------------------------------------------------------------
+
+
+def _meta(n_ant: int = 2, n_spw: int = 3) -> caltable_meta.CaltableMeta:
+    return caltable_meta.CaltableMeta(
+        source_name="fake.sdm",
+        telescope="EVLA",
+        ant_name=np.array([f"ea{i:02d}" for i in range(n_ant)]),
+        ant_station=np.array([f"W{i}" for i in range(n_ant)]),
+        ant_position=np.arange(n_ant * 3, dtype=np.float64).reshape(n_ant, 3),
+        ant_offset=np.zeros((n_ant, 3)),
+        ant_dish_diameter=np.full(n_ant, 25.0),
+        spw_name=np.array([f"EVLA_KU#A#{i}" for i in range(n_spw)]),
+        spw_ref_frequency=np.full(n_spw, 2.0e10) + np.arange(n_spw) * 1.28e8,
+        spw_total_bandwidth=np.full(n_spw, 1.28e8),
+        spw_net_sideband=np.full(n_spw, 2, dtype=np.int32),
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MAIN",
+        "ANTENNA",
+        "SPECTRAL_WINDOW",
+        "FIELD",
+        "OBSERVATION",
+        "HISTORY",
+        "CALDEVICE",
+    ],
+)
+def test_table_desc_returns_an_independent_copy(name: str) -> None:
+    first = table_desc(name)
+    first.pop(next(iter(first)))
+    assert table_desc(name) != first
+
+
+def test_topac_main_desc_matches_the_written_columns() -> None:
+    desc = table_desc("MAIN")
+    assert set(desc) == {
+        "TIME",
+        "FIELD_ID",
+        "SPECTRAL_WINDOW_ID",
+        "ANTENNA1",
+        "ANTENNA2",
+        "INTERVAL",
+        "SCAN_NUMBER",
+        "OBSERVATION_ID",
+        "FPARAM",
+        "PARAMERR",
+        "FLAG",
+        "SNR",
+        "WEIGHT",
+    }
+    assert desc["TIME"]["keywords"]["MEASINFO"]["type"] == "epoch"
+    for name in ("FPARAM", "PARAMERR", "FLAG", "SNR", "WEIGHT"):
+        assert desc[name]["ndim"] == -1
+
+
+def test_spectral_window_rows_collapse_the_channel_axis() -> None:
+    """A TOpac solution is one value per spw, so the subtable carries one channel."""
+    rows = caltables._spectral_window_rows(_meta(n_spw=3))
+    assert len(rows) == 3
+    for s, row in enumerate(rows):
+        assert row["NUM_CHAN"] == 1
+        assert row["CHAN_FREQ"] == pytest.approx([row["REF_FREQUENCY"] + 1.28e8 / 2])
+        for col in ("CHAN_WIDTH", "EFFECTIVE_BW", "RESOLUTION"):
+            assert row[col] == pytest.approx([row["TOTAL_BANDWIDTH"]])
+        assert row["NAME"] == f"EVLA_KU#A#{s}"
+        assert row["MEAS_FREQ_REF"] == caltable_meta.MEAS_FREQ_REF
+
+
+def test_antenna_rows_follow_source_order_and_default_the_absent_fields() -> None:
+    rows = caltables._antenna_rows(_meta(n_ant=2))
+    assert [r["NAME"] for r in rows] == ["ea00", "ea01"]
+    assert all(r["MOUNT"] == caltable_meta.ANTENNA_MOUNT for r in rows)
+    assert all(r["TYPE"] == caltable_meta.ANTENNA_TYPE for r in rows)
+
+
+def test_field_subtable_is_never_empty() -> None:
+    """A zero-row FIELD segfaults CASA's caltable reader; every row is FIELD_ID -1."""
+    assert len(caltables._field_rows()) == 1
+
+
+def test_observation_row_spans_the_scans_the_table_covers() -> None:
+    ds = _make_fitted_ds(n_scan=2, n_ant=1, n_spw=1)
+    row = caltables._observation_rows(ds, _meta())[0]
+    assert row["TIME_RANGE"][0] == pytest.approx(
+        float(ds.coords["scan_time_start"].values.min())
+    )
+    assert row["TIME_RANGE"][1] == pytest.approx(
+        float(ds.coords["scan_time_end"].values.max())
+    )
+    assert row["TELESCOPE_NAME"] == "EVLA"
+
+
+def test_check_spw_ids_rejects_a_non_sequential_table() -> None:
+    """SPECTRAL_WINDOW is indexed by row position, so ids must match positions."""
+    with pytest.raises(ValueError, match="row position"):
+        caltable_meta._check_spw_ids(["SpectralWindow_0", "SpectralWindow_7"])
+
+
+# ---------------------------------------------------------------------------
 # Slow integration tests — require data/tip_test.ms
 # ---------------------------------------------------------------------------
 
@@ -337,3 +443,102 @@ def test_write_tcal_roundtrip(tmp_path: Path, ds_ms, n_workers) -> None:
     assert np.all(noise_cal[0] > 0.0)
 
     tb.close()
+
+
+@pytest.mark.slow
+def test_synthesized_opacity_matches_the_calibrater_table(
+    tmp_path: Path, ds_ms, n_workers
+) -> None:
+    """Both schema paths on one dataset must agree bit for bit.
+
+    `calanalysis` opens a table whose `SPECTRAL_WINDOW_ID` values overflow its
+    own subtable, so it cannot serve as the acceptance check; this diff can.
+    """
+    import casatools
+
+    ds = ds_ms
+    fit_dataset(ds, "tau_per_antenna", n_workers=n_workers)
+    cloned = tmp_path / "cloned.cal"
+    write_opacity(ds, cloned)
+
+    synthesized = tmp_path / "synthesized.cal"
+    sdm_ds = ds.copy(deep=True)
+    sdm_ds.attrs["source_format"] = "sdm"
+    sdm_ds.attrs["source_path"] = str(SDM_PATH)
+    write_opacity(sdm_ds, synthesized)
+
+    # WEIGHT is the one column neither path populates, so it has no shape to read.
+    written = [
+        "TIME",
+        "FIELD_ID",
+        "SPECTRAL_WINDOW_ID",
+        "ANTENNA1",
+        "ANTENNA2",
+        "INTERVAL",
+        "SCAN_NUMBER",
+        "OBSERVATION_ID",
+        "FPARAM",
+        "PARAMERR",
+        "FLAG",
+        "SNR",
+    ]
+    left, right = casatools.table(), casatools.table()
+    left.open(str(cloned))
+    right.open(str(synthesized))
+    assert left.nrows() == right.nrows()
+    assert left.info() == right.info()
+    assert set(left.colnames()) == set(right.colnames()) == {*written, "WEIGHT"}
+    for col in written:
+        np.testing.assert_array_equal(
+            left.getcol(col), right.getcol(col), err_msg=f"MAIN.{col}"
+        )
+    left.close()
+    right.close()
+
+    for sub in ("ANTENNA", "SPECTRAL_WINDOW"):
+        left.open(f"{cloned}/{sub}")
+        right.open(f"{synthesized}/{sub}")
+        assert left.nrows() == right.nrows()
+        for col in left.colnames():
+            np.testing.assert_array_equal(
+                left.getcol(col), right.getcol(col), err_msg=f"{sub}.{col}"
+            )
+        left.close()
+        right.close()
+
+
+@pytest.mark.slow
+@pytest.mark.needs_sdm
+def test_sdm_run_writes_both_caltables(tmp_path: Path, ds_sdm, n_workers) -> None:
+    """The point of the synthesized schema: an SDM run with no MS in sight."""
+    import casatools
+
+    ds = ds_sdm
+    fit_dataset(ds, "tau_per_antenna", n_workers=n_workers)
+    opacity = tmp_path / "sdm.opacity"
+    tcal = tmp_path / "sdm.tcal"
+    write_opacity(ds, opacity)
+    write_tcal(ds, tcal)
+
+    n_cells = ds.sizes["scan"] * ds.sizes["antenna"] * ds.sizes["spw"]
+    tb = casatools.table()
+    tb.open(str(opacity))
+    assert tb.nrows() == n_cells
+    assert tb.info()["subType"] == "TOpac"
+    tb.close()
+    tb.open(f"{opacity}/SPECTRAL_WINDOW")
+    n_source_spw = tb.nrows()
+    tb.close()
+    tb.open(str(tcal))
+    assert tb.nrows() == n_cells
+    tb.close()
+
+    assert n_source_spw == len(caltable_meta.from_sdm(SDM_PATH).spw_name)
+    assert n_source_spw >= int(ds.coords["spw"].values.max()) + 1
+
+    ca = casatools.calanalysis()
+    assert ca.open(str(opacity))
+    assert ca.viscal() == "TOpac"
+    assert ca.numantenna() == ds.sizes["antenna"]
+    assert list(ca.field()) == [""]
+    ca.close()

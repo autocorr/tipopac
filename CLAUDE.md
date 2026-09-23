@@ -62,7 +62,7 @@ The integration test is gated by `pytest.mark.slow` and needs the
   URL in `pyproject.toml` `[tool.uv.sources]`.
 - **"No CASA at runtime"** means no `buildmytasks` and no `casa`
   process. `casatools.table` / `casatools.calibrater` are ordinary
-  imports used by readers and the optional caltable writers.
+  imports used by readers and the caltable writers.
 - **v2.6 numerical parity is not tested.** The rewrite uses
   radiometer-eq σ + `soft_l1` + single-tier bounds + an identifiability
   ratio in place of v2.6's unit-weight L2 + 2σ clip + 3-pass bound

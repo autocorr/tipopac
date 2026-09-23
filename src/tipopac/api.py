@@ -146,6 +146,16 @@ def _write_tsv(
                 f.write("\t".join((str(k), *cells)) + "\n")
 
 
+def _caltable_source(ds: xr.Dataset) -> Path | None:
+    """Return the input the caltable writers read metadata from, or `None`.
+
+    Both formats are supported; a dataset whose source has moved is not,
+    since the writers re-read it for the antenna and spw tables.
+    """
+    path = Path(ds.attrs.get("source_path", ""))
+    return path if path.is_dir() else None
+
+
 @dataclass(frozen=True)
 class Result:
     """Return value of `tipopac()` and `TippingAnalysis.result`."""
@@ -181,8 +191,8 @@ def tipopac(
     min_airmass_span: float = DEFAULT_MIN_AIRMASS_SPAN,
     n_workers: int | None = None,
     output_dir: str | Path | None = Path("."),
-    caltable_opacity: bool = False,
-    caltable_tcal: bool = False,
+    caltable_opacity: bool = True,
+    caltable_tcal: bool = True,
 ) -> Result:
     """Run the full tipping-curve pipeline and return a [`Result`][tipopac.Result].
 
@@ -253,11 +263,12 @@ def tipopac(
         representative PWV), the interactive ``.html`` plots, and the
         ``index.html`` weblog.
     caltable_opacity:
-        Opt-in: write a CASA TOpac caltable to ``output_dir/tipopac.opacity``.
-        No effect when ``output_dir is None``.
+        Write a CASA TOpac caltable to ``output_dir/tipopac.opacity``;
+        default ``True``, for MS and SDM input alike. No effect when
+        ``output_dir is None``.
     caltable_tcal:
-        Opt-in: write a CALDEVICE-style Tcal caltable to
-        ``output_dir/tipopac.tcal``. No effect when ``output_dir is None``.
+        Write a CALDEVICE-style Tcal caltable to ``output_dir/tipopac.tcal``;
+        default ``True``.
     """
     if mode not in _INDEPENDENT_TO_BACKEND:
         raise ValueError(
@@ -592,8 +603,8 @@ class TippingAnalysis:
         self,
         output_dir: str | Path = Path("."),
         *,
-        caltable_opacity: bool = False,
-        caltable_tcal: bool = False,
+        caltable_opacity: bool = True,
+        caltable_tcal: bool = True,
     ) -> None:
         """Write every artifact for this analysis into ``output_dir``.
 
@@ -601,8 +612,9 @@ class TippingAnalysis:
         (``tipopac.nc``), the Stage-B model τ(ν) curve
         (``model_opacity.tsv``), the fitted and model τ at the spw centres
         (``measured_opacity.tsv``), every diagnostic plot, and the weblog
-        ``index.html``. Caltables are opt-in via the boolean flags and land
-        in the same directory as ``tipopac.opacity`` / ``tipopac.tcal``.
+        ``index.html``. The caltables ``tipopac.opacity`` / ``tipopac.tcal``
+        land in the same directory; they are on by default and are skipped
+        only when the input the writers re-read has moved.
         """
         from tipopac.tables import measured_opacity_table, model_opacity_table
 
@@ -614,10 +626,16 @@ class TippingAnalysis:
         self.plot(out_dir=out_dir)
         self.weblog(plot_dir=out_dir)
         if caltable_opacity or caltable_tcal:
-            self.write_caltables(
-                opacity=out_dir / "tipopac.opacity" if caltable_opacity else None,
-                tcal=out_dir / "tipopac.tcal" if caltable_tcal else None,
-            )
+            if _caltable_source(self._ds) is None:
+                _log.warning(
+                    "skipping caltables: source directory %r is missing",
+                    self._ds.attrs.get("source_path", ""),
+                )
+            else:
+                self.write_caltables(
+                    opacity=out_dir / "tipopac.opacity" if caltable_opacity else None,
+                    tcal=out_dir / "tipopac.tcal" if caltable_tcal else None,
+                )
 
     @property
     def result(self) -> Result:

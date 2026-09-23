@@ -206,7 +206,9 @@ def test_result_input_format_defaults_to_ms() -> None:
 def test_write_outputs_weblog_indexes_the_plots_it_wrote(tmp_path: Path) -> None:
     """The load-bearing ordering: plots are on disk before the weblog scans."""
     out = tmp_path / "run" / "outputs"
-    TippingAnalysis(_output_ds(), Path("fake.ms")).write_outputs(out)
+    TippingAnalysis(_output_ds(), Path("fake.ms")).write_outputs(
+        out, caltable_opacity=False, caltable_tcal=False
+    )
 
     body = (out / "index.html").read_text(encoding="utf-8")
     for rel in (
@@ -221,7 +223,9 @@ def test_write_outputs_weblog_indexes_the_plots_it_wrote(tmp_path: Path) -> None
 
 def test_write_outputs_writes_the_netcdf_and_both_tsvs(tmp_path: Path) -> None:
     ds = _output_ds()
-    TippingAnalysis(ds, Path("fake.ms")).write_outputs(tmp_path)
+    TippingAnalysis(ds, Path("fake.ms")).write_outputs(
+        tmp_path, caltable_opacity=False, caltable_tcal=False
+    )
 
     reopened = xr.open_dataset(tmp_path / "tipopac.nc")
     try:
@@ -277,20 +281,16 @@ def test_result_dataset_writes_netcdf_without_the_writer(tmp_path: Path) -> None
         reopened.close()
 
 
-def test_write_outputs_skips_caltables_by_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(caltables, "write_opacity", lambda *a, **k: calls.append("op"))
-    monkeypatch.setattr(caltables, "write_tcal", lambda *a, **k: calls.append("tcal"))
-
-    TippingAnalysis(_output_ds(), Path("fake.ms")).write_outputs(tmp_path)
-
-    assert calls == []
-    assert not (tmp_path / "tipopac.opacity").exists()
+def _ms_backed_ds(ms: Path) -> xr.Dataset:
+    """An output dataset whose ``source_path`` is a real MS-shaped directory."""
+    ms.mkdir()
+    ds = _output_ds()
+    ds.attrs["source_path"] = str(ms)
+    ds.attrs["source_format"] = "ms"
+    return ds
 
 
-def test_write_outputs_caltable_flags_name_the_tables(
+def test_write_outputs_writes_both_caltables_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     written: list[tuple[str, Path]] = []
@@ -300,15 +300,64 @@ def test_write_outputs_caltable_flags_name_the_tables(
     monkeypatch.setattr(
         caltables, "write_tcal", lambda ds, p: written.append(("tcal", p))
     )
+    ds = _ms_backed_ds(tmp_path / "fake.ms")
 
-    TippingAnalysis(_output_ds(), Path("fake.ms")).write_outputs(
-        tmp_path, caltable_opacity=True, caltable_tcal=True
-    )
+    out = tmp_path / "out"
+    TippingAnalysis(ds, Path(ds.attrs["source_path"])).write_outputs(out)
 
     assert written == [
-        ("opacity", tmp_path / "tipopac.opacity"),
-        ("tcal", tmp_path / "tipopac.tcal"),
+        ("opacity", out / "tipopac.opacity"),
+        ("tcal", out / "tipopac.tcal"),
     ]
+
+
+def test_write_outputs_caltable_flags_turn_the_tables_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(caltables, "write_opacity", lambda *a, **k: calls.append("op"))
+    monkeypatch.setattr(caltables, "write_tcal", lambda *a, **k: calls.append("tcal"))
+    ds = _ms_backed_ds(tmp_path / "fake.ms")
+
+    TippingAnalysis(ds, Path(ds.attrs["source_path"])).write_outputs(
+        tmp_path / "out", caltable_opacity=False, caltable_tcal=False
+    )
+
+    assert calls == []
+    assert not (tmp_path / "out" / "tipopac.opacity").exists()
+
+
+@pytest.mark.parametrize("fmt", ["sdm", "ms"])
+def test_write_outputs_writes_caltables_for_either_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    """Both readers get caltables; the writers synthesize the schema for SDM."""
+    calls: list[str] = []
+    monkeypatch.setattr(caltables, "write_opacity", lambda *a, **k: calls.append("op"))
+    monkeypatch.setattr(caltables, "write_tcal", lambda *a, **k: calls.append("tcal"))
+    ds = _ms_backed_ds(tmp_path / "fake.ms")
+    ds.attrs["source_format"] = fmt
+
+    TippingAnalysis(ds, Path(ds.attrs["source_path"])).write_outputs(tmp_path / "out")
+
+    assert calls == ["op", "tcal"]
+
+
+@pytest.mark.parametrize("fmt", ["sdm", "ms"])
+def test_write_outputs_skips_caltables_without_the_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    """The writers re-read the input, so a source that has moved skips them."""
+    calls: list[str] = []
+    monkeypatch.setattr(caltables, "write_opacity", lambda *a, **k: calls.append("op"))
+    monkeypatch.setattr(caltables, "write_tcal", lambda *a, **k: calls.append("tcal"))
+    ds = _ms_backed_ds(tmp_path / "fake.ms")
+    ds.attrs["source_format"] = fmt
+    (tmp_path / "fake.ms").rmdir()
+
+    TippingAnalysis(ds, Path(ds.attrs["source_path"])).write_outputs(tmp_path / "out")
+
+    assert calls == []
 
 
 def test_write_caltables_writes_only_what_it_is_given(

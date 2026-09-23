@@ -14,8 +14,8 @@ icon: material/download
 - [`uv`](https://docs.astral.sh/uv/) for dependency management.
 
 No CASA installation is required. `casatools` is pulled in as an ordinary
-PyPI dependency and used only as a library (table I/O and the optional
-caltable writers) — there is no `casa` process and no `buildmytasks`.
+PyPI dependency and used only as a library (table I/O and the caltable
+writers) — there is no `casa` process and no `buildmytasks`.
 
 ## Install
 
@@ -53,7 +53,7 @@ uv run python -c "import tipopac; print(tipopac.__name__)"
 | Dependency | Role |
 | --- | --- |
 | `amwrap` / `am` | Atmospheric radiative transfer (compiled from source on install). |
-| `casatools` | MS table I/O and optional CASA caltable output. |
+| `casatools` | MS table I/O and CASA caltable output. |
 | `sdmpy` | SDM reading (no BDF required). |
 | `xarray`, `numpy`, `pandas` | The canonical dataset and numerics. |
 | `openmeteo-requests`, `requests-cache`, `retry-requests` | Fetching vertical atmospheric profiles. |

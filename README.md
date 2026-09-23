@@ -36,7 +36,7 @@ selection to the tests that read the form you have.
 
 ### Library usage
 
-The example below runs the pipeline and produces optional caltables and plots:
+The example below runs the pipeline and produces caltables and plots:
 
 ```python
 from tipopac import tipopac

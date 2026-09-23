@@ -27,7 +27,7 @@ tipping-scan data, without requiring a CASA runtime.
 
 - Plain Python package; no `buildmytasks` / CASA-task wrapper.
   `casatools` is an ordinary library import for table I/O and the
-  optional caltable writers.
+  caltable writers.
 - In-memory representation is one canonical `xarray.Dataset` produced
   by either an MS or SDM reader.
 - Atmospheric modelling moves from `casatools.atmosphere` to Scott
@@ -70,8 +70,8 @@ result: Result = tipopac(
     spillover_model=True,                            # in-fit η(ν) ground-pickup term (§6)
     n_workers=None,                                  # pool size for the am grid and Stage A; None = serial
     output_dir=Path("."),                            # dir for all outputs; None = compute-only
-    caltable_opacity=False,                          # opt-in CASA TOpac table → output_dir/tipopac.opacity
-    caltable_tcal=False,                             # opt-in CALDEVICE-style table → output_dir/tipopac.tcal
+    caltable_opacity=True,                           # CASA TOpac table → output_dir/tipopac.opacity
+    caltable_tcal=True,                              # CALDEVICE-style table → output_dir/tipopac.tcal
 )
 
 # --- class-based for staged / notebook use ---
@@ -82,7 +82,7 @@ ta.apply_flags(online=True, file=None)
 ta.fetch_atm_profile(source="open-meteo")
 ta.build_atm_grids()
 ta.fit(mode="independent_tau")
-ta.write_outputs("out/", caltable_opacity=True, caltable_tcal=True)
+ta.write_outputs("out/")
 result = ta.result
 ```
 
@@ -154,11 +154,12 @@ Each `TippingAnalysis` method mutates `self._ds` in place:
   `group_{k}/` plot directories via `weblog.build_weblog`. Group is the
   outermost selector; the plot-type, scan, antenna, and spw menus are
   all scoped to it.
-- `write_caltables(opacity, tcal)` — optional CASA-format outputs.
+- `write_caltables(opacity, tcal)` — CASA-format outputs at the given
+  paths; `None` skips one.
 - `write_outputs(output_dir, caltable_opacity, caltable_tcal)` —
   bundle: NetCDF (`tipopac.nc`), the two τ(ν) TSVs
   (`model_opacity.tsv`, `measured_opacity.tsv` — §9), plots, weblog,
-  and opt-in caltables all into one directory.
+  and the caltables all into one directory.
 
 ---
 
@@ -233,6 +234,9 @@ contract.
 | `SYSPOWER.TIME/SWITCHED_DIFF/SWITCHED_SUM`                | `SysPower.xml`             | `_fastbin.unpack_syspower`, sdmpy fallback                          |
 | `SYSPOWER.INTERVAL` (when present)                        | `SysPower.xml`             | first of `interval`/`duration`/`integrationTime` present, ns         |
 | `CALDEVICE.NOISE_CAL/ANTENNA_ID/SPECTRAL_WINDOW_ID`       | `CalDevice.xml`            | iterate rows; row key `(antennaId, feedId, spectralWindowId)`; load 0 = noise tube; R = col 3, L = col 3+ncols |
+| `ANTENNA.STATION` (caltable only)                         | `Station.xml`              | `station.name` via each antenna's `stationId`                        |
+| `ANTENNA.OFFSET/DISH_DIAMETER` (caltable only)            | `Antenna.xml`              | `offset` (`'1 3 X Y Z'`), `dishDiameter`                             |
+| `OBSERVATION.TELESCOPE_NAME` (caltable only)              | `ExecBlock.xml`            | `telescopeName`; falls back to `attrs["observatory"]`                |
 | `WEATHER.TIME/TEMPERATURE/REL_HUMIDITY/PRESSURE`          | `Weather.xml`              | iterate rows; `Station_0` only                                      |
 | `WEATHER.TEMPERATURE_FLAG` (when present)                 | —                          | MS-only; flagged rows become NaN                                    |
 | scan intent `*DO_SKYDIP*`                                 | `Scan.xml`                 | `sdm['Scan'][i].scanIntent`                                         |
@@ -763,11 +767,19 @@ None) -> None` updates `ds["flag"]` in place.
 `Result.dataset` — the canonical `xarray.Dataset`. Persistable via
 `.to_netcdf(...)` or `.to_zarr(...)`.
 
-### 9.2 Optional CASA caltables
+### 9.2 CASA caltables
 
 Gated by the corresponding `caltable_*` argument: a boolean on the
-public `tipopac()` / `write_outputs()` surface, which resolves it to the
-output path (or `None`) that the inner `write_caltables` gates on.
+public `tipopac()` / `write_outputs()` surface, default `True`, which
+resolves it to the output path (or `None`) that the inner
+`write_caltables` gates on. Both formats are supported. MS input clones
+the on-disk schema (`calibrater.createcaltable` for TOpac, a `CALDEVICE`
+table copy for Tcal); SDM input creates the table from the frozen
+descriptions in `_caltable_schema.py` and synthesizes the subtables from
+`caltable_meta.from_sdm`. Either way the writers re-read the input for
+antenna and spw metadata, so `write_outputs` skips them with a warning
+when the source directory has moved; `write_caltables`, which takes
+explicit paths, still raises there.
 Both keep `casatools.calibrater` / `casatools.table` as runtime
 imports. "No CASA at runtime" in this project means we don't depend
 on `buildmytasks` or a `casa` process; it does not mean zero
@@ -780,6 +792,15 @@ on `buildmytasks` or a `casa` process; it does not mean zero
   works unchanged. Requires `tau_zenith`, `tau_err`, `fit_success`.
   Rows are enumerated `(scan, spw, antenna)` — spw slow, antenna fast
   within a scan, matching `gencal`'s `caltype='opac'` order.
+  The synthesized form carries ANTENNA and SPECTRAL_WINDOW at full
+  fidelity — every spw in the source, in id order, since
+  `SPECTRAL_WINDOW_ID` is a row index — with the channel axis collapsed
+  to the single band-centre channel `createcaltable` writes for a scalar
+  solution (`NUM_CHAN=1`, `CHAN_FREQ=REF_FREQUENCY+TOTAL_BANDWIDTH/2`,
+  the width columns equal to `TOTAL_BANDWIDTH`). FIELD and OBSERVATION
+  carry one row; a zero-row FIELD crashes CASA's caltable reader.
+  `MOUNT` (`ALT-AZ`), `MEAS_FREQ_REF` (5, TOPO) and `TYPE`
+  (`GROUND-BASED`) are absent from the SDM and set by convention.
   `FPARAM`/`PARAMERR` are `schema.antenna_weighted_tau` over the
   `fit_success` cells, so all antennas in a `(scan, spw)` share one
   value; opacity is a sky property and per-antenna tipping τ is noisy.

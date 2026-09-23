@@ -68,7 +68,7 @@ print(ds["tau_zenith"], ds["pwv"], ds["tcal_fit"])
 | `min_airmass_span` | Minimum airmass leverage a cell needs before Stage C reports a Tcal. Default `0.3`. |
 | `n_workers` | Process-pool size for the am grid build and the Stage-A fit. `None` runs both serially. |
 | `output_dir` | Where artifacts are written; `None` for compute-only. |
-| `caltable_opacity` / `caltable_tcal` | Opt-in CASA caltables. |
+| `caltable_opacity` / `caltable_tcal` | CASA caltables. Default `True`, for MS and SDM input alike. |
 
 ## 4. Run the pipeline (staged)
 
@@ -112,7 +112,7 @@ When `output_dir` is set, every run writes into that directory:
 | `measured_opacity.tsv` | Fitted and model $\tau$ at the SPW centre frequencies, one row per `(scan, spw)`. |
 | `*.html` plots | Interactive Vega-Altair charts (opacity vs frequency, Tcal, fit-quality and residual heatmaps, atmospheric profile, …). |
 | `index.html` | The **weblog** — a self-contained browser for all the plots. |
-| `tipopac.opacity` / `tipopac.tcal` | Opt-in CASA caltables (`caltable_opacity` / `caltable_tcal`). |
+| `tipopac.opacity` / `tipopac.tcal` | CASA caltables (`caltable_opacity` / `caltable_tcal`). |
 
 Open the weblog in a browser to explore the results:
 
