@@ -557,6 +557,9 @@ integral, so the emergent δτ is sampling-independent by construction. η was
 derived from the fitted-τ excess `tau_zenith − am(hrrr_pwv)`, 1-GHz binned over
 76 `THIG0007_wide_CXUKAQ` epochs and curvature-corrected to remove the
 elevation-sampling dependence; it runs ≈0.47 % at 4 GHz to 0.14 % at 50 GHz.
+That reference used amwrap < 0.2.0, whose water over-count cancelled against
+the closure PWV; keep η, and re-derive it only with the PWV-floated closure,
+never against `am(hrrr_pwv)`.
 `tau_zenith` is therefore spillover-free at the Stage-A output and Stage B
 anchors PWV on it directly — no add-back. The term is `∝ airmass` and τ-independent, i.e. a fixed additive
 offset (no new fit parameter, `dpred/dτ` unchanged). The `tipopac(...,
@@ -697,7 +700,7 @@ class PwvGrid:
     freq_Hz: np.ndarray             # (n_freq,) ascending freq axis, Hz
     tau_z: np.ndarray               # (n_pwv, n_freq) zenith opacity, nepers
     tb_z: np.ndarray                # (n_pwv, n_freq) zenith Tb, K
-    pwv_unscaled_mm: float          # PWV of the un-scaled input profile
+    pwv_unscaled_mm: float          # am's PWV of the un-scaled profile (amwrap Model.pwv)
     profile_source: str             # provenance label
 ```
 
@@ -717,8 +720,12 @@ temperature, CMB-subtracted). Both are `(n_pwv, n_freq)` and back the
   the linear interpolant in the PWV direction, zero outside the grid
   range; used by Stage B's Cramér–Rao σ_PWV.
 
-The grid is parameterised by `troposphere_h2o_scaling = pwv_mm /
-pwv_unscaled_mm` in am; this means the same underlying profile drives
+Each grid row is an am run with amwrap's `target_pwv = pwv_mm`, so
+the axis is the water column am actually holds. amwrap (≥ 0.2.0)
+treats the profile VMRs as level values and gives each am layer the
+exact log-linear-in-P mean. A trapezoid ∫v dP is not used: it
+disagrees with am's column by ~1 % on HRRR levels (the base-level VMRs
+of amwrap < 0.2.0 were ~11 % high). The same underlying profile drives
 both Stage A's `T_mean` input (sampled at `pwv_unscaled_mm`) and
 Stage B's PWV fit — there is no second am run downstream.
 

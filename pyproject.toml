@@ -16,7 +16,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Brian E. Svoboda", email = "brian.e.svoboda@gmail.com" }]
 dependencies = [
     "altair[all]>=6.2.1",
-    "amwrap",
+    "amwrap>=0.2.0",
     "casatools>=6.7.5.18",
     "netcdf4>=1.7.4",
     "numpy>=2.4.4",
@@ -35,7 +35,7 @@ Repository = "https://github.com/autocorr/tipopac"
 Issues = "https://github.com/autocorr/tipopac/issues"
 
 [tool.uv.sources]
-amwrap = { git = "https://github.com/autocorr/amwrap" }
+amwrap = { git = "https://github.com/autocorr/amwrap", rev = "b9ea1a6afb1f3e1c5e191245d657cc0ff6d429ab" }
 
 [dependency-groups]
 dev = [

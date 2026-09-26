@@ -55,14 +55,16 @@ wheels = [
 
 [[package]]
 name = "amwrap"
-version = "0.1.0"
-source = { git = "https://github.com/autocorr/amwrap#49420e546945d4f66bbe22d74f8c73d3b24fb6f8" }
+version = "0.2.0"
+source = { git = "https://github.com/autocorr/amwrap?rev=b9ea1a6afb1f3e1c5e191245d657cc0ff6d429ab#b9ea1a6afb1f3e1c5e191245d657cc0ff6d429ab" }
 dependencies = [
     { name = "astropy" },
     { name = "matplotlib" },
     { name = "metpy" },
     { name = "numpy" },
+    { name = "packaging" },
     { name = "pandas" },
+    { name = "pint" },
 ]
 
 [[package]]
@@ -2225,7 +2227,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "altair", extras = ["all"], specifier = ">=6.2.1" },
-    { name = "amwrap", git = "https://github.com/autocorr/amwrap" },
+    { name = "amwrap", git = "https://github.com/autocorr/amwrap?rev=b9ea1a6afb1f3e1c5e191245d657cc0ff6d429ab" },
     { name = "casatools", specifier = ">=6.7.5.18" },
     { name = "netcdf4", specifier = ">=1.7.4" },
     { name = "numpy", specifier = ">=2.4.4" },

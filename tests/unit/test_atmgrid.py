@@ -13,35 +13,76 @@ import pytest
 
 from tipopac.atmgrid import (
     PwvGrid,
+    _am_model,
     build_pwv_grid,
     grid_freq_span,
-    pwv_mm_from_profile,
 )
 from tipopac.physics import _H, _K, k2nt
 
 
 # ---------------------------------------------------------------------------
-# PWV integral helper
+# Profile water column
 # ---------------------------------------------------------------------------
 
 
-def test_pwv_from_profile_roughly_matches_known_climatology() -> None:
-    import amwrap
+_P17_HPA = np.array(
+    [
+        800,
+        775,
+        750,
+        700,
+        650,
+        600,
+        550,
+        500,
+        450,
+        400,
+        350,
+        300,
+        250,
+        200,
+        150,
+        100,
+        50.0,
+    ]
+)
+_T17_K = np.linspace(285.0, 215.0, _P17_HPA.size)
+_V17 = 0.012 * (_P17_HPA / _P17_HPA[0]) ** 3.5
 
-    clim = amwrap.Climatology("midlatitude_summer")
-    pwv = pwv_mm_from_profile(clim.pressure, clim.mixing_ratio["h2o"])
-    # AFGL midlatitude_summer has ~25–30 mm; allow a wide bracket since
-    # this is a sanity check on the integral formula, not amwrap parity.
-    assert 5.0 < pwv < 60.0, f"midlatitude_summer PWV out of plausible range: {pwv:.2f}"
+
+def _power_law_pwv_mm() -> float:
+    """Dry-hydrostatic PWV of ``_V17``: exact ∫v dP plus the isobaric top slab."""
+    p_Pa, p_top = _P17_HPA[0] * 100, _P17_HPA[-1] * 100
+    integral = _V17[0] * (p_Pa - p_top * (p_top / p_Pa) ** 3.5) / 4.5 + _V17[-1] * p_top
+    return 18.015 / 28.964 / (9.80665 * 1000.0) * integral * 1e3
 
 
-def test_pwv_from_profile_independent_of_ordering() -> None:
-    p = np.array([1000.0, 800.0, 500.0, 200.0]) * u.hPa
-    vmr = np.array([1e-3, 5e-4, 1e-4, 1e-6])
+def test_pwv_unscaled_is_am_column_not_base_level(monkeypatch) -> None:
+    """17 coarse levels: the old base-level column was 12.9 % above ∫v dP."""
+    _stub_dispatch(monkeypatch)
+    grid = build_pwv_grid(
+        _P17_HPA * u.hPa,
+        _T17_K * u.K,
+        _V17 * u.dimensionless_unscaled,
+        freq_min_Hz=20e9,
+        freq_max_Hz=21e9,
+        pwv_min_mm=1.0,
+        pwv_max_mm=3.0,
+        pwv_step_mm=1.0,
+        n_workers=1,
+    )
+    assert grid.pwv_unscaled_mm == pytest.approx(_power_law_pwv_mm(), rel=0.01)
 
-    pwv_asc = pwv_mm_from_profile(p, vmr)
-    pwv_desc = pwv_mm_from_profile(p[::-1], vmr[::-1])
-    assert pwv_asc == pytest.approx(pwv_desc, rel=1e-12)
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pwv_mm", [2.0, 12.0])
+def test_am_reported_column_equals_grid_pwv(pwv_mm: float) -> None:
+    """am's own column report matches the PWV a grid row is labelled with."""
+    m = _am_model(
+        _P17_HPA * 100, _T17_K, _V17, 22.1e9, 22.3e9, 100e6, target_pwv_mm=pwv_mm
+    )
+    df = m.run(parallel=False)
+    assert df.attrs["pwv"].to_value(u.mm) == pytest.approx(pwv_mm, rel=5e-3)
 
 
 # ---------------------------------------------------------------------------

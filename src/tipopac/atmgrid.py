@@ -26,11 +26,13 @@ from pathlib import Path
 
 import astropy.units as u
 import numpy as np
+from amwrap import Model as _AmModel
 
-from tipopac.physics import T_CMB as _T_CMB
 from tipopac.physics import k2nt
 
-__all__ = ["PwvGrid", "build_pwv_grid", "grid_freq_span", "pwv_mm_from_profile"]
+_T_CMB: float = float(_AmModel.background_temperature.to_value(u.K))
+
+__all__ = ["PwvGrid", "build_pwv_grid", "grid_freq_span"]
 
 _log = logging.getLogger(__name__)
 
@@ -56,13 +58,8 @@ def grid_freq_span(
 
 # Per-worker cache dir parent. tmpfs avoids HDD-backed /tmp on hosts where
 # TMPDIR isn't pointed at RAM; falls back to tempfile's default if /dev/shm
-# isn't present. Mirrors amwrap's own default (vendor/amwrap/amwrap/__init__.py:80).
+# isn't present. Mirrors amwrap's own default (amwrap/driver.py CACHE_DIR).
 _DEFAULT_CACHE_BASE: str | None = "/dev/shm" if Path("/dev/shm").is_dir() else None
-
-# Physical constants for the PWV integral.
-_M_WATER_OVER_M_DRY: float = 18.015 / 28.9647
-_G_EARTH: float = 9.80665  # m s⁻²
-_RHO_LIQ_WATER: float = 1000.0  # kg m⁻³
 
 
 @dataclass(frozen=True)
@@ -82,9 +79,9 @@ class PwvGrid:
         — am's ``brightness_temperature`` column. Not radiance-linear; use
         :attr:`trj_z` for any arithmetic that combines sky terms.
     pwv_unscaled_mm:
-        PWV (mm) of the unscaled atmospheric profile. The grid was built by
-        running am with ``troposphere_h2o_scaling = pwv_mm / pwv_unscaled_mm``;
-        downstream code can use this to invert if needed.
+        PWV (mm) that am holds for the unscaled atmospheric profile
+        (``amwrap.Model.pwv``). Each grid row is an am run with
+        ``target_pwv = pwv_mm``, so both are in am-column units.
     profile_source:
         Free-form label for which atmospheric profile underlies the grid
         (``"open_meteo"``, ``"afgl_midlatitude_summer"`` …). Stored on the
@@ -192,30 +189,31 @@ class PwvGrid:
 
 
 # ---------------------------------------------------------------------------
-# PWV integration helper
+# am model construction
 # ---------------------------------------------------------------------------
 
 
-def pwv_mm_from_profile(
-    pressure: u.Quantity,
-    h2o_vmr: u.Quantity | np.ndarray,
-) -> float:
-    """Compute PWV (mm) of an atmospheric profile from VMR by hydrostatic integral.
+def _am_model(
+    pressure_Pa: np.ndarray,
+    temperature_K: np.ndarray,
+    h2o_vmr: np.ndarray,
+    freq_min_Hz: float = 18e9,
+    freq_max_Hz: float = 26.5e9,
+    freq_step_Hz: float = 10e6,
+    target_pwv_mm: float | None = None,
+):
+    """Build an ``amwrap.Model`` for the profile, optionally at a target PWV."""
+    import amwrap as _amwrap  # local import — workers don't need it at top level
 
-    ``PWV[m liquid] = (M_w / M_dry) / (g · ρ_w) · ∫ VMR dP``
-
-    Pressure is taken as ``astropy.units.Quantity`` (any pressure unit accepted);
-    VMR is dimensionless. The integral handles either pressure ordering — am's
-    convention is surface (highest P) first.
-    """
-    p_Pa = pressure.to(u.Pa).value
-    vmr = np.asarray(getattr(h2o_vmr, "value", h2o_vmr), dtype=np.float64)
-    order = np.argsort(p_Pa)  # ascending P
-    p_a = p_Pa[order]
-    v_a = vmr[order]
-    integral_pa = float(np.trapezoid(v_a, p_a))  # ∫ VMR dP, ≥ 0
-    pwv_m = _M_WATER_OVER_M_DRY / (_G_EARTH * _RHO_LIQ_WATER) * integral_pa
-    return float(pwv_m * 1000.0)
+    return _amwrap.Model(
+        pressure=pressure_Pa * u.Pa,
+        temperature=temperature_K * u.K,
+        mixing_ratio={"h2o": h2o_vmr * u.dimensionless_unscaled},
+        freq_min=freq_min_Hz * u.Hz,
+        freq_max=freq_max_Hz * u.Hz,
+        freq_step=freq_step_Hz * u.Hz,
+        target_pwv=None if target_pwv_mm is None else target_pwv_mm * u.mm,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -252,20 +250,18 @@ def _worker_init(
     )
 
 
-def _worker_run(scaling: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Pool task: build a fresh amwrap.Model with the given scaling and return
+def _worker_run(pwv_mm: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Pool task: run am on the profile at the given PWV and return
     ``(freq_Hz, tau, tb)`` as plain ndarrays."""
-    import amwrap as _amwrap  # local import — workers don't need it at top level
-
     s = _WORKER_STATE
-    m = _amwrap.Model(
-        pressure=s["pressure_Pa"] * u.Pa,
-        temperature=s["temperature_K"] * u.K,
-        mixing_ratio={"h2o": s["h2o_vmr"] * u.dimensionless_unscaled},
-        freq_min=s["freq_min_Hz"] * u.Hz,
-        freq_max=s["freq_max_Hz"] * u.Hz,
-        freq_step=s["freq_step_Hz"] * u.Hz,
-        troposphere_h2o_scaling=float(scaling),
+    m = _am_model(
+        s["pressure_Pa"],
+        s["temperature_K"],
+        s["h2o_vmr"],
+        s["freq_min_Hz"],
+        s["freq_max_Hz"],
+        s["freq_step_Hz"],
+        target_pwv_mm=float(pwv_mm),
     )
     df = m.run(parallel=False, cache_dir=s["cache_dir"])
     freqs_Hz = df["frequency"].values * 1e9  # GHz → Hz
@@ -274,10 +270,10 @@ def _worker_run(scaling: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return freqs_Hz, tau, tb
 
 
-def _run_serial(scalings: np.ndarray, init_kwargs: dict) -> list[tuple]:
+def _run_serial(pwv_axis: np.ndarray, init_kwargs: dict) -> list[tuple]:
     """Sequential equivalent — used when n_workers ≤ 1 or for small grids."""
     _worker_init(**init_kwargs)
-    out = [_worker_run(s) for s in scalings]
+    out = [_worker_run(p) for p in pwv_axis]
     _WORKER_STATE.clear()
     return out
 
@@ -328,38 +324,24 @@ def build_pwv_grid(
     if pwv_min_mm <= 0 or pwv_max_mm <= pwv_min_mm:
         raise ValueError(f"invalid pwv range [{pwv_min_mm}, {pwv_max_mm}]")
 
-    h2o_q: u.Quantity = (
-        h2o_vmr
-        if isinstance(h2o_vmr, u.Quantity)
-        else np.asarray(h2o_vmr) * u.dimensionless_unscaled
-    )
-    pwv_unscaled = pwv_mm_from_profile(pressure, h2o_q)
-    if pwv_unscaled <= 0:
-        raise ValueError(
-            f"profile PWV is {pwv_unscaled:.3e} mm — cannot anchor scaling"
-        )
-    # NB. ``troposphere_h2o_scaling`` scales only the *tropospheric* H₂O column,
-    # while ``pwv_mm_from_profile`` integrates the whole vertical profile. So
-    # the grid axis ``pwv_mm`` literally means
-    #   pwv_target_mm = scaling × pwv_unscaled_mm
-    # where ``pwv_unscaled_mm`` includes a small (< 1 mm) stratospheric
-    # contribution. The recovered ``pwv`` field is therefore the tropospheric
-    # PWV expressed in scaled-total units, not the column-integrated PWV. The
-    # difference is well within v1 precision for VLA conditions.
-
-    pwv_axis = np.arange(
-        pwv_min_mm, pwv_max_mm + 0.5 * pwv_step_mm, pwv_step_mm
-    ).astype(np.float64)
-    scalings = pwv_axis / pwv_unscaled
-
+    p_Pa = pressure.to(u.Pa).value.astype(np.float64)
+    t_K = temperature.to(u.K).value.astype(np.float64)
+    vmr = np.asarray(getattr(h2o_vmr, "value", h2o_vmr), dtype=np.float64)
     init_kwargs = dict(
-        pressure_Pa=pressure.to(u.Pa).value.astype(np.float64),
-        temperature_K=temperature.to(u.K).value.astype(np.float64),
-        h2o_vmr=np.asarray(h2o_q.value, dtype=np.float64),
+        pressure_Pa=p_Pa,
+        temperature_K=t_K,
+        h2o_vmr=vmr,
         freq_min_Hz=float(freq_min_Hz),
         freq_max_Hz=float(freq_max_Hz),
         freq_step_Hz=float(freq_step_Hz),
     )
+    pwv_unscaled = float(_am_model(p_Pa, t_K, vmr).pwv.to_value(u.mm))
+    if pwv_unscaled <= 0:
+        raise ValueError(f"profile PWV is {pwv_unscaled:.3e} mm — cannot scale")
+
+    pwv_axis = np.arange(
+        pwv_min_mm, pwv_max_mm + 0.5 * pwv_step_mm, pwv_step_mm
+    ).astype(np.float64)
 
     n_grid = pwv_axis.size
     cpu = os.cpu_count() or 1
@@ -371,7 +353,7 @@ def build_pwv_grid(
             prefix="tipopac_amcache_", dir=_DEFAULT_CACHE_BASE
         ) as tmp:
             init_kwargs_t = {**init_kwargs, "base_cache_dir": tmp}
-            results = _run_serial(scalings, init_kwargs_t)
+            results = _run_serial(pwv_axis, init_kwargs_t)
     else:
         with tempfile.TemporaryDirectory(
             prefix="tipopac_amcache_", dir=_DEFAULT_CACHE_BASE
@@ -383,7 +365,7 @@ def build_pwv_grid(
                 initializer=_worker_init,
                 initargs=tuple(init_kwargs_t.values()),
             ) as pool:
-                results = pool.map(_worker_run, scalings.tolist(), chunksize=1)
+                results = pool.map(_worker_run, pwv_axis.tolist(), chunksize=1)
 
     freq_ref = results[0][0]
     if not all(np.array_equal(r[0], freq_ref) for r in results):
