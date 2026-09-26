@@ -328,6 +328,35 @@ def test_attach_profile_open_meteo_called_once(
     assert json.loads(ds.attrs["open_meteo_query"]) == {"endpoint": "fake"}
 
 
+def test_attach_profile_surface_on_a_level_stays_monotonic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import astropy.units as u
+
+    import tipopac.atmosphere as atm_mod
+
+    def _fake_fetch(lat, lon, date_start, date_end):
+        pressure = np.array([825.0, 800.0, 775.0, 500.0]) * u.hPa
+        temperature = np.array([[290.0, 285.0, 280.0, 250.0]]) * u.K
+        h2o_vmr = np.array([[1e-2, 9e-3, 8e-3, 1e-3]]) * u.dimensionless_unscaled
+        return pressure, temperature, h2o_vmr, np.array([0.0]), {"endpoint": "fake"}
+
+    monkeypatch.setattr(atm_mod, "_fetch_open_meteo", _fake_fetch)
+    ds = _make_fitted_ds(n_scan=2, freqs_Hz=[22.2e9])
+    weather_P_Pa = ds["weather_P"].values.copy()
+    weather_P_Pa[0, :] = 80000.0
+    weather_P_Pa[1, :] = 77500.0
+    ds["weather_P"] = (ds["weather_P"].dims, weather_P_Pa)
+
+    attach_profile(ds, source="open-meteo")
+
+    for i, surface_Pa in enumerate((80000.0, 77500.0)):
+        p_Pa = ds["atm_pressure"].values[i]
+        p_Pa = p_Pa[np.isfinite(p_Pa)]
+        np.testing.assert_allclose(p_Pa[0], surface_Pa)
+        assert np.all(np.diff(p_Pa) < 0)
+
+
 def test_om_pressure_levels_825_to_100_by_25() -> None:
     from tipopac.atmosphere import _OM_PRESSURE_LEVELS
 
