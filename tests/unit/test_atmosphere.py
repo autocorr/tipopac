@@ -315,8 +315,54 @@ def test_attach_profile_open_meteo_called_once(
     assert call_count["n"] == 1
     assert ds.attrs["atm_profile_source"] == "open_meteo"
     assert "atm_pressure" in ds.data_vars
+    for i in range(ds.sizes["scan"]):
+        p_hPa = ds["atm_pressure"].values[i] / 100.0
+        keep = np.isfinite(p_hPa)
+        p_hPa = p_hPa[keep]
+        assert np.all(np.diff(p_hPa) < 0)
+        assert p_hPa[2] < 500.0
+        assert p_hPa[-1] >= 1.0
+        assert np.all(np.isfinite(ds["atm_temperature"].values[i][keep]))
+        assert np.all(np.isfinite(ds["atm_h2o_vmr"].values[i][keep]))
     # attr is JSON, not a dict: NetCDF attrs take no dicts (design.md §4)
     assert json.loads(ds.attrs["open_meteo_query"]) == {"endpoint": "fake"}
+
+
+def test_om_pressure_levels_825_to_100_by_25() -> None:
+    from tipopac.atmosphere import _OM_PRESSURE_LEVELS
+
+    assert _OM_PRESSURE_LEVELS[0] == 825
+    assert _OM_PRESSURE_LEVELS[-1] == 100
+    assert set(np.diff(_OM_PRESSURE_LEVELS)) == {-25}
+
+
+def test_stitch_afgl_upper() -> None:
+    import astropy.units as u
+
+    from tipopac.atmosphere import _stitch_afgl_upper
+
+    p = np.array([800.0, 400.0, 100.0]) * u.hPa
+    t = np.array([[280.0, 250.0, 205.0], [281.0, 251.0, 206.0]]) * u.K
+    h = (
+        np.array([[1e-2, 1e-3, 4e-6], [1.1e-2, 1.1e-3, 5e-6]])
+        * u.dimensionless_unscaled
+    )
+    out = {
+        name: _stitch_afgl_upper(p, t, h, f"midlatitude_{name}")
+        for name in ("summer", "winter")
+    }
+    ps, ts, hs = out["summer"]
+    m = ps.size - p.size
+    assert m > 0
+    assert ts.shape == hs.shape == (2, 3 + m)
+    np.testing.assert_array_equal(ts[:, :3], t)
+    np.testing.assert_array_equal(ts[0, 3:], ts[1, 3:])
+    np.testing.assert_array_equal(hs[0, 3:], hs[1, 3:])
+    p_up = ps[3:].to_value(u.hPa)
+    assert p_up[0] < 100.0
+    assert p_up[-1] >= 1.0
+    assert np.all(np.diff(p_up) < 0)
+    assert not np.array_equal(ts[0, 3:], out["winter"][1][0, 3:])
 
 
 # ---------------------------------------------------------------------------

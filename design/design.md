@@ -33,8 +33,9 @@ tipping-scan data, without requiring a CASA runtime.
 - Atmospheric modelling moves from `casatools.atmosphere` to Scott
   Paine's `am`, accessed via the local `amwrap` Python wrapper.
 - Vertical profiles come from open-meteo's `historical-forecast-api`
-  pressure-level grid (gfs_hrrr model); offline fallback is amwrap's
-  AFGL climatologies.
+  pressure-level grid (gfs_hrrr model), topped with an amwrap AFGL
+  climatology above 100 hPa; offline fallback is the AFGL climatology
+  alone.
 - Fit architecture is **Stage A + Stage B (+ Stage C)**: per-spw
   zenith-opacity fit from the observed data, then a post-hoc
   per-antenna PWV anchor against the resulting `τ_z(ν)` samples via a
@@ -636,8 +637,9 @@ dataset that already has `atm_pressure` is a no-op.
 - **`source="open-meteo"` (default).** One HTTP call against
   `historical-forecast-api.open-meteo.com/v1/forecast` with
   `models=gfs_hrrr` and pressure-level variables (temperature,
-  relative humidity, geopotential height) on the 1000 → 10 hPa
-  coarse grid. The fetch covers the full observation UTC date span;
+  relative humidity) on 825 → 100 hPa in 25 hPa steps, topped
+  unblended with the `afgl_climatology` levels up to 1 hPa.
+  The fetch covers the full observation UTC date span;
   the closest hourly slice is selected per scan. Transient failures
   retry with backoff (default 4 attempts at offsets 0, 5, 15, 45 s).
   Deterministic failure (no pressure-level data in the response —

@@ -821,7 +821,7 @@ class AtmosphericProfile(Plot):
         y_enc = alt.Y(
             "pressure_hPa:Q",
             title="Pressure [hPa]",
-            scale=alt.Scale(type="log", domain=[10, 875], reverse=True, nice=False),
+            scale=alt.Scale(type="log", domain=[1, 875], reverse=True, nice=False),
         )
         # Vega-Lite sorts ``mark_line`` points by the x channel by default,
         # which would draw the temperature and VMR lines in value order
@@ -841,7 +841,7 @@ class AtmosphericProfile(Plot):
                 x=alt.X(
                     f"{temp_col}:Q",
                     title=temp_title,
-                    scale=alt.Scale(domain=[-70, 40], nice=False),
+                    scale=alt.Scale(domain=[-80, 40], nice=False),
                     axis=alt.Axis(
                         orient="bottom",
                         titleColor=self.COLOR_R_POL,

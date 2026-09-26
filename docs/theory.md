@@ -246,7 +246,8 @@ code, run through `amwrap`:
 1. **`fetch_atm_profile`** — the only network stage. It pulls vertical
    temperature, humidity, and geopotential-height profiles for the
    observation from Open-Meteo's GFS/HRRR pressure-level grid (closest
-   hourly slice per scan), with retry/backoff. If the date predates the
+   hourly slice per scan, 825–100 hPa, with AFGL climatology levels
+   above to 1 hPa), with retry/backoff. If the date predates the
    archive (~2021-03-23) or the request fails, it falls back deterministically
    to **AFGL climatologies** (`midlatitude_summer` / `midlatitude_winter`,
    chosen from the observation month under `"auto"`).

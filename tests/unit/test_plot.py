@@ -528,9 +528,9 @@ def test_atmospheric_profile_axes_and_scales() -> None:
         x_scale_types.add(x_enc["scale"].get("type", "linear"))
         y_scale = layer["encoding"]["y"]["scale"]
         assert y_scale["type"] == "log"
-        # Domain runs from ~10 hPa at top to ≥850 hPa at bottom (reversed
+        # Domain runs from 1 hPa at top to ≥850 hPa at bottom (reversed
         # so high pressure sits at the bottom of the chart).
-        assert y_scale["domain"][0] == 10
+        assert y_scale["domain"][0] == 1
         assert y_scale["domain"][1] >= 850
         assert y_scale["reverse"] is True
     assert orients == {"bottom", "top"}

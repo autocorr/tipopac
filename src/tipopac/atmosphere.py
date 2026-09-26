@@ -4,7 +4,8 @@ Public entry point
 ------------------
 ``attach_profile(ds, *, source, afgl_climatology, …)``
     The single network-touching stage. Runs open-meteo once (full hourly
-    grid for the observation date range) or builds an AFGL profile, picks
+    grid for the observation date range, topped with AFGL levels up to
+    1 hPa) or builds an AFGL profile, picks
     the closest hour per scan, clips at each scan's own surface pressure,
     and writes ``atm_pressure``, ``atm_temperature``, ``atm_h2o_vmr``, and
     ``surface_pressure_hPa(scan,)`` to *ds*. Provenance lands in
@@ -71,38 +72,8 @@ _OM_TIMEOUT_S = 5.0
 # starting before this are routed to AFGL without an HTTP round-trip.
 _OM_HRRR_ARCHIVE_START = "2021-03-23"
 
-# Pressure levels requested from open-meteo (hPa, coarse grid is fine for am).
-_OM_PRESSURE_LEVELS: list[int] = [
-    1000,
-    975,
-    950,
-    925,
-    900,
-    875,
-    850,
-    825,
-    800,
-    775,
-    750,
-    700,
-    650,
-    600,
-    550,
-    500,
-    450,
-    400,
-    350,
-    300,
-    250,
-    200,
-    150,
-    100,
-    70,
-    50,
-    30,
-    20,
-    10,
-]
+_OM_PRESSURE_LEVELS: list[int] = list(range(825, 75, -25))
+_AFGL_STITCH_TOP_hPa: float = 1.0
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -136,6 +107,8 @@ def attach_profile(
     * ``source="afgl"`` skips the network call entirely.
     * ``afgl_climatology="auto"`` resolves to summer/winter from the
       observation's median month.
+    * The open-meteo profile is topped with that climatology's levels
+      above the highest returned level, up to ``_AFGL_STITCH_TOP_hPa``.
 
     The surface clip is applied per scan: index 0 of ``atm_level`` is
     each scan's own surface, increasing index moves up in altitude.
@@ -187,6 +160,9 @@ def attach_profile(
                 try:
                     p_grid, t_grid, h_grid, hour_unix_s, meta = _fetch_open_meteo(
                         _VLA_LAT, _VLA_LON, date_start, date_end
+                    )
+                    p_grid, t_grid, h_grid = _stitch_afgl_upper(
+                        p_grid, t_grid, h_grid, afgl_climatology
                     )
                     (
                         pressure_per_scan,
@@ -522,6 +498,32 @@ def _fetch_open_meteo(
     )
 
     return pressure_q, temperature_q, h2o_vmr, hour_unix_s, query_meta
+
+
+def _stitch_afgl_upper(
+    p_grid: u.Quantity,
+    t_grid: u.Quantity,
+    h_grid: u.Quantity,
+    climatology: str,
+) -> tuple[u.Quantity, u.Quantity, u.Quantity]:
+    """Append AFGL levels above the open-meteo top, up to ``_AFGL_STITCH_TOP_hPa``."""
+    import amwrap as _amwrap
+
+    clim = _amwrap.Climatology(climatology)
+    p_afgl = clim.pressure.to_value(u.hPa)
+    p_om = p_grid.to_value(u.hPa)
+    upper = (p_afgl < p_om.min()) & (p_afgl >= _AFGL_STITCH_TOP_hPa)
+    n_hour = t_grid.shape[0]
+    t_up = np.broadcast_to(clim.temperature.to_value(u.K)[upper], (n_hour, upper.sum()))
+    h_up = np.broadcast_to(
+        clim.mixing_ratio["h2o"].to_value("")[upper], (n_hour, upper.sum())
+    )
+    return (
+        np.concatenate([p_om, p_afgl[upper]]) * u.hPa,
+        np.concatenate([t_grid.to_value(u.K), t_up], axis=1) * u.K,
+        np.concatenate([np.asarray(h_grid.to_value("")), h_up], axis=1)
+        * u.dimensionless_unscaled,
+    )
 
 
 def _afgl_profile_per_scan(
