@@ -66,7 +66,7 @@ _OM_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _OM_ARCHIVE_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 _OM_MODEL = "gfs_hrrr"
 _OM_FORECAST_HORIZON_DAYS = 16  # beyond this age, use archive endpoint
-_OM_TIMEOUT_S = 5.0
+_OM_TIMEOUT_S = 15.0
 # Earliest date with pressure-level data in the gfs_hrrr historical-forecast
 # archive (empirical lower bound, no authoritative reference). Observations
 # starting before this are routed to AFGL without an HTTP round-trip.
